@@ -8382,19 +8382,6 @@ def api_backup_all():
 # ══════════════════════════════════════════════════════════════════
 #  USER PREFERENCES — Idioma
 # ══════════════════════════════════════════════════════════════════
-@app.route("/api/me/lang", methods=["GET"])
-def api_get_lang():
-    return jsonify({"lang": session.get("lang", "es")})
-
-@app.route("/api/me/lang", methods=["POST"])
-def api_set_lang():
-    data = request.get_json()
-    lang = data.get("lang", "es")
-    if lang not in ("es", "en", "it"):
-        return jsonify({"error": "Idioma no válido"}), 400
-    session["lang"] = lang
-    session.modified = True
-    return jsonify({"ok": True, "lang": lang})
 
 
 # ══════════════════════════════════════════════════════════════════
