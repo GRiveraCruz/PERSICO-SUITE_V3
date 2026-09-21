@@ -372,6 +372,13 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
   .nav-tab{padding:0 12px;font-size:10px}
   .logo-area{padding:0 10px}
 }
+/* Los modales (.mo) se ocultan con opacity:0, no con display:none — así que
+   cualquier cosa con una animación CSS "infinite" adentro (el spinner de carga)
+   sigue animando y repintando para siempre mientras el modal esté cerrado,
+   incluso si nunca se abrió en toda la sesión. Esto pausa esa animación
+   mientras el modal no esté abierto (.on), sin tocar la transición de opacidad
+   ni nada del comportamiento de apertura/cierre existente. */
+.mo:not(.on) .spinner{animation-play-state:paused}
 </style>
 <!-- Fin del bloque responsive añadido — ver CAMBIOS_FASE2_PARTE3.md -->
 </head>
