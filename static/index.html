@@ -351,7 +351,6 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
    involucrada, pero conviene una pasada visual rápida en un teléfono o
    en modo responsive de devtools antes de darlo por definitivo. */
 @media (max-width:900px){
-  .dash-grid{grid-template-columns:1fr!important}
   .module.on{flex-direction:column}
   .sidebar{width:100%;min-width:0;max-height:38vh;border-right:none;border-bottom:1px solid var(--border)}
   .sb-filters{max-height:22vh}
@@ -681,7 +680,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
      MODULE: HOME / INICIO
 ══════════════════════════════════════════════════ -->
 <div class="module on" id="mod-home">
-  <div class="main-content" id="home-default" style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%;gap:32px;text-align:center;padding:40px">
+  <div class="main-content" style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%;gap:32px;text-align:center;padding:40px">
     <img src="/static/persico_logo.webp" alt="Persico" style="height:80px;object-fit:contain;opacity:.9" onerror="this.style.display='none'">
     <div>
       <div style="font-size:13px;font-weight:600;letter-spacing:4px;color:var(--muted);text-transform:uppercase;margin-bottom:12px">Bienvenido a</div>
@@ -694,7 +693,6 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
     </div>
     <div id="home-date" style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;margin-top:8px"></div>
   </div>
-  <div class="main-content" id="home-dashboard" style="display:none;overflow-y:auto;padding:24px 28px"></div>
 </div>
 
 <div class="module" id="mod-quotes">
