@@ -10,7 +10,7 @@ Ejecutar:  python app.py
 Acceso:    http://<IP-del-servidor>:5000
 """
 
-import io, json, re, datetime, shutil, hashlib, secrets
+import io, json, re, datetime, shutil, hashlib, secrets, html as _html
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, Response, session, redirect, url_for, send_file
@@ -292,7 +292,7 @@ def _login_required(f):
         if not session.get("user"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "no autenticado"}), 401
-            return redirect("/login")
+            return redirect("/login?next=" + request.path)
         return f(*args, **kwargs)
     return decorated
 
@@ -320,12 +320,22 @@ def _cache_del(key):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = ""
+    # ?next= permite volver a donde se intentaba entrar (ej. /mobile) después de
+    # loguearse, en vez de mandar siempre a la vista de escritorio.
+    next_url = request.values.get("next", "") or "/"
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"   # nunca redirigir fuera del propio sitio
     if request.method == "POST":
         u = request.form.get("username", "").strip()
         p = request.form.get("password", "").strip()
+        # Revalidar 'next' también en el POST (no confiar en el valor que venga del
+        # formulario sin pasar otra vez por el mismo chequeo anti-open-redirect).
+        post_next = request.form.get("next", "") or "/"
+        if not post_next.startswith("/") or post_next.startswith("//"):
+            post_next = "/"
         if _check_login(u, p):
             session["user"] = u
-            return redirect("/")
+            return redirect(post_next)
         error = "Usuario o contraseña incorrectos"
     return f'''<!DOCTYPE html>
 <html lang="es">
@@ -338,7 +348,7 @@ def login():
     body {{ font-family: Arial, sans-serif; background: #1a1a2e; display: flex;
             justify-content: center; align-items: center; min-height: 100vh; }}
     .card {{ background: #16213e; border-radius: 12px; padding: 36px 40px 40px;
-             width: 380px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }}
+             width: min(380px, 92vw); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }}
     .logo-wrap {{ text-align: center; margin-bottom: 6px; }}
     .logo-wrap img {{ height: 52px; object-fit: contain; }}
     p.sub {{ color: #718096; text-align: center; margin-bottom: 28px; font-size: 12px;
@@ -368,6 +378,7 @@ def login():
     <hr class="divider">
     {'<div class="error">' + error + '</div>' if error else ''}
     <form method="POST">
+      <input type="hidden" name="next" value="{_html.escape(next_url)}">
       <label>Usuario</label>
       <input type="text" name="username" autocomplete="username" required>
       <label>Contraseña</label>
@@ -839,12 +850,19 @@ def require_login():
     if not session.get("user"):
         if request.path.startswith("/api/"):
             return jsonify({"error": "no autenticado"}), 401
-        return redirect("/login")
+        return redirect("/login?next=" + request.path)
 
 @app.route("/")
 @_login_required
 def index():
     return send_from_directory("static", "index.html")
+
+@app.route("/mobile")
+@_login_required
+def mobile_index():
+    """Versión reducida para teléfono — consulta/aprobación rápida sobre la marcha.
+    No reemplaza la Suite de escritorio: usa las mismas rutas /api/*, mismo login."""
+    return send_from_directory("static/mobile", "index.html")
 
 @app.route("/api/ping")
 def ping():
@@ -959,6 +977,7 @@ def api_create_job():
 
 @app.route("/api/jobs/<job_number>", methods=["PUT"])
 def api_update_job(job_number):
+    if not can("edit", "jobs"): return jsonify({"error": "Sin permiso"}), 403
     if not JOB_RE.match(job_number):
         return jsonify({"error": "Job number inválido"}), 400
     try:
