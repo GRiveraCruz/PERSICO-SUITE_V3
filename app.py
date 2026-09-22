@@ -6936,6 +6936,129 @@ def api_cpo_revenue(job_number):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _year_of(record):
+    """Extrae el año de un created_at (soporta 'YYYY-MM-DD' e ISO con hora)."""
+    v = (record or {}).get("created_at") or ""
+    return v[:4] if len(v) >= 4 else None
+
+@app.route("/api/dashboard/general-management", methods=["GET"])
+def api_dashboard_general_management():
+    """Dashboard de inicio para el perfil GENERAL MANAGEMENT.
+    Solo lectura — no modifica ningún dato. Protegido por perfil, no por is_admin(),
+    porque este perfil de puesto no es lo mismo que el rol interno 'admin'
+    (ver CAMBIOS_PERFILES_PUESTO.md)."""
+    user = session.get("user")
+    role = get_user_perms(user).get("role") if user else None
+    if not (is_admin() or role == "GENERAL MANAGEMENT"):
+        return jsonify({"error": "Sin permiso"}), 403
+    try:
+        from collections import Counter
+        year      = int(request.args.get("year", CURRENT_YEAR))
+        last_year = year - 1
+
+        # ── VENTAS: Quotes ────────────────────────────────────────────
+        quotes = _load_quotes()
+        quotes_this_year = [q for q in quotes if _year_of(q) == str(year)]
+        refused  = sum(1 for q in quotes_this_year if q.get("refused"))
+        awarded  = sum(1 for q in quotes_this_year if q.get("awarded"))
+        pending  = len(quotes_this_year) - refused - awarded
+        cust_ctr = Counter((q.get("customer") or "Sin cliente") for q in quotes_this_year)
+
+        # ── VENTAS: Customer POs (cpo) — órdenes de los CLIENTES hacia Persico.
+        #    OJO: esto NO es lo mismo que "Purchase Orders" (po/po_load), que son las
+        #    órdenes que PERSICO le hace a SUS proveedores (un costo, no una venta).
+        #    Antes este dashboard usaba por error po_load() aquí — por eso "Sales" no
+        #    coincidía con "Revenue" de Cost Control, que sí usa cpo correctamente
+        #    (vía cpo_revenue_for_job). Corregido: mismo origen de datos en los dos
+        #    lados, así los dos números concuerdan por construcción. ──
+        cpo_year_records = cpo_load(year)
+        cpos_total_amount = round(sum(cpo_to_float(r.get("value")) for r in cpo_year_records), 2)
+
+        # ── Purchase Orders (po) — esto SÍ es costo (compras a proveedores), se usa
+        #    más abajo únicamente para "Purchasing + Services" en Cost Control. ──
+        po_year_records = po_load(year)
+        fx_all = fx_load_all()
+
+        # ── PROYECTOS: Jobs, por año y por estatus ──────────────────────
+        all_jobs = scan_jobs()
+        def project_stats(yr):
+            js = [j for j in all_jobs if _year_of(j) == str(yr)]
+            st = Counter(j.get("status") for j in js)
+            jc = Counter((j.get("customer") or "Sin cliente") for j in js)
+            return {
+                "total":       len(js),
+                "open":        st.get("Open", 0),
+                "wip":         st.get("WIP", 0),
+                "closed":      st.get("Done", 0),
+                "cancelled":   st.get("Cancelled", 0),
+                "by_customer": [{"customer": c, "count": n} for c, n in jc.most_common(8)],
+            }
+
+        # ── CONTROL DE COSTO (año actual): reutiliza _build_report_data,
+        #    cargando cada colección UNA vez para todos los jobs del año (mismo
+        #    patrón que /api/report/multi) — ver AUDITORIA.md / CAMBIOS_FASE2_PARTE1
+        #    sobre por qué esto importa (evita repetir la carga completa por job). ──
+        jobs_this_year = [j for j in all_jobs if _year_of(j) == str(year) and j.get("status") != "Cancelled"]
+        wh_pool  = wh_load(year)
+        po_pool  = po_year_records
+        ra_pool  = reassign_load()
+        rc_pool  = recovery_load()
+        via_pool = _svc_load(VIATICOS_FILE)
+        gv_pool  = _svc_load(GASTOS_FILE)
+        env_pool = _svc_load(ENVIOS_FILE)
+        cpo_pool = cpo_load(year)
+
+        job_rows = []
+        tot_revenue = tot_wh = tot_purch_svc = tot_margin = 0.0
+        for j in jobs_this_year:
+            jn = j["job_number"]
+            d = _build_report_data(jn, year, year, year,
+                                    wh_pool=wh_pool, po_pool=po_pool, fx_all=fx_all,
+                                    ra_pool=ra_pool, rc_pool=rc_pool,
+                                    via_pool=via_pool, gv_pool=gv_pool, env_pool=env_pool)
+            cpo_rev = cpo_revenue_for_job(jn, year, pool=cpo_pool)
+            if cpo_rev > 0:
+                d["revenue"]      = cpo_rev
+                d["cost"]         = round(d["amount_wh"] + d["purchasing_total"] + d.get("svc_total", 0), 2)
+                d["gross_margin"] = round(cpo_rev - d["cost"] + d.get("recovery_total", 0), 2)
+            revenue_source = "CPO" if cpo_rev > 0 else "estimado"
+            purch_svc = round(d["purchasing_total"] + d.get("svc_total", 0), 2)
+            tot_revenue   += d["revenue"]
+            tot_wh        += d["amount_wh"]
+            tot_purch_svc += purch_svc
+            tot_margin    += d["gross_margin"]
+            job_rows.append({
+                "job_number": jn, "customer": d["customer"],
+                "revenue": d["revenue"], "cost": d["cost"], "result": d["gross_margin"],
+                "revenue_source": revenue_source,
+            })
+        job_rows.sort(key=lambda r: r["job_number"])
+
+        return jsonify({
+            "year": year,
+            "sales": {
+                "quotes_registered": len(quotes_this_year),
+                "quotes_sent":       sum(1 for q in quotes_this_year if q.get("sentClient")),
+                "quotes_by_customer": [{"customer": c, "count": n} for c, n in cust_ctr.most_common(8)],
+                "refused": refused, "awarded": awarded, "pending": pending,
+                "cpos_registered":    len(cpo_year_records),
+                "cpos_total_amount":  cpos_total_amount,
+            },
+            "projects": {
+                "this_year": project_stats(year),
+                "last_year": project_stats(last_year),
+            },
+            "cost_control": {
+                "revenue_total":      round(tot_revenue, 2),
+                "wh_cost":            round(tot_wh, 2),
+                "purchasing_services":round(tot_purch_svc, 2),
+                "gross_margin":       round(tot_margin, 2),
+                "jobs": job_rows,
+            },
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/report/multi", methods=["POST"])
 def api_report_multi():
     """Reporte agrupado de múltiples jobs."""

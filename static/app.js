@@ -6589,7 +6589,256 @@ document.addEventListener('DOMContentLoaded', () => {
     const now = new Date();
     homeDate.textContent = now.toLocaleDateString('es-MX', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
   }
+  initHomeDashboard();
 });
+
+// ════════════════════════════════════════════════════════
+//  DASHBOARD DE INICIO — por perfil (Ronda 1: General Management)
+//  Reemplaza la bienvenida genérica SOLO para el perfil que tenga un
+//  dashboard construido; para todos los demás, la pantalla de inicio
+//  sigue exactamente igual que siempre.
+// ════════════════════════════════════════════════════════
+async function initHomeDashboard(){
+  try{
+    const me = await fetch('/api/me/perms').then(r=>r.json());
+    if(me.role === 'GENERAL MANAGEMENT' || me.is_admin){
+      await loadGMDashboard();
+    }
+  }catch(e){ /* si falla, se queda la bienvenida de siempre — nunca romper el inicio */ }
+}
+
+function fmtMoney(n){ return '$' + Number(n||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}); }
+function fmtPct(n){ return (n>0?'+':'') + n.toFixed(0) + '%'; }
+function pctDelta(curr, prev){
+  if(!prev) return null;
+  return Math.round((curr-prev)/prev*100);
+}
+
+// ── Donut chart en SVG puro (técnica stroke-dasharray, sin librerías) con
+//    leyenda a un costado — inspirado en las referencias que compartió el
+//    usuario, adaptado a los colores de marca de Persico. ──
+function svgDonut(segments, opts){
+  opts = opts || {};
+  const size = opts.size || 108, stroke = opts.stroke || 15;
+  const r = (size - stroke) / 2, cx = size/2, cy = size/2;
+  const circumference = 2 * Math.PI * r;
+  const total = segments.reduce((s,x)=>s+x.value, 0) || 1;
+  let offset = 0;
+  const arcs = segments.filter(s=>s.value>0).map(seg => {
+    const dash = (seg.value/total) * circumference;
+    const circle = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${seg.color}" stroke-width="${stroke}"
+      stroke-dasharray="${dash.toFixed(2)} ${(circumference-dash).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}"
+      transform="rotate(-90 ${cx} ${cy})" stroke-linecap="butt"/>`;
+    offset += dash;
+    return circle;
+  }).join('');
+  const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex-shrink:0">${arcs}</svg>`;
+  const legend = `<div style="display:flex;flex-direction:column;gap:8px;justify-content:center">
+    ${segments.map(s=>{
+      const pct = total ? Math.round(s.value/total*100) : 0;
+      return `<div style="display:flex;align-items:center;gap:8px;font-size:12px">
+        <span style="width:9px;height:9px;border-radius:50%;background:${s.color};flex-shrink:0"></span>
+        <span style="color:var(--muted2);min-width:58px">${esc(s.label)}</span>
+        <span style="font-weight:800;font-variant-numeric:tabular-nums">${s.value}</span>
+        <span style="color:var(--muted);font-size:10px">${pct}%</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+  return `<div style="display:flex;align-items:center;gap:20px">${svg}${legend}</div>`;
+}
+
+// Barras con línea base y esquinas redondeadas — más cercano a las referencias
+// que barras planas sin línea de referencia.
+function miniBarChart(items, opts){
+  opts = opts || {};
+  const max = Math.max(1, ...items.map(i=>i.count));
+  const h = opts.height || 110;
+  const color = opts.color || 'var(--red)';
+  return `<div style="border-top:1px solid var(--border);padding-top:10px">
+    <div style="display:flex;align-items:flex-end;gap:10px;height:${h}px;padding:0 2px">
+      ${items.map(i => {
+        const barH = Math.max(3, Math.round((i.count/max)*(h-26)));
+        return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:0">
+          <div style="font-size:10px;font-weight:700;color:var(--text);margin-bottom:4px;font-variant-numeric:tabular-nums">${i.count}</div>
+          <div style="width:100%;max-width:30px;height:${barH}px;background:${color};border-radius:5px 5px 0 0"></div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="display:flex;gap:10px;padding:0 2px;margin-top:6px">
+      ${items.map(i=>`<div style="flex:1;font-size:9px;color:var(--muted);text-align:center;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0" title="${esc(i.customer)}">${esc(i.customer)}</div>`).join('')}
+    </div>
+  </div>`;
+}
+
+// ── Tarjeta blanca flotante (fondo blanco puro contra el gris de la página,
+//    sombra suave, esquinas amplias) — el mismo lenguaje visual de las
+//    referencias, con la tipografía y colores de marca de Persico. ──
+function dashCard(innerHtml, extra){
+  return `<div style="background:#fff;border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.05);padding:22px 24px;min-width:0;overflow:hidden;${extra||''}">${innerHtml}</div>`;
+}
+// Número protagonista con etiqueta arriba y, si se le da un valor de
+// comparación, una variación (▲/▼) contra el año anterior.
+function dashHero(label, value, opts){
+  opts = opts || {};
+  let delta = '';
+  if(opts.deltaPct != null){
+    const up = opts.deltaPct >= 0;
+    delta = `<span style="display:inline-flex;align-items:center;gap:2px;font-size:11px;font-weight:700;color:${up?'var(--green,#1f8a4c)':'var(--red)'};margin-left:9px;vertical-align:middle">
+      ${up?'▲':'▼'} ${Math.abs(opts.deltaPct)}%</span>`;
+  }
+  return `<div>
+    <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.7px">${label}</div>
+    <div style="font-size:32px;font-weight:800;color:${opts.color||'var(--text)'};margin-top:5px;line-height:1;font-variant-numeric:tabular-nums">${value}${delta}</div>
+    ${opts.sub?`<div style="font-size:11px;color:var(--muted);margin-top:4px">${opts.sub}</div>`:''}
+  </div>`;
+}
+function dashStat(label, value, color){
+  return `<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px">
+    <span style="color:var(--muted2)">${label}</span>
+    <span style="font-weight:700;color:${color||'var(--text)'};font-variant-numeric:tabular-nums">${value}</span>
+  </div>`;
+}
+function dashDivider(){ return `<div style="height:1px;background:var(--border);margin:2px 0"></div>`; }
+function dashNote(text){ return `<div style="font-size:10.5px;color:var(--muted);line-height:1.5">${text}</div>`; }
+function dashSectionLabel(text, color){
+  return `<div style="display:flex;align-items:center;gap:7px;margin-bottom:2px">
+    <span style="width:8px;height:8px;border-radius:50%;background:${color}"></span>
+    <span style="font-size:11px;font-weight:700;letter-spacing:1.2px;color:var(--muted2);text-transform:uppercase">${text}</span>
+  </div>`;
+}
+
+let _gmDashYear = new Date().getFullYear();
+async function loadGMDashboard(year){
+  year = year || _gmDashYear;
+  _gmDashYear = year;
+  const wrap = document.getElementById('home-dashboard');
+  const dflt = document.getElementById('home-default');
+  if(!wrap) return;
+  dflt.style.display = 'none';
+  wrap.style.display = 'block';
+  wrap.innerHTML = '<div class="state" style="text-align:center;padding:60px;color:var(--muted)"><div class="spinner" style="width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--red);border-radius:50%;margin:0 auto 12px;animation:spin .7s linear infinite"></div>Cargando dashboard…</div>';
+  try{
+    const d = await fetch('/api/dashboard/general-management?year='+year).then(r=>r.json());
+    if(d.error){ wrap.innerHTML = `<div style="text-align:center;padding:60px;color:var(--red)">⚠ ${esc(d.error)}</div>`; return; }
+    renderGMDashboard(d);
+  }catch(e){
+    wrap.innerHTML = '<div style="text-align:center;padding:60px;color:var(--red)">⚠ No se pudo cargar el dashboard. <button onclick="loadGMDashboard()" class="btn-reload" style="margin-left:8px">Reintentar</button></div>';
+  }
+}
+
+function renderGMDashboard(d){
+  const wrap = document.getElementById('home-dashboard');
+  const s = d.sales, p = d.projects, cc = d.cost_control;
+
+  // ── Fila superior: los 3 números que un director mira primero, con su
+  //    variación año contra año donde el dato existe (Projects sí tiene
+  //    este_año/año_pasado calculado en el backend; Sales y Cost Control por
+  //    ahora no comparan contra el año anterior — se puede agregar después). ──
+  const heroRow = `
+    <div class="dash-hero-row" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px">
+      ${dashCard(dashHero('Customer POs · '+d.year, fmtMoney(s.cpos_total_amount), {sub: s.cpos_registered+' POs registradas', color:'var(--gold)'}))}
+      ${dashCard(dashHero('Jobs open · '+d.year, p.this_year.open, {deltaPct: pctDelta(p.this_year.open, p.last_year.open), sub: 'vs. '+p.last_year.open+' en '+(d.year-1), color:'var(--blue)'}))}
+      ${dashCard(dashHero('Gross margin · '+d.year, fmtMoney(cc.gross_margin), {color: cc.gross_margin>=0?'var(--green,#1f8a4c)':'var(--red)', sub: 'Revenue '+fmtMoney(cc.revenue_total)}))}
+    </div>
+  `;
+
+  const salesCard = dashCard(`
+    ${dashSectionLabel('Sales', 'var(--gold)')}
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:11px">
+      ${dashStat('Quotes registered', s.quotes_registered)}
+      ${dashStat('Quotes sent to customer', s.quotes_sent)}
+    </div>
+    <div style="margin-top:16px">
+      ${s.quotes_by_customer.length ? miniBarChart(s.quotes_by_customer,{height:92,color:'var(--gold)'}) : `<div style="font-size:11px;color:var(--muted);text-align:center;padding:16px 0">Sin cotizaciones en ${d.year}</div>`}
+    </div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+      ${svgDonut([
+        {label:'Awarded', value:s.awarded, color:'#1f8a4c'},
+        {label:'Pending', value:s.pending, color:'#b3760a'},
+        {label:'Refused', value:s.refused, color:'#C8102E'},
+      ])}
+    </div>
+    <div style="margin-top:14px">${dashNote('Customer POs = solo ventas confirmadas. No incluye jobs con revenue solo estimado.')}</div>
+  `);
+
+  const projCard = dashCard(`
+    ${dashSectionLabel('Projects', 'var(--blue)')}
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:11px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.6px">${d.year}</div>
+      ${dashStat('Jobs in WIP', p.this_year.wip)}
+      ${dashStat('Jobs closed', p.this_year.closed)}
+    </div>
+    <div style="margin-top:14px">
+      ${p.this_year.by_customer.length ? miniBarChart(p.this_year.by_customer,{height:88,color:'var(--blue)'}) : ''}
+    </div>
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:11px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.6px">${d.year-1}</span>
+        <span style="font-size:15px;font-weight:800;font-variant-numeric:tabular-nums">${p.last_year.open} <span style="font-size:9px;color:var(--muted);font-weight:600">open</span></span>
+      </div>
+      ${dashStat('Jobs in WIP', p.last_year.wip)}
+      ${dashStat('Jobs closed', p.last_year.closed)}
+    </div>
+  `);
+
+  const costCard = dashCard(`
+    ${dashSectionLabel('Cost Control', 'var(--red)')}
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:11px">
+      ${dashStat('Revenue total', fmtMoney(cc.revenue_total))}
+      ${dashStat('Work: hours cost', fmtMoney(cc.wh_cost))}
+      ${dashStat('Purchasing + services', fmtMoney(cc.purchasing_services))}
+    </div>
+    <div style="margin-top:12px">${dashNote('Revenue usa la Customer PO de cada Job cuando existe; si un Job aún no tiene CPO, usa su revenue estimado.')}</div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="max-height:260px;overflow:auto;border-radius:8px">
+        <table style="width:100%;min-width:280px;border-collapse:collapse;font-size:11px">
+        <thead style="position:sticky;top:0;background:#fff">
+          <tr style="text-align:left">
+            <th style="padding:6px 4px;border-bottom:1px solid var(--border);font-weight:700;color:var(--muted);font-size:10px">Job</th>
+            <th style="padding:6px 4px;border-bottom:1px solid var(--border);text-align:right;font-weight:700;color:var(--muted);font-size:10px">Revenue</th>
+            <th style="padding:6px 4px;border-bottom:1px solid var(--border);text-align:right;font-weight:700;color:var(--muted);font-size:10px">Cost</th>
+            <th style="padding:6px 4px;border-bottom:1px solid var(--border);text-align:right;font-weight:700;color:var(--muted);font-size:10px">Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${cc.jobs.map(j=>`<tr>
+            <td style="padding:6px 4px;border-bottom:1px solid var(--border);font-weight:700;font-variant-numeric:tabular-nums">${esc(j.job_number)}</td>
+            <td style="padding:6px 4px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums">${fmtMoney(j.revenue)} <span style="font-size:8px;color:var(--muted);font-weight:400">${j.revenue_source==='CPO'?'':'(est.)'}</span></td>
+            <td style="padding:6px 4px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums">${fmtMoney(j.cost)}</td>
+            <td style="padding:6px 4px;border-bottom:1px solid var(--border);text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:${j.result>=0?'var(--green,#1f8a4c)':'var(--red)'}">${fmtMoney(j.result)}</td>
+          </tr>`).join('') || `<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--muted)">Sin jobs activos en ${d.year}</td></tr>`}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  `);
+
+  // El saludo de siempre se conserva íntegro (mismo texto), condensado en una
+  // sola franja horizontal arriba de todo, en vez de ocupar la pantalla entera.
+  wrap.innerHTML = `
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:22px;flex-wrap:wrap">
+      <img src="/static/persico_logo.webp" alt="" style="height:32px;object-fit:contain;flex-shrink:0" onerror="this.style.display='none'">
+      <div style="flex:1;min-width:220px">
+        <div style="font-size:9px;font-weight:600;letter-spacing:2px;color:var(--muted);text-transform:uppercase">Bienvenido a</div>
+        <div style="font-size:15px;font-weight:900;letter-spacing:.5px;color:var(--text);text-transform:uppercase;line-height:1.3">Sistema de Gestión Interna
+          <span style="color:var(--red)">· Persico México</span>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div id="home-date-dash" style="font-size:10px;color:var(--muted);font-family:'DM Mono',monospace"></div>
+        <select onchange="loadGMDashboard(this.value)" style="margin-top:6px;padding:6px 10px;border-radius:6px;border:1px solid var(--border2);background:var(--inp);font-size:12px">
+          ${[0,1,2].map(off=>{const y=new Date().getFullYear()-off; return `<option value="${y}" ${y==d.year?'selected':''}>${y}</option>`}).join('')}
+        </select>
+      </div>
+    </div>
+    ${heroRow}
+    <div class="dash-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;align-items:start">
+      ${salesCard}${projCard}${costCard}
+    </div>
+  `;
+  const hd = document.getElementById('home-date-dash');
+  if(hd) hd.textContent = new Date().toLocaleDateString('es-MX', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
+}
 
 
 // ════════════════════════════════════════════════════════
