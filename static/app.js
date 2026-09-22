@@ -10117,11 +10117,17 @@ function pcRenderTiming(savedRows) {
   if(!tb) { console.error('pc-timing-body NOT FOUND in DOM'); return; }
   tb.innerHTML = '';
   _pcTimingRowCounter = 0;
+  _pcCollapsedGroups = new Set();
 
   // Ya no se agregan actividades por defecto: el usuario elige de la lista
   // (datalist con sugerencias) o escribe la actividad que necesite.
-  (savedRows||[]).forEach(r => { if(r.actividad) pcAddTimingRow(r); });
+  (savedRows||[]).forEach(r => {
+    if(!r.actividad) return;
+    if(r.tipo === 'grupo') pcAddGroupRow(r);
+    else pcAddTimingRow(r);
+  });
 
+  pcUpdateGroupsList();
   pcUpdateTimingCalcs();
 }
 
@@ -10132,14 +10138,18 @@ function pcAddTimingRow(data={}) {
   const tr = document.createElement('tr');
   const inpS = 'background:var(--inp);border:1px solid rgba(255,193,7,.3);border-radius:4px;color:var(--amber);padding:5px 7px;font-size:11px';
   tr.innerHTML = `
-    <td><input data-field="actividad" list="pc-act-list" value="${esc(data.actividad||data.name||'')}"
+    <td style="padding-left:${data.grupo?'18px':'6px'}"><input data-field="actividad" list="pc-act-list" value="${esc(data.actividad||data.name||'')}"
       oninput="pcUpdateTimingCalcs()" style="${inpS};width:100%"></td>
+    <td><input data-field="grupo" list="pc-timing-groups-list" value="${esc(data.grupo||'')}" placeholder="— sin grupo —"
+      oninput="pcOnGroupFieldChange(this);pcUpdateTimingCalcs()" style="${inpS};width:100%;color:var(--muted2)"></td>
     <td><input data-field="actividad_previa" list="pc-timing-activities-list" value="${esc(data.actividad_previa||data.prev||'')}"
       oninput="pcUpdateTimingCalcs()" style="${inpS};width:100%;color:var(--muted2)"></td>
     <td><input data-field="fecha_inicial" type="date" value="${data.fecha_inicial||data.fecha_ini||''}"
       oninput="pcUpdateTimingCalcs()" style="${inpS};color:var(--text);width:100%"></td>
     <td><input data-field="dias_estimados" type="number" min="0" value="${data.dias_estimados||data.dias||0}"
       oninput="pcUpdateTimingCalcs()" style="${inpS};width:60px;text-align:right"></td>
+    <td><input data-field="recurso" value="${esc(data.recurso||'')}" placeholder="—"
+      oninput="pcUpdateTimingCalcs()" style="${inpS};width:100%;color:var(--muted2)"></td>
     <td class="pc-t-cond" style="font-family:'DM Mono',monospace;font-size:10px;color:var(--muted2);text-align:center">—</td>
     <td class="pc-t-obj"  style="font-family:'DM Mono',monospace;font-size:10px;color:var(--gold);text-align:center;font-weight:600">—</td>
     <td><input data-field="fecha_real_finalizacion" type="date" value="${data.fecha_real_finalizacion||''}"
@@ -10160,8 +10170,76 @@ function pcAddTimingRow(data={}) {
       style="${inpS};width:55px;text-align:right;color:var(--gold)"></td>
     <td><button onclick="this.closest('tr').remove();pcUpdateTimingCalcs()"
       style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">Eliminar</button></td>`;
+  tr.dataset.tipo = 'actividad';
   tb.appendChild(tr);
 }
+
+// ── Fila de GRUPO: encabezado colapsable que agrupa actividades — las fechas
+//    condicionada/objetivo se calculan solas a partir de sus hijas (mín. inicio,
+//    máx. fin), igual que en el diagrama de referencia (barra gris que engloba a
+//    sus tareas). No tiene fecha/duración propia: no es una tarea con trabajo,
+//    es un contenedor. ──
+function pcAddGroupRow(data={}) {
+  const tb = document.getElementById('pc-timing-body');
+  if(!tb) return;
+  const tr = document.createElement('tr');
+  tr.dataset.tipo = 'grupo';
+  tr.className = 'pc-t-group-row';
+  tr.style.background = 'rgba(0,0,0,.045)';
+  tr.innerHTML = `
+    <td colspan="3" style="font-weight:800;letter-spacing:.3px">
+      <span class="pc-grp-toggle" onclick="pcToggleGroup(this)" style="cursor:pointer;display:inline-block;width:14px;user-select:none">▾</span>
+      <input data-field="actividad" value="${esc(data.actividad||'')}" placeholder="Nombre del grupo"
+        oninput="pcUpdateGroupsList();pcUpdateTimingCalcs()"
+        style="background:transparent;border:none;border-bottom:1px dashed var(--border2);color:var(--text);font-weight:800;font-size:11.5px;padding:3px 4px;width:75%">
+    </td>
+    <td></td>
+    <td></td>
+    <td></td>
+    <td class="pc-t-cond" style="font-family:'DM Mono',monospace;font-size:10px;color:var(--muted2);text-align:center">—</td>
+    <td class="pc-t-obj"  style="font-family:'DM Mono',monospace;font-size:10px;color:var(--gold);text-align:center;font-weight:700">—</td>
+    <td colspan="5"></td>
+    <td><button onclick="this.closest('tr').remove();pcUpdateGroupsList();pcUpdateTimingCalcs()"
+      style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">Eliminar</button></td>`;
+  tb.appendChild(tr);
+  pcUpdateGroupsList();
+}
+
+// Al escribir/asignar un grupo en una actividad, se indenta visualmente para que
+// la jerarquía se note de un vistazo en la propia tabla, no solo en el Gantt.
+function pcOnGroupFieldChange(input){
+  const tr = input.closest('tr');
+  const actCell = tr.querySelector('[data-field="actividad"]');
+  if(actCell) actCell.closest('td').style.paddingLeft = input.value.trim() ? '18px' : '6px';
+}
+
+function pcUpdateGroupsList(){
+  const dl = document.getElementById('pc-timing-groups-list');
+  const tb = document.getElementById('pc-timing-body');
+  if(!dl || !tb) return;
+  const names = [...tb.querySelectorAll('tr[data-tipo="grupo"] [data-field="actividad"]')]
+    .map(inp => inp.value.trim()).filter(Boolean);
+  dl.innerHTML = [...new Set(names)].map(n => `<option value="${esc(n)}">`).join('');
+}
+
+// Colapsar/expandir: oculta las filas de actividad de este grupo en la TABLA
+// (el Gantt maneja su propio colapso por separado, ver pcRenderGantt/_pcCollapsed).
+function pcToggleGroup(toggleEl){
+  const tr = toggleEl.closest('tr');
+  const groupName = tr.querySelector('[data-field="actividad"]').value.trim();
+  const collapsed = toggleEl.textContent === '▾';
+  toggleEl.textContent = collapsed ? '▸' : '▾';
+  if(!_pcCollapsedGroups) window._pcCollapsedGroups = new Set();
+  if(collapsed) _pcCollapsedGroups.add(groupName); else _pcCollapsedGroups.delete(groupName);
+  let sib = tr.nextElementSibling;
+  while(sib && sib.dataset.tipo !== 'grupo'){
+    const g = sib.querySelector('[data-field="grupo"]');
+    if(g && g.value.trim() === groupName) sib.style.display = collapsed ? 'none' : '';
+    sib = sib.nextElementSibling;
+  }
+  pcRenderGantt([...document.getElementById('pc-timing-body').rows], _pcLastEndDateMap||{}, _pcLastGroupRanges||{});
+}
+let _pcCollapsedGroups = new Set();
 
 function _pcF(tr,field){
   const el=tr.querySelector(`[data-field="${field}"]`);
@@ -10173,11 +10251,15 @@ function pcUpdateTimingCalcs() {
   const tb = document.getElementById('pc-timing-body');
   if(!tb) return;
   pcUpdateActividadPreviaList();
+  pcUpdateGroupsList();
   const today = new Date(); today.setHours(0,0,0,0);
   const endDateMap = {};
+  const groupRanges = {};   // { GRUPO_NORMALIZADO: {min:Date, max:Date} } — para la barra agregada
   const normKey = s => (s||'').trim().toUpperCase();
   [...tb.rows].forEach(tr => {
+    if(tr.dataset.tipo === 'grupo') return;   // las filas de grupo se calculan aparte, abajo
     const activ = _pcF(tr,'actividad');
+    const grupo = _pcF(tr,'grupo');
     const prev  = _pcF(tr,'actividad_previa');
     const fIni  = _pcF(tr,'fecha_inicial');
     const dias  = parseInt(_pcF(tr,'dias_estimados'))||0;
@@ -10196,6 +10278,14 @@ function pcUpdateTimingCalcs() {
       const fObj=new Date(fCond); fObj.setDate(fObj.getDate()+dias);
       if(objEl) objEl.textContent=fmt(fObj);
       if(activ) endDateMap[normKey(activ)]=fObj;
+      if(grupo) {
+        const gk = normKey(grupo);
+        if(!groupRanges[gk]) groupRanges[gk] = {min:new Date(fCond), max:new Date(fObj)};
+        else {
+          if(fCond < groupRanges[gk].min) groupRanges[gk].min = new Date(fCond);
+          if(fObj  > groupRanges[gk].max) groupRanges[gk].max = new Date(fObj);
+        }
+      }
       if(statEl){
         if(fReal) {
           const fRealDate = new Date(fReal+'T00:00:00');
@@ -10219,24 +10309,71 @@ function pcUpdateTimingCalcs() {
       if(statEl) statEl.textContent='—';
     }
   });
-  pcRenderGantt([...tb.rows], endDateMap);
+
+  // Segunda pasada: cada fila de GRUPO toma su fecha condicionada/objetivo del
+  // rango agregado (mín. inicio, máx. fin) de sus actividades hijas, calculadas
+  // arriba — así el grupo siempre refleja lo que contiene, sin capturarse a mano.
+  const fmtLong = d=>d.toLocaleDateString('es-MX',{day:'2-digit',month:'2-digit',year:'numeric'});
+  [...tb.rows].forEach(tr => {
+    if(tr.dataset.tipo !== 'grupo') return;
+    const gname = _pcF(tr,'actividad');
+    const range = groupRanges[normKey(gname)];
+    const condEl=tr.querySelector('.pc-t-cond'), objEl=tr.querySelector('.pc-t-obj');
+    if(range){
+      if(condEl) condEl.textContent = fmtLong(range.min);
+      if(objEl)  objEl.textContent  = fmtLong(range.max);
+    } else {
+      if(condEl) condEl.textContent = '—';
+      if(objEl)  objEl.textContent  = 'sin actividades';
+    }
+  });
+
+  _pcLastEndDateMap = endDateMap;
+  _pcLastGroupRanges = groupRanges;
+  pcRenderGantt([...tb.rows], endDateMap, groupRanges);
 }
+let _pcLastEndDateMap = {};
+let _pcGanttZoom = 'semanas';   // 'dias' | 'semanas' | 'meses'
+function pcSetGanttZoom(mode){
+  _pcGanttZoom = mode;
+  document.querySelectorAll('.pc-zoom-btn').forEach(b=>{
+    const active = b.dataset.zoom === mode;
+    b.style.background = active ? 'var(--red)' : 'transparent';
+    b.style.color = active ? '#fff' : 'var(--muted2)';
+    b.style.fontWeight = active ? '700' : '400';
+  });
+  pcRenderGantt([...document.getElementById('pc-timing-body').rows], _pcLastEndDateMap||{}, _pcLastGroupRanges||{});
+}
+let _pcLastGroupRanges = {};
 
 function pcGetTimingData() {
   const tb = document.getElementById('pc-timing-body');
   if(!tb) return [];
-  return [...tb.rows].map(tr => ({
-    actividad:             _pcF(tr,'actividad'),
-    actividad_previa:      _pcF(tr,'actividad_previa'),
-    fecha_inicial:         _pcF(tr,'fecha_inicial'),
-    dias_estimados:        parseInt(_pcF(tr,'dias_estimados'))||0,
-    fecha_condicionada:    tr.querySelector('.pc-t-cond')?.textContent||'',
-    fecha_objetivo:        tr.querySelector('.pc-t-obj')?.textContent||'',
-    fecha_real_finalizacion: _pcF(tr,'fecha_real_finalizacion'),
-    cumplido:              _pcF(tr,'cumplido'),
-    milestone_facturacion: _pcF(tr,'milestone'),
-    pct_facturacion:       parseFloat(_pcF(tr,'pct_facturacion'))||null,
-  })).filter(r=>r.actividad);
+  return [...tb.rows].map(tr => {
+    if(tr.dataset.tipo === 'grupo'){
+      return {
+        tipo: 'grupo',
+        actividad: _pcF(tr,'actividad'),
+        fecha_condicionada: tr.querySelector('.pc-t-cond')?.textContent||'',
+        fecha_objetivo:     tr.querySelector('.pc-t-obj')?.textContent||'',
+      };
+    }
+    return {
+      tipo: 'actividad',
+      actividad:             _pcF(tr,'actividad'),
+      grupo:                 _pcF(tr,'grupo'),
+      actividad_previa:      _pcF(tr,'actividad_previa'),
+      fecha_inicial:         _pcF(tr,'fecha_inicial'),
+      dias_estimados:        parseInt(_pcF(tr,'dias_estimados'))||0,
+      recurso:               _pcF(tr,'recurso'),
+      fecha_condicionada:    tr.querySelector('.pc-t-cond')?.textContent||'',
+      fecha_objetivo:        tr.querySelector('.pc-t-obj')?.textContent||'',
+      fecha_real_finalizacion: _pcF(tr,'fecha_real_finalizacion'),
+      cumplido:              _pcF(tr,'cumplido'),
+      milestone_facturacion: _pcF(tr,'milestone'),
+      pct_facturacion:       parseFloat(_pcF(tr,'pct_facturacion'))||null,
+    };
+  }).filter(r=>r.actividad);
 }
 
 let pcLastGanttSVG = null, pcLastGanttMeta = null;
@@ -10248,14 +10385,27 @@ function _pcFmtDLong(d){
   return d.toLocaleDateString('es-MX',{day:'2-digit',month:'2-digit',year:'numeric'});
 }
 
-function pcRenderGantt(rows, endDateMap) {
+function pcRenderGantt(rows, endDateMap, groupRanges) {
+  groupRanges = groupRanges || {};
   const wrap  = document.getElementById('pc-gantt-wrap');
   const gantt = document.getElementById('pc-gantt');
   if(!wrap || !gantt) return;
 
-  const entries = [];
+  const normKey = s => (s||'').trim().toUpperCase();
+
+  // 1) Actividades reales con fecha resuelta (igual que antes), más a qué grupo
+  //    pertenece cada una — y el orden en que aparecen los grupos en la tabla.
+  const activityEntries = [];
+  const groupOrder = [];
+  const groupSeen = new Set();
   rows.forEach((tr) => {
+    if(tr.dataset.tipo === 'grupo'){
+      const gname = _pcF(tr,'actividad');
+      if(gname && !groupSeen.has(normKey(gname))){ groupSeen.add(normKey(gname)); groupOrder.push(gname); }
+      return;
+    }
     const act  = _pcF(tr,'actividad');
+    const grupo= _pcF(tr,'grupo');
     const prev = _pcF(tr,'actividad_previa');
     const fIni = _pcF(tr,'fecha_inicial');
     const dias = parseInt(_pcF(tr,'dias_estimados'))||0;
@@ -10264,60 +10414,129 @@ function pcRenderGantt(rows, endDateMap) {
     const fRealStr = _pcF(tr,'fecha_real_finalizacion');
     if(!act) return;
 
-    // Determine start: explicit fecha_inicial, or end of prev activity +1 day
     let start = fIni ? new Date(fIni+'T00:00:00') : null;
     if(!start && prev && endDateMap[prev.trim().toUpperCase()]) {
       start = new Date(endDateMap[prev.trim().toUpperCase()]);
       start.setDate(start.getDate()+1);
     }
-    if(!start) return; // no date info — skip
+    if(!start) return; // sin información de fecha — se omite
 
     const end = new Date(start);
     end.setDate(end.getDate() + Math.max(dias, 1));
     const fReal = fRealStr ? new Date(fRealStr+'T00:00:00') : null;
-    entries.push({act, start, end, dias, cumpl, mile, fReal});
+    activityEntries.push({act, start, end, dias, cumpl, mile, fReal, grupo: grupo||null});
   });
 
-  if(!entries.length){ wrap.style.display='none'; pcLastGanttSVG=null; return; }
+  if(!activityEntries.length){ wrap.style.display='none'; pcLastGanttSVG=null; return; }
   wrap.style.display='';
 
+  // 2) Orden final a dibujar: por cada grupo (en el orden en que aparece en la
+  //    tabla) su barra agregada + sus hijas indentadas (si no está colapsado);
+  //    al final, las actividades sin grupo asignado, igual que siempre.
+  const byGroup = {};
+  activityEntries.forEach(e => {
+    if(e.grupo){ const k = normKey(e.grupo); (byGroup[k] = byGroup[k]||[]).push(e); }
+  });
+  const drawEntries = [];
+  groupOrder.forEach(gname => {
+    const k = normKey(gname);
+    const range = groupRanges[k];
+    const children = byGroup[k] || [];
+    if(!range && !children.length) return; // grupo vacío y sin fechas propias: no se dibuja
+    const collapsed = _pcCollapsedGroups.has(gname);
+    drawEntries.push({
+      kind:'group', act:gname, count: children.length, collapsed,
+      start: range ? range.min : children[0].start,
+      end:   range ? range.max : children[0].end,
+    });
+    if(!collapsed) children.forEach(c => drawEntries.push(Object.assign({kind:'activity', indent:true}, c)));
+  });
+  activityEntries.filter(e=>!e.grupo).forEach(e => drawEntries.push(Object.assign({kind:'activity', indent:false}, e)));
+
+  if(!drawEntries.length){ wrap.style.display='none'; pcLastGanttSVG=null; return; }
+
   const today   = new Date(); today.setHours(0,0,0,0);
-  const allDates = entries.flatMap(e => e.fReal ? [e.start, e.end, e.fReal] : [e.start, e.end]);
+  const allDates = drawEntries.flatMap(e => e.fReal ? [e.start, e.end, e.fReal] : [e.start, e.end]);
   const minD    = new Date(Math.min(...allDates));
   const maxD    = new Date(Math.max(...allDates));
   const totalMs = Math.max(1, maxD - minD);
-  const W = 700, ROW = 22, PAD = 4, LABEL = 170, DATES = 78, HEAD = 26;
+  const totalMsForW = maxD - minD;
+  const totalDaysForW = totalMsForW / 86400000;
+  // En "Días" cada columna necesita ancho real para ser legible — el ancho del
+  // SVG crece con el rango (el contenedor ya tiene scroll horizontal propio). En
+  // "Semanas"/"Meses" se mantiene el ancho fijo de siempre, más compacto.
+  const W = _pcGanttZoom === 'dias' ? Math.max(700, Math.min(3200, Math.round(totalDaysForW*20))) : 700;
+  const ROW = 22, PAD = 4, LABEL = 190, DATES = 78, HEAD = 26, INDENT = 14;
 
   const pct = d => ((d - minD) / totalMs * W).toFixed(1);
   const todayX = parseFloat(pct(today));
 
-  // ── Regla de fechas superior (visible a lo largo de todo el cronograma) ──
+  // ── Regla de fechas superior — el paso entre marcas lo controla el usuario
+  //    con los botones Días/Semanas/Meses (antes se autoescalaba solo). ──
   const totalDays = totalMs / 86400000;
   let stepDays = 7;
-  if(totalDays > 240) stepDays = 30;
-  else if(totalDays > 120) stepDays = 14;
-  else if(totalDays > 45) stepDays = 7;
-  else stepDays = Math.max(1, Math.round(totalDays/8));
+  if(_pcGanttZoom === 'dias') stepDays = 1;
+  else if(_pcGanttZoom === 'meses') stepDays = 30;
+  else stepDays = 7; // 'semanas'
+
+  // En "Días", la rejilla se dibuja cada día, pero el TEXTO de la fecha solo se
+  // muestra cada N días según el espacio real disponible por día — si no, con
+  // rangos largos las etiquetas se amontonan unas sobre otras y quedan
+  // ilegibles (un problema real de densidad, no de que el contenedor no recorte).
+  const pxPerStepDay = W / Math.max(1, totalDays/stepDays);
+  const labelEvery = _pcGanttZoom === 'dias' ? Math.max(1, Math.ceil(28/pxPerStepDay)) : 1;
 
   let headerSvg = '';
-  const bodyBottom = HEAD + PAD + entries.length*(ROW+2);
-  for(let t=new Date(minD); t<=maxD; t.setDate(t.getDate()+stepDays)){
+  const bodyBottom = HEAD + PAD + drawEntries.length*(ROW+2);
+
+  // ── Sombreado de fines de semana (sáb/dom) — se pinta primero, debajo de todo. ──
+  let weekendSvg = '';
+  for(let t=new Date(minD); t<=maxD; t.setDate(t.getDate()+1)){
+    const day = t.getDay();
+    if(day===0 || day===6){
+      const x1 = LABEL + parseFloat(pct(t));
+      const tNext = new Date(t); tNext.setDate(tNext.getDate()+1);
+      const x2 = LABEL + parseFloat(pct(tNext<=maxD?tNext:maxD));
+      weekendSvg += `<rect x="${x1}" y="${HEAD}" width="${Math.max(1,x2-x1)}" height="${bodyBottom-HEAD}" fill="#C8102E" opacity=".04"/>`;
+    }
+  }
+
+  let _stepIdx = 0;
+  for(let t=new Date(minD); t<=maxD; t.setDate(t.getDate()+stepDays), _stepIdx++){
     const x = LABEL + parseFloat(pct(t));
     if(x < LABEL-2 || x > LABEL+W+2) continue;
-    headerSvg += `<line x1="${x}" y1="${HEAD}" x2="${x}" y2="${bodyBottom}" stroke="#000" stroke-opacity=".06" stroke-width="1"/>
-      <text x="${x}" y="${HEAD-8}" font-size="8.5" fill="#666" text-anchor="middle" font-family="Arial">${_pcFmtD(t)}</text>`;
+    const showLabel = _stepIdx % labelEvery === 0;
+    headerSvg += `<line x1="${x}" y1="${HEAD}" x2="${x}" y2="${bodyBottom}" stroke="#000" stroke-opacity=".06" stroke-width="1"/>`;
+    if(showLabel) headerSvg += `<text x="${x}" y="${HEAD-8}" font-size="8.5" fill="#666" text-anchor="middle" font-family="Arial">${_pcFmtD(t)}</text>`;
   }
   // Asegura que la fecha final también se vea aunque no caiga en un "step" exacto
   headerSvg += `<text x="${LABEL+W}" y="${HEAD-8}" font-size="8.5" fill="#666" text-anchor="end" font-family="Arial" font-weight="700">${_pcFmtD(maxD)}</text>`;
   headerSvg += `<line x1="${LABEL}" y1="${HEAD}" x2="${LABEL+W}" y2="${HEAD}" stroke="#000" stroke-opacity=".15" stroke-width="1"/>`;
 
-  let svgRows = entries.map((e,i) => {
+  let svgRows = drawEntries.map((e,i) => {
     const x = parseFloat(pct(e.start));
     const w = Math.max(4, parseFloat(pct(e.end)) - x);
     const y = HEAD + PAD + i*(ROW+2);
+
+    if(e.kind === 'group'){
+      // Barra agregada como línea sólida delgada — misma convención que la
+      // referencia (no una caja con solo contorno): comunica "este es un
+      // contenedor, no una tarea con trabajo propio" sin ocupar tanto espacio
+      // visual como las barras de sus hijas.
+      const label = e.act.length > 26 ? e.act.slice(0,25)+'…' : e.act;
+      const toggleIcon = e.collapsed ? '▸' : '▾';
+      return `
+      <rect x="${LABEL+x}" y="${y+ROW/2-2}" width="${w}" height="4" rx="2" fill="#2b2b2b"/>
+      <rect x="${LABEL+x}" y="${y+4}" width="2" height="${ROW-8}" fill="#2b2b2b"/>
+      <rect x="${LABEL+x+w-2}" y="${y+4}" width="2" height="${ROW-8}" fill="#2b2b2b"/>
+      <text x="${LABEL-4}" y="${y+ROW-8}" font-size="10.5" fill="#222" text-anchor="end" font-family="Arial" font-weight="800">${toggleIcon} ${esc(label)} (${e.count})</text>`;
+    }
+
+    const indentPx = e.indent ? INDENT : 0;
     const color = e.cumpl ? '#1f8a4c' : (e.end < today ? '#c8102e' : '#a8650a');
     const mileIcon = e.mile ? ' ★' : '';
-    const label = e.act.length > 24 ? e.act.slice(0,23)+'…' : e.act;
+    const maxLabelLen = e.indent ? 20 : 24;
+    const label = e.act.length > maxLabelLen ? e.act.slice(0,maxLabelLen-1)+'…' : e.act;
     const rangoTxt = `${_pcFmtD(e.start)} → ${_pcFmtD(e.end)}`;
     let extra = '';
     if(e.fReal) {
@@ -10330,15 +10549,15 @@ function pcRenderGantt(rows, endDateMap) {
       if(diffDays !== 0) {
         const xEnd = LABEL + parseFloat(pct(e.end));
         const xReal = LABEL + xr;
-        const x1 = Math.min(xEnd, xReal), x2 = Math.max(xEnd, xReal);
-        extra += `<line x1="${x1}" y1="${y+ROW/2}" x2="${x2}" y2="${y+ROW/2}" stroke="${markerColor}" stroke-width="1.2" stroke-dasharray="2,2"/>
-        <text x="${x2+4}" y="${y+ROW/2+3}" font-size="8" fill="${markerColor}" font-family="Arial" font-weight="700">${diffDays>0?'+':''}${diffDays}d</text>`;
+        const x1b = Math.min(xEnd, xReal), x2b = Math.max(xEnd, xReal);
+        extra += `<line x1="${x1b}" y1="${y+ROW/2}" x2="${x2b}" y2="${y+ROW/2}" stroke="${markerColor}" stroke-width="1.2" stroke-dasharray="2,2"/>
+        <text x="${x2b+4}" y="${y+ROW/2+3}" font-size="8" fill="${markerColor}" font-family="Arial" font-weight="700">${diffDays>0?'+':''}${diffDays}d</text>`;
       }
     }
     return `
-    <rect x="${LABEL+x}" y="${y+3}" width="${w}" height="${ROW-6}" rx="3" fill="${color}" opacity=".85"/>
-    <text x="${LABEL+x+4}" y="${y+ROW-8}" font-size="9" fill="white" font-family="Arial">${e.dias>0?e.dias+'d':''}</text>
-    <text x="${LABEL-4}" y="${y+ROW-8}" font-size="10" fill="#555" text-anchor="end" font-family="Arial">${label}${mileIcon}</text>
+    <rect x="${LABEL+indentPx+x}" y="${y+3}" width="${Math.max(2,w-indentPx)}" height="${ROW-6}" rx="3" fill="${color}" opacity=".85"/>
+    <text x="${LABEL+indentPx+x+4}" y="${y+ROW-8}" font-size="9" fill="white" font-family="Arial">${e.dias>0?e.dias+'d':''}</text>
+    <text x="${LABEL-4}" y="${y+ROW-8}" font-size="10" fill="#555" text-anchor="end" font-family="Arial">${esc(label)}${mileIcon}</text>
     <text x="${LABEL+W+8}" y="${y+ROW-8}" font-size="8.5" fill="#444" font-family="'DM Mono',monospace">${rangoTxt}</text>
     ${extra}`;
   }).join('');
@@ -10351,6 +10570,7 @@ function pcRenderGantt(rows, endDateMap) {
   const svgW = LABEL + W + DATES + 10;
   const svgH = bodyBottom + 10;
   const svgMarkup = `<svg width="${svgW}" height="${svgH}" xmlns="http://www.w3.org/2000/svg" style="background:rgba(0,0,0,.03);border-radius:6px">
+    ${weekendSvg}
     ${headerSvg}
     ${svgRows}
   </svg>`;
@@ -10358,7 +10578,7 @@ function pcRenderGantt(rows, endDateMap) {
 
   // Se guarda para poder generar el PDF con el mismo diagrama, sin recalcular
   pcLastGanttSVG = svgMarkup.replace(/rgba\(0,0,0,\.03\)/,'#f7f7f7');
-  pcLastGanttMeta = { minD:_pcFmtDLong(minD), maxD:_pcFmtDLong(maxD), total: entries.length };
+  pcLastGanttMeta = { minD:_pcFmtDLong(minD), maxD:_pcFmtDLong(maxD), total: drawEntries.filter(e=>e.kind==='activity').length };
 }
 
 function pcPrintGanttPDF(){

@@ -1078,15 +1078,20 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
               <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--red)">📅 Configuración Operativa — Timing</div>
               <div style="font-size:10px;color:var(--muted);margin-top:2px">Columnas en <span style="color:var(--amber)">ámbar</span> = entrada · Columnas en gris = cálculo automático · Elige la actividad de la lista o escribe una nueva</div>
             </div>
-            <button onclick="pcAddTimingRow()" class="btn-sec" style="font-size:11px;padding:5px 12px">+ Actividad</button>
+            <div style="display:flex;gap:8px">
+              <button onclick="pcAddGroupRow()" class="btn-sec" style="font-size:11px;padding:5px 12px">+ Grupo</button>
+              <button onclick="pcAddTimingRow()" class="btn-sec" style="font-size:11px;padding:5px 12px">+ Actividad</button>
+            </div>
           </div>
           <div style="overflow-x:auto">
-            <table class="tbl" style="font-size:11px;min-width:1100px">
+            <table class="tbl" style="font-size:11px;min-width:1240px">
               <thead><tr>
-                <th style="background:rgba(255,193,7,.12);color:var(--amber);min-width:160px">Actividad</th>
+                <th style="background:rgba(255,193,7,.12);color:var(--amber);min-width:170px">Actividad</th>
+                <th style="background:rgba(255,193,7,.12);color:var(--amber);min-width:130px">Grupo</th>
                 <th style="background:rgba(255,193,7,.12);color:var(--amber);min-width:150px">Actividad Previa</th>
                 <th style="background:rgba(255,193,7,.12);color:var(--amber);width:120px">Fecha Inicial</th>
                 <th style="background:rgba(255,193,7,.12);color:var(--amber);text-align:right;width:70px">Días Est.</th>
+                <th style="background:rgba(255,193,7,.12);color:var(--amber);min-width:110px">Recursos</th>
                 <th style="color:var(--muted);width:120px">Fecha Condicionada</th>
                 <th style="color:var(--muted);width:120px">Fecha Objetivo</th>
                 <th style="background:rgba(255,193,7,.12);color:var(--amber);width:130px">Fecha Real de Finalización</th>
@@ -1099,10 +1104,18 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
               <tbody id="pc-timing-body"></tbody>
             </table>
           </div>
+          <datalist id="pc-timing-groups-list"></datalist>
           <div id="pc-gantt-wrap" style="display:none;margin-top:20px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
               <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted)">📊 Diagrama de Tiempos</div>
-              <button class="btn-reload" onclick="pcPrintGanttPDF()">Imprimir PDF</button>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div id="pc-gantt-zoom" style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
+                  <button onclick="pcSetGanttZoom('dias')" data-zoom="dias" class="pc-zoom-btn" style="padding:5px 10px;font-size:10px;border:none;background:transparent;cursor:pointer">Días</button>
+                  <button onclick="pcSetGanttZoom('semanas')" data-zoom="semanas" class="pc-zoom-btn" style="padding:5px 10px;font-size:10px;border:none;background:var(--red);color:#fff;font-weight:700;cursor:pointer;border-left:1px solid var(--border2);border-right:1px solid var(--border2)">Semanas</button>
+                  <button onclick="pcSetGanttZoom('meses')" data-zoom="meses" class="pc-zoom-btn" style="padding:5px 10px;font-size:10px;border:none;background:transparent;cursor:pointer">Meses</button>
+                </div>
+                <button class="btn-reload" onclick="pcPrintGanttPDF()">Imprimir PDF</button>
+              </div>
             </div>
             <div style="display:flex;gap:14px;margin-bottom:8px;font-size:9px;color:var(--muted)">
               <div><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#a8650a;margin-right:4px"></span>En tiempo</div>
