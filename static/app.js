@@ -5623,7 +5623,11 @@ function adminSelectUser(uname) {
           <select onchange="adminChangeRole('${uname}',this.value)"
             style="background:var(--inp);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 10px;font-size:12px;outline:none"
             ${uname===d.admin_user?'disabled':''}><option value="viewer" ${role==='viewer'?'selected':''}>Acceso personalizado</option>
-            <option value="admin" ${role==='admin'?'selected':''}>Administrador</option></select>
+            <option value="admin" ${role==='admin'?'selected':''}>Administrador</option>
+            <optgroup label="Perfiles de puesto">
+            ${['GENERAL MANAGEMENT','OPERATION MANAGER','FINANCE MANAGER','HUMAN RESOURCES','PROJECT MANAGER','PURCHASING','ENGINEERING','MANUFACTURING','OPERATIVE LEADING']
+              .map(p=>`<option value="${p}" ${role===p?'selected':''}>${p.charAt(0)+p.slice(1).toLowerCase()}</option>`).join('')}
+            </optgroup></select>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;background:rgba(200,16,46,.06);border:1px solid rgba(200,16,46,.3);border-radius:8px;padding:10px 14px;margin-bottom:14px">
@@ -6192,22 +6196,21 @@ async function loadAdminUsers() {
 
 async function adminChangeRole(uname, newRole) {
   try {
-    const defaultPerms = {};
-    const mods = ['jobs','rates','quotes','pt','cpo','po','wh','ivp','report','multirpt','fx'];
-    const acts = ['view','create','edit','delete','import'];
-    mods.forEach(m => {
-      defaultPerms[m] = {};
-      acts.forEach(a => {
-        defaultPerms[m][a] = newRole === 'admin' ? true : (a === 'view');
-      });
-    });
+    // Antes esta función armaba su propio objeto de "permissions" con un modelo
+    // viejo e incompatible (booleanos por acción, solo 11 de los 46 módulos) y lo
+    // mandaba junto con el rol — el backend prioriza "permissions" sobre recalcular
+    // el rol, así que esto nunca dejaba que se aplicaran los permisos reales del
+    // nuevo rol/perfil (y de paso ensuciaba esos 11 módulos con datos con una forma
+    // que ya no usa el resto del sistema). Ahora solo se manda el rol — el backend
+    // ya sabe regenerar los permisos correctos para "admin", "viewer", o cualquiera
+    // de los perfiles de puesto (ver PROFILES en app.py).
     const d = await fetch(`/api/admin/users/${uname}`, {
       method: 'PUT',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({role: newRole, permissions: defaultPerms})
+      body: JSON.stringify({role: newRole})
     }).then(r=>r.json());
     if (d.error) { toast(d.error,'er'); return; }
-    toast(`${uname} → ${newRole==='admin'?'Administrador':'Consulta'} ✓`,'ok');
+    toast(`${uname} → ${newRole} ✓`,'ok');
     await loadAdminUsers();
   } catch(e) { toast('Error cambiando rol','er'); }
 }
