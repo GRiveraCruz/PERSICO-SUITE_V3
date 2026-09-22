@@ -10,7 +10,7 @@ Ejecutar:  python app.py
 Acceso:    http://<IP-del-servidor>:5000
 """
 
-import io, json, re, datetime, shutil, hashlib
+import io, json, re, datetime, shutil, hashlib, secrets
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, Response, session, redirect, url_for, send_file
@@ -73,7 +73,28 @@ QUOTE_MAX_ROWS = 200
 # ══════════════════════════════════════════════════════════════════
 
 app  = Flask(__name__, static_folder="static", static_url_path="/static")
-app.secret_key = _os.environ.get("SECRET_KEY", "persico-suite-secret-2026")
+
+# SECRET_KEY: antes tenía un valor de repuesto fijo y público en el código-fuente
+# ("persico-suite-secret-2026") — cualquiera que leyera el código (o este mismo
+# repositorio) podía forjar una cookie de sesión válida para CUALQUIER usuario sin
+# necesidad de contraseña, con tal de que Railway no tuviera la variable SECRET_KEY
+# configurada. Se quita ese valor de repuesto. Si la variable no está puesta, en vez
+# de fallar el arranque (lo que podría tumbar el servicio en producción si resulta
+# que Railway aún no la tiene configurada) se genera una al vuelo, distinta cada vez
+# que arranca el proceso, y se avisa fuerte en el log — el efecto notorio de NO
+# configurarla es que las sesiones no sobreviven un reinicio/redeploy (el usuario
+# tiene que volver a iniciar sesión), lo cual es una señal imposible de ignorar en
+# vez de un hueco de seguridad silencioso.
+_SECRET_KEY = _os.environ.get("SECRET_KEY")
+if not _SECRET_KEY:
+    _SECRET_KEY = secrets.token_hex(32)
+    print("[SEGURIDAD] ⚠ La variable de entorno SECRET_KEY no está configurada. "
+          "Se generó una clave temporal solo para este proceso — las sesiones NO "
+          "sobrevivirán un reinicio ni se compartirán entre workers. Configura "
+          "SECRET_KEY en Railway (Variables) con un valor largo y aleatorio "
+          "(ej. `python -c \"import secrets; print(secrets.token_hex(32))\"`) "
+          "antes de considerar esto listo para producción.")
+app.secret_key = _SECRET_KEY
 lock = Lock()
 JOB_RE = re.compile(r"^\d+-\d+$")
 
@@ -362,13 +383,27 @@ def logout():
     session.clear()
     return redirect("/login")
 
-@app.route("/emergency-reset-admin")
+@app.route("/emergency-reset-admin", methods=["POST"])
 def emergency_reset_admin():
-    """Endpoint de emergencia — regenera el superusuario desde variables de entorno."""
-    secret = request.args.get("key","")
-    expected = _os.environ.get("SECRET_KEY", "persico-suite-secret-2026")
-    if secret != expected:
-        return "Clave incorrecta", 403
+    """Endpoint de emergencia — regenera el superusuario desde variables de entorno.
+
+    Antes: (a) usaba la MISMA clave que SECRET_KEY (si alguien obtenía una filtraba
+    el secreto de sesión, de paso obtenía este también); (b) el secreto viajaba en
+    el query string de un GET, lo que lo deja expuesto en logs de acceso del
+    servidor, en historial del navegador, y en cualquier proxy intermedio; (c) tenía
+    el mismo valor de repuesto público que SECRET_KEY, así que sin configurar nada
+    en Railway, cualquiera podía resetear al administrador.
+    Ahora: requiere su PROPIA variable (EMERGENCY_ADMIN_KEY, sin valor de repuesto —
+    si no está configurada, el endpoint queda desactivado por completo), se envía
+    por POST en el cuerpo JSON (no en la URL), y ya no comparte secreto con la sesión.
+    """
+    expected = _os.environ.get("EMERGENCY_ADMIN_KEY")
+    if not expected:
+        return jsonify({"error": "Endpoint desactivado — falta configurar EMERGENCY_ADMIN_KEY en el servidor."}), 503
+    data = request.get_json(silent=True) or {}
+    secret = data.get("key", "")
+    if not secrets.compare_digest(str(secret), str(expected)):
+        return jsonify({"error": "Clave incorrecta"}), 403
     try:
         users = {}
         try:
@@ -386,9 +421,9 @@ def emergency_reset_admin():
         Path(USERS_FILE).parent.mkdir(parents=True, exist_ok=True)
         with open(USERS_FILE,"w",encoding="utf-8") as f:
             json.dump(users, f, ensure_ascii=False, indent=2)
-        return f"<h2>✅ Usuario '{admin}' restaurado como administrador.</h2><a href='/login'>Ir al login</a>"
+        return jsonify({"ok": True, "message": f"Usuario '{admin}' restaurado como administrador."})
     except Exception as e:
-        return f"Error: {e}", 500
+        return jsonify({"error": str(e)}), 500
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -786,6 +821,12 @@ def require_login():
     public = ("/login", "/logout")
     if request.path in public:
         return None
+    # /emergency-reset-admin tiene su propia protección (EMERGENCY_ADMIN_KEY, ver
+    # esa función) que es justamente para el caso en que NADIE pueda iniciar sesión
+    # (ej. el usuario admin quedó mal configurado) — exigir sesión aquí también
+    # anularía por completo su propósito de "rescate".
+    if request.path == "/emergency-reset-admin":
+        return None
     # Rutas usadas por el kiosco de Asistencia (server-to-server): no tienen
     # sesión de la Suite, se autentican con la llave compartida X-Sync-Key
     # (validada dentro de cada handler, ej. _require_sync_key_permisos()).
@@ -867,6 +908,15 @@ def api_next_index():
 
 @app.route("/api/jobs", methods=["POST"])
 def api_create_job():
+    # Prueba de concepto de un problema más amplio documentado en AUDITORIA.md (D.2):
+    # esta ruta (y ~73 más que modifican datos) no verificaba permisos del lado del
+    # servidor — solo exigía estar loggeado. El botón "Nuevo Job" se ocultaba en el
+    # frontend para usuarios sin permiso, pero cualquiera con sesión activa podía
+    # llamar este endpoint directo (con curl, la consola del navegador, etc.) sin
+    # importar su rol. Se agrega aquí el mismo patrón que ya usan otras rutas como
+    # /api/personal (can(accion, modulo)) — el resto de las rutas mutantes sin este
+    # chequeo quedan listadas en AUDITORIA.md para aplicarles el mismo tratamiento.
+    if not can("create", "jobs"): return jsonify({"error": "Sin permiso"}), 403
     try:
         data = request.json
         sub  = str(data.get("subindex", "00")).zfill(2)
@@ -5508,6 +5558,14 @@ def api_import_wh():
         skipped  = 0
         errors   = []
 
+        # _get_canonical_employees(year) lee y parsea un JSON de tarifas desde disco
+        # en cada llamada. Antes se llamaba UNA VEZ POR FILA dentro del loop de abajo —
+        # con una importación de cientos/miles de filas, eso abre y parsea el mismo
+        # archivo cientos/miles de veces por nada, ya que el resultado no cambia entre
+        # una fila y la siguiente (depende solo de 'year', que es fijo para todo el
+        # import). Se saca del loop y se calcula una sola vez.
+        canonical = _get_canonical_employees(year)
+
         for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
             row = list(row)
             def cv(idx):
@@ -5530,8 +5588,8 @@ def api_import_wh():
             except (ValueError, TypeError):
                 errors.append({"row": str(cv(ci_id)), "error": "Horas no numéricas"}); continue
 
-            # Homologar nombre al formato canónico
-            canonical = _get_canonical_employees(year)
+            # Homologar nombre al formato canónico (canonical ya se calculó una sola
+            # vez antes del loop — ver comentario arriba)
             emp_homolog = _homologar_empleado(str(emp).strip(), canonical) if canonical else                           __import__("re").sub(r"^\d+\s*", "", str(emp).strip()).upper()
 
             imported.append({
