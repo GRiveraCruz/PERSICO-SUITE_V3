@@ -10055,7 +10055,7 @@ def api_requisiciones_list(job):
         try:
             q = s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.job == job)
             if tipo: q = q.filter(_orm.RequisicionCompra.tipo == tipo)
-            items = [r.data for r in q.order_by(_orm.RequisicionCompra.id.asc()).all()]
+            items = [_req_con_pendiente(r.data) for r in q.order_by(_orm.RequisicionCompra.id.asc()).all()]
         finally:
             s.close()
         return jsonify({"job": job, "items": items})
@@ -10196,6 +10196,18 @@ def api_requisiciones_delete(item_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+REQ_ESTATUS_REASIGNABLES = ("Solicitado", "Homologado")   # Comprado/Cancelado/Reasignado no se reasignan
+
+def _req_con_pendiente(item):
+    """Copia del renglón con cantidad_reasignada y cantidad_pendiente (= pedida − reasignada).
+    Lo pendiente es lo que Compras todavía tiene que comprar."""
+    it = dict(item)
+    qty = float(it.get("quantity") or 0)
+    reas = float(it.get("cantidad_reasignada") or 0)
+    it["cantidad_reasignada"] = reas
+    it["cantidad_pendiente"] = max(0.0, qty - reas)
+    return it
+
 def _req_match_index(records):
     """Índice para buscar registros de Stock/Consignación por No. de parte O por
     etiqueta (label_code). Regresa una función que, para un código de la requisición,
@@ -10234,6 +10246,26 @@ def api_requisiciones_reasignar_stock():
         items = data.get("items") or []
         if not job or not items:
             return jsonify({"error": "Falta el Job o los materiales"}), 400
+        # Pendiente real de cada renglón según la base (no lo que mande el navegador):
+        # nunca se reasigna más de lo que falta ni un renglón Comprado/Cancelado/Reasignado.
+        rows_by_id = {}
+        if _orm and _orm.DB_ENABLED:
+            s = _orm.get_session()
+            try:
+                ids = [str(it.get("item_id")) for it in items if it.get("item_id")]
+                for r in s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.item_id.in_(ids)).all():
+                    rows_by_id[r.item_id] = _req_con_pendiente(r.data)
+            finally:
+                s.close()
+        for it in items:
+            row = rows_by_id.get(str(it.get("item_id")))
+            if row is not None:
+                if row.get("status") not in REQ_ESTATUS_REASIGNABLES:
+                    it["quantity"] = 0
+                else:
+                    it["quantity"] = min(float(it.get("quantity") or 0), row["cantidad_pendiente"])
+        if all(float(it.get("quantity") or 0) <= 0 for it in items):
+            return jsonify({"error": "Los renglones seleccionados ya no tienen cantidad pendiente por reasignar"}), 400
         stock = stock_load()
         stock_find = _req_match_index(stock)
         disponible = {id(r): int(r.get("quantity") or 0) for r in stock}
@@ -10259,6 +10291,30 @@ def api_requisiciones_reasignar_stock():
         body, code = _reassign_create_order("", True, ra_items)
         if code != 200:
             return jsonify(body), code
+        # Descontar de la requisición lo reasignado (antes no se hacía y el renglón seguía
+        # pidiendo la cantidad completa → riesgo de comprar dos veces).
+        if rows_by_id and _orm and _orm.DB_ENABLED:
+            s = _orm.get_session()
+            try:
+                ahora = datetime.datetime.now().isoformat()
+                for res in resultado:
+                    if not res["asignado"]: continue
+                    row = s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.item_id == str(res["item_id"])).one_or_none()
+                    if not row: continue
+                    d = row.data
+                    d["cantidad_reasignada"] = float(d.get("cantidad_reasignada") or 0) + res["asignado"]
+                    d.setdefault("reasignaciones", []).append({"order_number": body["order_number"], "cantidad": res["asignado"],
+                                                               "fecha": ahora, "usuario": session.get("user", "")})
+                    pend = max(0.0, float(d.get("quantity") or 0) - d["cantidad_reasignada"])
+                    if pend <= 0:
+                        d["status"] = "Reasignado"; row.status = "Reasignado"
+                    row.data = d
+                    _orm_flag_modified(row, "data")
+                    res["pendiente"] = pend
+                    res["status"] = d.get("status")
+                s.commit()
+            finally:
+                s.close()
         body["resultado"] = resultado
         body["total"] = round(sum(i["quantity"] * i["unit_cost"] for i in ra_items), 2)
         return jsonify(body)
