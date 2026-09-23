@@ -4282,7 +4282,9 @@ async function rptRenderOperativo(d) {
   const targetComp  = jobCfg?.target_compras ?? null;
   const targetMO    = jobCfg?.target_mo ?? null;
   const base        = presDisp !== null ? presDisp : d.revenue;
-  const grossOp     = base - d.amount_wh - d.purchasing_total - (d.reassign_total||0) + (d.recovery_total||0);
+  // Mismo criterio que el Multi-Job Report, el PDF del Job Report y el Dashboard PM:
+  // también se restan los servicios (viáticos + gastos de viaje + envíos).
+  const grossOp     = base - d.amount_wh - d.purchasing_total - (d.svc_total||0) - (d.reassign_total||0) + (d.recovery_total||0);
   const gmPctOp     = base > 0 ? (grossOp / base * 100) : 0;
 
   // First render full report (workers + PO tables + cost bar)
@@ -6666,6 +6668,7 @@ function renderPMDashboard(d, previewUser){
   }
   const jobs = d.jobs||[];
   const vencidos = jobs.filter(j=>j.envio_vencido).length;
+  const sinCfg = jobs.filter(j=>j.internal_target==null).length;
   const totRO = jobs.reduce((s,j)=>s+(j.resultado_operativo||0),0);
   const totBase = jobs.reduce((s,j)=>s+(j.base||0),0);
   const kpi = (lbl,val,clr,sub='') => `<div style="${card};flex:1;min-width:180px">
@@ -6674,7 +6677,8 @@ function renderPMDashboard(d, previewUser){
   const kpis = `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
       ${kpi('Jobs Open / WIP', jobs.length, 'var(--text)')}
       ${kpi('Envío vencido', (vencidos?'⚠ ':'')+vencidos, vencidos?'var(--red)':'var(--green)', 'fecha de envío anterior a hoy')}
-      ${kpi('Resultado operativo', money(totRO), totRO<0?'var(--red)':'var(--green)', totBase?`${(totRO/totBase*100).toFixed(1)}% sobre ${money(totBase)}`:'')}
+      ${kpi('Internal Target', money(totBase), 'var(--text)', sinCfg?`${sinCfg} Job(s) sin configurar: se usa su revenue`:'suma de presupuestos disponibles')}
+      ${kpi('Resultado operativo', money(totRO), totRO<0?'var(--red)':'var(--green)', totBase?`${(totRO/totBase*100).toFixed(1)}% vs Internal Target`:'')}
     </div>`;
   const th = t => `<th style="padding:8px 10px;text-align:${t[1]||'left'};font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border)">${t[0]}</th>`;
   const rows = jobs.map(j=>{
@@ -6686,14 +6690,16 @@ function renderPMDashboard(d, previewUser){
       <td style="padding:9px 10px"><span class="badge">${esc(j.status)}</span></td>
       <td style="padding:9px 10px">${fdate(j.runoff_cliente)}</td>
       <td style="padding:9px 10px;${j.envio_vencido?'color:var(--red);font-weight:700':''}" title="${esc(j.fecha_envio_origen?'Fuente: '+j.fecha_envio_origen:'')}">${warn}${fdate(j.fecha_envio)}</td>
+      <td style="padding:9px 10px;text-align:right">${j.internal_target!=null?`<b>${money(j.internal_target)}</b>`:`<span style="color:var(--amber)" title="Sin Configurar Proyecto: el resultado se calcula contra el revenue">Sin config.</span><div style="font-size:10px;color:var(--muted)">revenue ${money(j.base)}</div>`}
+        ${(j.target_compras||j.target_mo)?`<div style="font-size:10px;color:var(--muted)">${j.target_compras?'Compras '+money(j.target_compras):''}${j.target_compras&&j.target_mo?' · ':''}${j.target_mo?'M.O. '+money(j.target_mo):''}</div>`:''}</td>
       <td style="padding:9px 10px;text-align:right;font-weight:700;color:${ro==null?'var(--muted)':(ro<0?'var(--red)':'var(--green)')}">${j.error?`<span title="${esc(j.error)}">error</span>`:money(ro)}
-        ${j.resultado_pct!=null?`<div style="font-size:10px;font-weight:400;color:var(--muted)">${j.resultado_pct}% · base ${money(j.base)}</div>`:''}</td>
+        ${j.resultado_pct!=null&&Math.abs(j.resultado_pct)<1000?`<div style="font-size:10px;font-weight:400;color:var(--muted)">${j.resultado_pct}% vs target</div>`:''}</td>
     </tr>`;}).join('');
   wrap.innerHTML = head + kpis + `<div style="${card};overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>
-      ${[['Job'],['Cliente / Descripción'],['Estatus'],['Run Off Cliente'],['Fecha de envío'],['Resultado operativo','right']].map(th).join('')}
-    </tr></thead><tbody>${rows||'<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">Sin Jobs Open o WIP asignados</td></tr>'}</tbody></table>
-    <div style="font-size:10px;color:var(--muted);margin-top:10px">Resultado operativo = presupuesto disponible (o revenue) − mano de obra − compras − reasignaciones + recuperaciones, igual que la pestaña Operativo del Job Report.</div></div>`;
+      ${[['Job'],['Cliente / Descripción'],['Estatus'],['Run Off Cliente'],['Fecha de envío'],['Internal Target','right'],['Resultado operativo','right']].map(th).join('')}
+    </tr></thead><tbody>${rows||'<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--muted)">Sin Jobs Open o WIP asignados</td></tr>'}</tbody></table>
+    <div style="font-size:10px;color:var(--muted);margin-top:10px">Resultado operativo = presupuesto disponible (o revenue) − mano de obra − compras − servicios (viáticos, gastos de viaje, envíos) − reasignaciones + recuperaciones, igual que el Job Report.</div></div>`;
 }
 
 // ── Admin: ligar usuario PROJECT MANAGER con el/los nombres de PM de los Jobs

@@ -6979,7 +6979,7 @@ def api_dashboard_project_manager():
     El resultado operativo se calcula en el momento, con la misma fórmula que la
     pestaña Operativo del Job Report:
         base (presupuesto disponible de Configurar Proyecto, o revenue)
-        − mano de obra − compras − reasignaciones + recuperaciones.
+        − mano de obra − compras − servicios − reasignaciones + recuperaciones.
     Un admin puede ver el de cualquier usuario con ?user=<username>."""
     me = session.get("user")
     info = get_user_perms(me) if me else {}
@@ -7023,12 +7023,19 @@ def api_dashboard_project_manager():
                    "fecha_envio": jc.get("fecha_envio") or j.get("ship_date") or "",
                    "fecha_envio_origen": "Configurar Proyecto" if jc.get("fecha_envio") else ("Job" if j.get("ship_date") else "")}
             row["envio_vencido"] = bool(row["fecha_envio"]) and row["fecha_envio"][:10] < today
+            _num = lambda v: float(v) if v not in (None, "") else None
+            # Targets de Configurar Proyecto (mismos que muestra el Job Report)
+            row["internal_target"] = _num(jc.get("presupuesto_disponible"))
+            row["target_compras"]  = _num(jc.get("target_compras"))
+            row["target_mo"]       = _num(jc.get("target_mo"))
             try:
                 d = _build_report_data(jn, y, y, y, **pools(y))
                 pres = jc.get("presupuesto_disponible")
                 base = float(pres) if pres not in (None, "") else float(d.get("revenue") or 0)
-                ro = base - d["amount_wh"] - d["purchasing_total"] - (d.get("reassign_total") or 0) + (d.get("recovery_total") or 0)
+                ro = (base - d["amount_wh"] - d["purchasing_total"] - (d.get("svc_total") or 0)
+                      - (d.get("reassign_total") or 0) + (d.get("recovery_total") or 0))
                 row.update(base=round(base, 2), amount_wh=d["amount_wh"], purchasing_total=d["purchasing_total"],
+                           svc_total=d.get("svc_total") or 0,
                            reassign_total=d.get("reassign_total") or 0, recovery_total=d.get("recovery_total") or 0,
                            resultado_operativo=round(ro, 2), resultado_pct=round(ro / base * 100, 1) if base else None)
             except Exception as e:
