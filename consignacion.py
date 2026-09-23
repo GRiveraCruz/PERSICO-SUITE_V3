@@ -596,13 +596,32 @@ def api_delete_order(order_number):
     if not _is_admin():
         return jsonify({"error": "Sin permiso"}), 403
     try:
+        # Borrar la orden y regresar su material a Consignación en la MISMA transacción.
         with tx() as t:
             orders = t.load("orders")
-            new = [o for o in orders if o.get("order_number") != order_number.upper()]
-            if len(new) == len(orders):
+            order = next((o for o in orders if o.get("order_number") == order_number.upper()), None)
+            if not order:
                 return jsonify({"error": "Orden no encontrada"}), 404
-            t.save("orders", new)
-        return jsonify({"ok": True})
+            records = t.load("items")
+            devuelto = []
+            now = _now()
+            for n, it in enumerate(order.get("items") or []):
+                pnum, mfr = str(it.get("part_number", "")).upper(), str(it.get("manufacturer", "")).upper()
+                qty = int(float(it.get("quantity") or 0))
+                if qty <= 0: continue
+                rec = next((r for r in records if r.get("part_number", "") == pnum and r.get("manufacturer", "") == mfr), None)
+                if rec:
+                    rec["quantity"] = int(rec.get("quantity") or 0) + qty; rec["updated_at"] = now.isoformat(); accion = "sumado"
+                else:
+                    records.append({"id": f"CSG-dev-{now.strftime('%Y%m%d%H%M%S%f')}-{n}", "manufacturer": mfr, "part_number": pnum,
+                                    "description": it.get("description", ""), "label_code": it.get("label_code", ""),
+                                    "last_cost": float(it.get("unit_cost") or 0), "quantity": qty, "unit": "Pieza",
+                                    "section": "", "box": "", "recovery_job": "", "created_at": now.isoformat()})
+                    accion = "re-creado"
+                devuelto.append({"part_number": pnum, "manufacturer": mfr, "quantity": qty, "accion": accion})
+            t.save("items", records)
+            t.save("orders", [o for o in orders if o is not order])
+        return jsonify({"ok": True, "devuelto": devuelto})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

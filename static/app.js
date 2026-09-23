@@ -7867,7 +7867,7 @@ async function deleteStockItem(id) {
 
 // ── Delete reassign order (admin only)
 async function deleteReassignOrder(orderNum) {
-  if(!confirm(`¿Eliminar la orden ${orderNum}? Esta acción no revierte los cambios en stock.`)) return;
+  if(!confirm(`¿Eliminar la orden ${orderNum}?\n\nSu material REGRESA a Stock y, si salió de una requisición de compra, se devuelve la cantidad pendiente a sus renglones.`)) return;
   try {
     const d = await fetch(`/api/reassign/order/${orderNum}`,{method:'DELETE'}).then(r=>r.json());
     if(d.error){toast(d.error,'er');return;}
@@ -8280,7 +8280,7 @@ async function saveCsgReassignOrder(){
 }
 
 async function deleteCsgReassignOrder(orderNum){
-  if(!confirm(`¿Eliminar la orden ${orderNum}? Esta acción no revierte los cambios en la existencia de consignación.`)) return;
+  if(!confirm(`¿Eliminar la orden ${orderNum}?\n\nSu material REGRESA a la existencia de Consignación.`)) return;
   try{
     const d = await csgFetchJSON(`/api/consignacion/reasignaciones/orden/${encodeURIComponent(orderNum)}`,{method:'DELETE'});
     if(d.error){toast(d.error,'er');return;}

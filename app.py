@@ -9743,16 +9743,84 @@ def api_delete_stock_admin(item_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _return_items_to_inventory(records, items, id_prefix):
+    """Regresa a un inventario (lista de Stock o Consignación) las cantidades de los
+    items de una orden. Si el material ya no existe (lo borraron), se vuelve a dar de
+    alta con los datos de la orden. Regresa el detalle de lo devuelto."""
+    now = datetime.datetime.now()
+    devuelto = []
+    for n, it in enumerate(items):
+        pnum = str(it.get("part_number", "")).strip().upper()
+        mfr  = str(it.get("manufacturer", "")).strip().upper()
+        qty  = int(float(it.get("quantity") or 0))
+        if qty <= 0: continue
+        rec = next((r for r in records if r.get("part_number", "").upper() == pnum
+                    and r.get("manufacturer", "").upper() == mfr), None)
+        if rec:
+            rec["quantity"] = int(rec.get("quantity") or 0) + qty
+            rec["updated_at"] = now.isoformat()
+            accion = "sumado"
+        else:
+            records.append({"id": f"{id_prefix}-{now.strftime('%Y%m%d%H%M%S%f')}-{n}",
+                            "manufacturer": mfr, "part_number": pnum,
+                            "description": it.get("description", ""), "label_code": it.get("label_code", ""),
+                            "last_cost": float(it.get("unit_cost") or 0), "quantity": qty,
+                            "unit": "Pieza", "section": "", "box": "", "recovery_job": "",
+                            "created_at": now.isoformat()})
+            accion = "re-creado"
+        devuelto.append({"part_number": pnum, "manufacturer": mfr, "quantity": qty, "accion": accion})
+    return devuelto
+
+def _req_revert_order(order_number, jobs):
+    """Si la orden salió de Requisición de Compra, quita su cantidad de los renglones
+    (cantidad_reasignada / reasignaciones) y regresa a "Solicitado" los que estaban
+    "Reasignado" y vuelven a tener pendiente. Regresa cuántos renglones se ajustaron."""
+    if not (_orm and _orm.DB_ENABLED) or not jobs:
+        return 0
+    s = _orm.get_session()
+    try:
+        n = 0
+        rows = s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.job.in_(list(jobs))).all()
+        for row in rows:
+            d = row.data
+            regs = d.get("reasignaciones") or []
+            quitar = sum(float(r.get("cantidad") or 0) for r in regs if r.get("order_number") == order_number)
+            if not quitar: continue
+            d["reasignaciones"] = [r for r in regs if r.get("order_number") != order_number]
+            d["cantidad_reasignada"] = max(0.0, float(d.get("cantidad_reasignada") or 0) - quitar)
+            if d.get("status") == "Reasignado" and float(d.get("quantity") or 0) - d["cantidad_reasignada"] > 0:
+                d["status"] = "Solicitado"; row.status = "Solicitado"
+            row.data = d
+            _orm_flag_modified(row, "data")
+            n += 1
+        s.commit()
+        return n
+    finally:
+        s.close()
+
 @app.route("/api/reassign/order/<order_number>", methods=["DELETE"])
 def api_delete_reassign_order(order_number):
+    """Elimina la orden RA y REGRESA su material a Stock (antes solo se borraba la
+    orden y el material se perdía). También devuelve la cantidad pendiente a los
+    renglones de Requisición de Compra de los que haya salido la orden."""
     if not is_admin(): return jsonify({"error":"Sin permiso"}), 403
     try:
+        num = order_number.upper()
         with lock:
             orders = reassign_load()
-            new = [o for o in orders if o.get("order_number")!=order_number.upper()]
-            if len(new)==len(orders): return jsonify({"error":"Orden no encontrada"}), 404
-            reassign_save(new)
-        return jsonify({"ok": True})
+            order = next((o for o in orders if o.get("order_number") == num), None)
+            if not order: return jsonify({"error":"Orden no encontrada"}), 404
+            records = stock_load()
+            devuelto = _return_items_to_inventory(records, order.get("items") or [], "STK-dev")
+            stock_save(records)                       # primero Stock: si algo falla después,
+            reassign_save([o for o in orders if o is not order])   # la orden sigue existiendo y no se pierde material
+        jobs = {str(i.get("job") or "").upper() for i in order.get("items") or []} - {""}
+        try:
+            req_ajustados = _req_revert_order(num, jobs)
+        except Exception as e:
+            print(f"[REQ] No se pudo revertir la requisición de {num}: {e}")
+            req_ajustados = None
+        return jsonify({"ok": True, "devuelto": devuelto, "requisicion_renglones": req_ajustados})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
