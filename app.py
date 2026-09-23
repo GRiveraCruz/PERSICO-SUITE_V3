@@ -478,6 +478,23 @@ def jobs_root(): return Path(JOBS_FOLDER)
 def job_folder(job_number): return jobs_root() / job_number
 def meta_path(job_number): return job_folder(job_number) / "job_info.json"
 
+def job_exists(job_number):
+    """¿Existe el Job? Con PostgreSQL los Jobs viven en la tabla `jobs` y su carpeta
+    en disco puede no existir (Railway no conserva el disco, y los Jobs migrados
+    nunca la tuvieron). Antes varias rutas preguntaban solo por la carpeta y
+    respondían "Job no encontrado" aunque el Job sí estaba en la base."""
+    if _orm and _orm.DB_ENABLED:
+        try:
+            s = _orm.get_session()
+            try:
+                if s.query(_orm.Job.id).filter(_orm.Job.job_number == job_number).first() is not None:
+                    return True
+            finally:
+                s.close()
+        except Exception as e:
+            print(f"[DB] Error verificando job {job_number}, revisando carpeta: {e}")
+    return job_folder(job_number).exists()
+
 def read_meta(job_number):
     if _orm and _orm.DB_ENABLED:
         try:
@@ -613,20 +630,32 @@ def scan_jobs():
     return result
 
 def next_main_index():
-    root = jobs_root()
-    if not root.exists(): return 100
+    """Siguiente índice principal de Job. Usa all_job_numbers() (carpetas + tabla
+    jobs) — antes solo contaba carpetas, así que con PostgreSQL y sin carpetas
+    podía reiniciar en 100 o repetir un número que ya existía en la base."""
     indices = []
-    for item in root.iterdir():
-        if item.is_dir() and JOB_RE.match(item.name):
-            try: indices.append(int(item.name.split("-")[0]))
-            except ValueError: pass
+    for jn in all_job_numbers():
+        try: indices.append(int(str(jn).split("-")[0]))
+        except ValueError: pass
     return max(indices) + 1 if indices else 100
 
 def all_job_numbers():
+    """Números de Job existentes: carpetas en disco + filas de la tabla jobs (con DB),
+    para que crear un Job detecte duplicados aunque no tenga carpeta."""
+    nums = set()
     root = jobs_root()
-    if not root.exists(): return set()
-    return {item.name for item in root.iterdir()
-            if item.is_dir() and JOB_RE.match(item.name)}
+    if root.exists():
+        nums = {item.name for item in root.iterdir() if item.is_dir() and JOB_RE.match(item.name)}
+    if _orm and _orm.DB_ENABLED:
+        try:
+            s = _orm.get_session()
+            try:
+                nums |= {r[0] for r in s.query(_orm.Job.job_number).all() if r[0]}
+            finally:
+                s.close()
+        except Exception as e:
+            print(f"[DB] Error listando job numbers: {e}")
+    return nums
 
 def extract_customer(full_addr):
     if not full_addr: return ""
@@ -983,7 +1012,7 @@ def api_update_job(job_number):
     try:
         data = request.json
         with lock:
-            if not job_folder(job_number).exists():
+            if not job_exists(job_number):
                 return jsonify({"error": "Job no encontrado"}), 404
             meta = read_meta(job_number)
             for k in ["customer","pm","description","product_group","product_subgroup",
@@ -5851,7 +5880,7 @@ def _build_report_data(job_number, rate_year, wh_year, po_year, *,
     formas terminan filtrando por job, la diferencia es si el filtro ocurre en
     SQL (un job) o en Python sobre un pool ya en memoria (muchos jobs a la vez).
     """
-    job_meta = read_meta(job_number) if job_folder(job_number).exists() else {}
+    job_meta = read_meta(job_number) if job_exists(job_number) else {}
 
     rates_raw = load_rates(rate_year)
     rate_map  = {normalize_name(r["employee"]): float(r["rate"])
@@ -7370,11 +7399,9 @@ def api_pt_jobs(pt_number):
             return jsonify({"error": "PT no encontrado"}), 404
         jobs_info = []
         for jn in pt.get("jobs", []):
-            info_path = job_folder(jn) / "job_info.json"
-            if info_path.exists():
+            if job_exists(jn):
                 try:
-                    with open(info_path, "r", encoding="utf-8") as f:
-                        ji = json.load(f)
+                    ji = read_meta(jn)
                     jobs_info.append({"job_number": jn,
                                       "customer": ji.get("customer",""),
                                       "description": ji.get("description",""),
@@ -8378,11 +8405,9 @@ def api_get_sv_one(sv_number):
             return jsonify({"error": "SV no encontrado"}), 404
         jobs_info = []
         for jn in rec.get("jobs", []):
-            info_path = job_folder(jn) / "job_info.json"
-            if info_path.exists():
+            if job_exists(jn):
                 try:
-                    with open(info_path, "r", encoding="utf-8") as f:
-                        ji = json.load(f)
+                    ji = read_meta(jn)
                     jobs_info.append({"job_number": jn,
                                       "customer": ji.get("customer",""),
                                       "description": ji.get("description",""),
