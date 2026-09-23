@@ -6965,6 +6965,79 @@ def _year_of(record):
     v = (record or {}).get("created_at") or ""
     return v[:4] if len(v) >= 4 else None
 
+def _norm_pm(v):
+    import unicodedata
+    v = unicodedata.normalize("NFKD", str(v or "")).encode("ascii", "ignore").decode()
+    return " ".join(v.lower().split())
+
+PM_DASH_STATUS = ("OPEN", "WIP")
+
+@app.route("/api/dashboard/project-manager", methods=["GET"])
+def api_dashboard_project_manager():
+    """Dashboard de inicio para el perfil PROJECT MANAGER: Jobs Open/WIP cuyo
+    campo "pm" coincide con los nombres ligados al usuario (users[u]["pm_names"]).
+    El resultado operativo se calcula en el momento, con la misma fórmula que la
+    pestaña Operativo del Job Report:
+        base (presupuesto disponible de Configurar Proyecto, o revenue)
+        − mano de obra − compras − reasignaciones + recuperaciones.
+    Un admin puede ver el de cualquier usuario con ?user=<username>."""
+    me = session.get("user")
+    info = get_user_perms(me) if me else {}
+    target = me
+    if request.args.get("user") and is_admin():
+        target = request.args.get("user")
+    elif not (is_admin() or info.get("role") == "PROJECT MANAGER"):
+        return jsonify({"error": "Sin permiso"}), 403
+    try:
+        u = users_load().get(target, {})
+        names = u.get("pm_names") or []
+        out = {"user": target, "pm_names": names, "now": datetime.datetime.now().isoformat(timespec="minutes"),
+               "jobs": [], "linked": bool(names)}
+        if not names:
+            return jsonify(out)
+        wanted = {_norm_pm(n) for n in names}
+        jobs = [j for j in scan_jobs()
+                if _norm_pm(j.get("pm")) in wanted and (j.get("status") or "").strip().upper() in PM_DASH_STATUS]
+        cfg_by_job = {}
+        for cfg in projcfg_load():
+            for jc in cfg.get("jobs") or []:
+                cfg_by_job.setdefault((jc.get("job_number") or "").strip().upper(), jc)
+        today = datetime.date.today().isoformat()
+        pools_by_year = {}
+        def pools(y):
+            if y not in pools_by_year:     # una carga por año, compartida por todos los jobs de ese año
+                pools_by_year[y] = dict(
+                    wh_pool=wh_load(y), po_pool=po_load(y), fx_all=fx_load_all(),
+                    ra_pool=reassign_load(), rc_pool=recovery_load(),
+                    via_pool=_svc_load(VIATICOS_FILE), gv_pool=_svc_load(GASTOS_FILE), env_pool=_svc_load(ENVIOS_FILE),
+                    cra_pool=_consig.load("orders") if (_consig and CONSIG_EN_COSTO_JOB) else None,
+                    crc_pool=_consig.load("recovery") if (_consig and CONSIG_EN_COSTO_JOB) else None)
+            return pools_by_year[y]
+        for j in sorted(jobs, key=lambda x: x.get("job_number", "")):
+            jn = j["job_number"]
+            y = int(_year_of(j) or CURRENT_YEAR)
+            jc = cfg_by_job.get(jn.strip().upper(), {})
+            row = {"job_number": jn, "customer": j.get("customer", ""), "description": j.get("description", ""),
+                   "status": j.get("status", ""), "pm": j.get("pm", ""),
+                   "runoff_cliente": jc.get("runoff_cliente") or "",
+                   "fecha_envio": jc.get("fecha_envio") or j.get("ship_date") or "",
+                   "fecha_envio_origen": "Configurar Proyecto" if jc.get("fecha_envio") else ("Job" if j.get("ship_date") else "")}
+            row["envio_vencido"] = bool(row["fecha_envio"]) and row["fecha_envio"][:10] < today
+            try:
+                d = _build_report_data(jn, y, y, y, **pools(y))
+                pres = jc.get("presupuesto_disponible")
+                base = float(pres) if pres not in (None, "") else float(d.get("revenue") or 0)
+                ro = base - d["amount_wh"] - d["purchasing_total"] - (d.get("reassign_total") or 0) + (d.get("recovery_total") or 0)
+                row.update(base=round(base, 2), amount_wh=d["amount_wh"], purchasing_total=d["purchasing_total"],
+                           reassign_total=d.get("reassign_total") or 0, recovery_total=d.get("recovery_total") or 0,
+                           resultado_operativo=round(ro, 2), resultado_pct=round(ro / base * 100, 1) if base else None)
+            except Exception as e:
+                row["error"] = str(e)
+            out["jobs"].append(row)
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/dashboard/general-management", methods=["GET"])
 def api_dashboard_general_management():
     """Dashboard de inicio para el perfil GENERAL MANAGEMENT.
@@ -8136,7 +8209,11 @@ def api_admin_get_users():
             if uname not in users:
                 role = "admin" if uname == ADMIN_USER else "viewer"
                 users[uname] = {"role": role, "permissions": _default_perms(role)}
-    return jsonify({"users": users, "modules": MODULES,
+    try:
+        _pm_names = sorted({(j.get("pm") or "").strip() for j in scan_jobs()} - {""}, key=str.lower)
+    except Exception:
+        _pm_names = []
+    return jsonify({"users": users, "modules": MODULES, "pm_names": _pm_names,
                     "current_user": session.get("user"), "admin_user": ADMIN_USER})
 
 @app.route("/api/admin/users/<username>", methods=["PUT"])
@@ -8153,6 +8230,10 @@ def api_admin_update_user(username):
     users[username]["role"] = new_role
     if "puede_ver_salarios" in data:
         users[username]["puede_ver_salarios"] = bool(data["puede_ver_salarios"])
+    if "pm_names" in data:
+        # Nombres de PM (tal como aparecen en el campo "pm" de los Jobs) ligados a
+        # este usuario — alimentan su Dashboard de Project Manager.
+        users[username]["pm_names"] = [str(n).strip() for n in (data["pm_names"] or []) if str(n).strip()]
     if "permissions" in data:
         # Merge single-module update into existing permissions
         existing = users[username].get("permissions", _default_perms(new_role))
@@ -9261,7 +9342,15 @@ def reassign_save(records):
     _cache_set("reassign", records)
 
 def reassign_next_number():
+    """Asigna (consume) el siguiente folio RA. Solo se llama al GUARDAR una orden nueva."""
     return _doc_next_number("RA")
+
+def reassign_peek_number():
+    """Siguiente folio RA SIN consumirlo — lo que se muestra en pantalla antes de
+    guardar. Antes, GET /api/reassign llamaba a reassign_next_number() y cada
+    vez que alguien abría o filtraba la lista se gastaba un folio (huecos)."""
+    n = int(_doc_counter_load().get("RA", 0) or 0) + 1
+    return f"RA-{str(n).zfill(10)}"
 
 @app.route("/api/stock", methods=["GET"])
 def api_get_stock():
@@ -9496,7 +9585,7 @@ def api_get_reassign():
             orders = [o for o in orders if any(
                 i.get("job","").upper()==job for i in o.get("items",[]))]
         return jsonify({"orders": orders, "total": len(orders),
-                        "next_number": reassign_next_number()})
+                        "next_number": reassign_peek_number()})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -9512,10 +9601,17 @@ def api_create_reassign():
             orders  = reassign_load()
             records = stock_load()
             if is_new:
-                if not order_number:
+                # El folio lo asigna siempre el servidor al guardar (el que muestra la
+                # pantalla es solo una vista previa: si dos personas guardan a la vez,
+                # cada una recibe el suyo). Si el contador quedara atrás de una orden
+                # ya existente, se salta hasta el primer folio libre.
+                existentes = {o["order_number"] for o in orders}
+                order_number = reassign_next_number()
+                for _ in range(1000):
+                    if order_number not in existentes: break
                     order_number = reassign_next_number()
-                if any(o["order_number"]==order_number for o in orders):
-                    return jsonify({"error":f"{order_number} ya existe"}), 409
+                else:
+                    return jsonify({"error":"No se pudo asignar un folio RA libre"}), 500
                 order = {"order_number": order_number,
                          "created_at": datetime.datetime.now().isoformat(), "items": []}
                 orders.append(order)
@@ -10064,32 +10160,53 @@ def api_requisiciones_delete(item_id):
 @app.route("/api/requisiciones/buscar-stock", methods=["POST"])
 def api_requisiciones_buscar_stock():
     """Recibe una lista de {part_number, quantity} y regresa, por cada uno,
-    si está en Stock (total, parcial, o sin existencia)."""
+    la existencia en Stock y, por separado, la existencia en Consignación.
+
+    - estatus: solo Stock (mismo significado que antes).
+    - quantity_en_consignacion / estatus_con_consignacion: se agregan si el usuario
+      tiene al menos nivel "ver" en Consignación. estatus_con_consignacion evalúa
+      Stock + Consignación juntos, para saber si la consignación completa lo que falta."""
     if not can("view", "compras-requisicion"): return jsonify({"error": "Sin permiso"}), 403
     data = request.json or {}
     items = data.get("items", [])
-    stock = stock_load()
-    stock_by_pn = {}
-    for r in stock:
-        pn = (r.get("part_number") or "").strip().upper()
-        if not pn: continue
-        stock_by_pn.setdefault(pn, 0)
-        stock_by_pn[pn] += float(r.get("quantity") or 0)
+
+    def _por_pn(records):
+        out = {}
+        for r in records:
+            pn = (r.get("part_number") or "").strip().upper()
+            if not pn: continue
+            out[pn] = out.get(pn, 0) + float(r.get("quantity") or 0)
+        return out
+
+    def _estatus(disp, req):
+        if disp <= 0:     return "Sin existencia"
+        if disp >= req:   return "Existencia total"
+        return "Existencia parcial"
+
+    stock_by_pn = _por_pn(stock_load())
+    ver_consig = _consig is not None and can("view", "consignacion")
+    consig_by_pn = {}
+    consig_error = None
+    if ver_consig:
+        try:
+            consig_by_pn = _por_pn(_consig.load("items"))
+        except Exception as e:
+            consig_error = f"No se pudo consultar Consignación: {e}"
 
     resultado = []
     for it in items:
         pn = (it.get("part_number") or "").strip().upper()
         qty_req = float(it.get("quantity") or 0)
         qty_stock = stock_by_pn.get(pn, 0)
-        if qty_stock <= 0:
-            estatus = "Sin existencia"
-        elif qty_stock >= qty_req:
-            estatus = "Existencia total"
-        else:
-            estatus = "Existencia parcial"
-        resultado.append({"part_number": it.get("part_number"), "quantity_requerida": qty_req,
-                           "quantity_en_stock": qty_stock, "estatus": estatus})
-    return jsonify({"resultados": resultado})
+        row = {"part_number": it.get("part_number"), "quantity_requerida": qty_req,
+               "quantity_en_stock": qty_stock, "estatus": _estatus(qty_stock, qty_req)}
+        if ver_consig and consig_error is None:
+            qty_consig = consig_by_pn.get(pn, 0)
+            row["quantity_en_consignacion"] = qty_consig
+            row["estatus_con_consignacion"] = _estatus(qty_stock + qty_consig, qty_req)
+        resultado.append(row)
+    return jsonify({"resultados": resultado, "incluye_consignacion": ver_consig and consig_error is None,
+                    "aviso": consig_error})
 
 @app.route("/api/proveedores/<int:clave>/files/<filename>", methods=["GET"])
 def api_download_prov_file(clave, filename):
