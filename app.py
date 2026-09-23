@@ -9621,58 +9621,64 @@ def api_get_reassign():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _reassign_create_order(order_number, is_new, items):
+    """Crea una orden RA nueva (folio asignado aquí) o agrega items a una existente,
+    descontando Stock. Regresa (dict, http_status). Lo usan POST /api/reassign y
+    la reasignación desde Requisición de Compra. Llamar SIN tener tomado `lock`."""
+    with lock:
+        orders  = reassign_load()
+        records = stock_load()
+        if is_new:
+            # El folio lo asigna siempre el servidor al guardar (el que muestra la
+            # pantalla es solo una vista previa: si dos personas guardan a la vez,
+            # cada una recibe el suyo). Si el contador quedara atrás de una orden
+            # ya existente, se salta hasta el primer folio libre.
+            existentes = {o["order_number"] for o in orders}
+            order_number = reassign_next_number()
+            for _ in range(1000):
+                if order_number not in existentes: break
+                order_number = reassign_next_number()
+            else:
+                return {"error":"No se pudo asignar un folio RA libre"}, 500
+            order = {"order_number": order_number,
+                     "created_at": datetime.datetime.now().isoformat(), "items": []}
+            orders.append(order)
+        else:
+            order = next((o for o in orders if o["order_number"]==order_number), None)
+            if not order: return {"error":"Orden no encontrada"}, 404
+        for item in items:
+            pnum = str(item.get("part_number","")).strip().upper()
+            mfr  = str(item.get("manufacturer","")).strip().upper()
+            qty  = int(item.get("quantity",0))
+            cost = float(item.get("unit_cost",0))
+            stk  = next((r for r in records
+                if r.get("part_number","")==pnum and r.get("manufacturer","")==mfr), None)
+            if stk:
+                stk["quantity"]   = max(0, stk["quantity"] - qty)
+                stk["updated_at"] = datetime.datetime.now().isoformat()
+            order["items"].append({
+                "part_number": pnum, "manufacturer": mfr,
+                "description": str(item.get("description","")).strip(),
+                "label_code":  str(item.get("label_code") or (stk.get("label_code","") if stk else "")).strip().upper(),
+                "job":         str(item.get("job","")).strip().upper(),
+                "unit_cost":   cost, "quantity": qty,
+                "total_cost":  round(cost*qty, 2),
+                "added_at":    datetime.datetime.now().isoformat(),
+            })
+        order["updated_at"] = datetime.datetime.now().isoformat()
+        reassign_save(orders)
+        stock_save(records)
+    return {"ok":True,"order_number":order_number,"order":order}, 200
+
 @app.route("/api/reassign", methods=["POST"])
 def api_create_reassign():
     try:
         data = request.get_json()
-        order_number = str(data.get("order_number","")).strip().upper()
-        is_new = data.get("is_new", True)
         items  = data.get("items", [])
         if not items: return jsonify({"error":"Sin items"}), 400
-        with lock:
-            orders  = reassign_load()
-            records = stock_load()
-            if is_new:
-                # El folio lo asigna siempre el servidor al guardar (el que muestra la
-                # pantalla es solo una vista previa: si dos personas guardan a la vez,
-                # cada una recibe el suyo). Si el contador quedara atrás de una orden
-                # ya existente, se salta hasta el primer folio libre.
-                existentes = {o["order_number"] for o in orders}
-                order_number = reassign_next_number()
-                for _ in range(1000):
-                    if order_number not in existentes: break
-                    order_number = reassign_next_number()
-                else:
-                    return jsonify({"error":"No se pudo asignar un folio RA libre"}), 500
-                order = {"order_number": order_number,
-                         "created_at": datetime.datetime.now().isoformat(), "items": []}
-                orders.append(order)
-            else:
-                order = next((o for o in orders if o["order_number"]==order_number), None)
-                if not order: return jsonify({"error":"Orden no encontrada"}), 404
-            for item in items:
-                pnum = str(item.get("part_number","")).strip().upper()
-                mfr  = str(item.get("manufacturer","")).strip().upper()
-                qty  = int(item.get("quantity",0))
-                cost = float(item.get("unit_cost",0))
-                stk  = next((r for r in records
-                    if r.get("part_number","")==pnum and r.get("manufacturer","")==mfr), None)
-                if stk:
-                    stk["quantity"]   = max(0, stk["quantity"] - qty)
-                    stk["updated_at"] = datetime.datetime.now().isoformat()
-                order["items"].append({
-                    "part_number": pnum, "manufacturer": mfr,
-                    "description": str(item.get("description","")).strip(),
-                    "label_code":  str(item.get("label_code") or (stk.get("label_code","") if stk else "")).strip().upper(),
-                    "job":         str(item.get("job","")).strip().upper(),
-                    "unit_cost":   cost, "quantity": qty,
-                    "total_cost":  round(cost*qty, 2),
-                    "added_at":    datetime.datetime.now().isoformat(),
-                })
-            order["updated_at"] = datetime.datetime.now().isoformat()
-            reassign_save(orders)
-            stock_save(records)
-        return jsonify({"ok":True,"order_number":order_number,"order":order})
+        body, code = _reassign_create_order(str(data.get("order_number","")).strip().upper(),
+                                            data.get("is_new", True), items)
+        return jsonify(body), code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -10111,7 +10117,8 @@ def api_requisiciones_upload():
 
         def g(row, ci):
             if ci is None or row[ci] is None: return ""
-            v = str(row[ci]).strip()
+            v = re.sub(r"<[^>]*>", " ", str(row[ci]))      # "<br>TL-POE160S" → "TL-POE160S"
+            v = " ".join(v.split())
             return "" if v in ("None", "nan", "#N/A") else v
 
         nuevos = []
@@ -10189,6 +10196,55 @@ def api_requisiciones_delete(item_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _req_pn(v):
+    """No. de parte normalizado para comparar requisición vs Stock (sin HTML ni espacios extra)."""
+    return " ".join(re.sub(r"<[^>]*>", " ", str(v or "")).split()).upper()
+
+@app.route("/api/requisiciones/reasignar-stock", methods=["POST"])
+def api_requisiciones_reasignar_stock():
+    """Genera UNA orden RA nueva hacia el Job de la requisición con el material que sí
+    hay en Stock. Recibe {job, items:[{item_id, part_number, brand, quantity}]}.
+    Por renglón toma existencia de los registros de Stock con ese No. de parte,
+    primero los de la misma marca y luego los de mayor existencia, sin pasar de lo
+    pedido ni de lo disponible. Regresa lo asignado por renglón para que la pantalla
+    marque como "Reasignado" los que quedaron completos."""
+    if not can("create", "reassign"): return jsonify({"error": "Sin permiso para crear reasignaciones"}), 403
+    try:
+        data = request.json or {}
+        job = str(data.get("job") or "").strip().upper()
+        items = data.get("items") or []
+        if not job or not items:
+            return jsonify({"error": "Falta el Job o los materiales"}), 400
+        stock = stock_load()
+        disponible = {id(r): int(r.get("quantity") or 0) for r in stock}
+        ra_items, resultado = [], []
+        for it in items:
+            pn = _req_pn(it.get("part_number"))
+            pedido = int(float(it.get("quantity") or 0))
+            marca = str(it.get("brand") or "").strip().upper()
+            cands = [r for r in stock if _req_pn(r.get("part_number")) == pn and disponible[id(r)] > 0]
+            cands.sort(key=lambda r: (r.get("manufacturer", "").upper() != marca, -disponible[id(r)]))
+            asignado = 0
+            for r in cands:
+                if asignado >= pedido: break
+                q = min(pedido - asignado, disponible[id(r)])
+                disponible[id(r)] -= q; asignado += q
+                ra_items.append({"part_number": r.get("part_number", ""), "manufacturer": r.get("manufacturer", ""),
+                                 "description": r.get("description", ""), "label_code": r.get("label_code", ""),
+                                 "job": job, "quantity": q, "unit_cost": float(r.get("last_cost") or 0)})
+            resultado.append({"item_id": it.get("item_id"), "part_number": it.get("part_number"),
+                              "pedido": pedido, "asignado": asignado})
+        if not ra_items:
+            return jsonify({"error": "Ninguno de los materiales tiene existencia en Stock"}), 400
+        body, code = _reassign_create_order("", True, ra_items)
+        if code != 200:
+            return jsonify(body), code
+        body["resultado"] = resultado
+        body["total"] = round(sum(i["quantity"] * i["unit_cost"] for i in ra_items), 2)
+        return jsonify(body)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/requisiciones/buscar-stock", methods=["POST"])
 def api_requisiciones_buscar_stock():
     """Recibe una lista de {part_number, quantity} y regresa, por cada uno,
@@ -10205,7 +10261,7 @@ def api_requisiciones_buscar_stock():
     def _por_pn(records):
         out = {}
         for r in records:
-            pn = (r.get("part_number") or "").strip().upper()
+            pn = _req_pn(r.get("part_number"))
             if not pn: continue
             out[pn] = out.get(pn, 0) + float(r.get("quantity") or 0)
         return out
@@ -10227,7 +10283,7 @@ def api_requisiciones_buscar_stock():
 
     resultado = []
     for it in items:
-        pn = (it.get("part_number") or "").strip().upper()
+        pn = _req_pn(it.get("part_number"))
         qty_req = float(it.get("quantity") or 0)
         qty_stock = stock_by_pn.get(pn, 0)
         row = {"part_number": it.get("part_number"), "quantity_requerida": qty_req,

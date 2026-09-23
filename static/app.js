@@ -7332,7 +7332,7 @@ function reqRenderTable(){
     <tr>
       <td>${esc(it.brand||'—')}</td>
       <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number||'')}</td>
-      <td style="color:var(--muted2)">${esc(it.description||'')}</td>
+      <td style="color:var(--muted2)"><div title="${esc(it.description||'')}" style="max-width:min(420px,32vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.description||'')}</div></td>
       <td style="text-align:right">${it.quantity ?? 0}</td>
       <td>
         <select onchange="reqUpdateStatus('${it.id}',this.value)" style="font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--inp);color:var(--text)">
@@ -7389,6 +7389,7 @@ async function reqBuscarStock(){
           ${ayudaCsg(res)?badge('Con consignación: '+res.estatus_con_consignacion, res.estatus_con_consignacion):''}
         </div>
       </div>`).join('');
+    reqRenderReasignar(r.resultados);
     // También reflejar el resultado directo en la columna "En Stock" de la tabla
     r.resultados.forEach(res=>{
       const cell = document.getElementById('req-stock-'+res.part_number);
@@ -7399,6 +7400,63 @@ async function reqBuscarStock(){
       cell.innerHTML = html;
     });
   }catch(e){ box.innerHTML = 'Error: '+e; }
+}
+
+// ── Reasignar a este Job lo que sí hay en Stock (una orden RA nueva)
+function reqRenderReasignar(resultados){
+  const box = document.getElementById('req-stock-result');
+  const puede = USER_PERMS && (USER_PERMS.is_admin || ['create','full'].includes((USER_PERMS.permissions||{}).reassign));
+  // renglones con algo en Stock (reqItems y resultados vienen en el mismo orden)
+  const filas = resultados.map((res,i)=>({res, it:reqItems[i]})).filter(x=>x.it && x.res.quantity_en_stock>0 && x.it.status!=='Reasignado');
+  if(!filas.length || !reqCurrentJob) return;
+  if(!puede){ box.insertAdjacentHTML('beforeend','<div style="font-size:11px;color:var(--muted);margin-top:12px">Hay material en Stock, pero tu usuario no tiene permiso para crear reasignaciones.</div>'); return; }
+  box.insertAdjacentHTML('beforeend', `
+    <div id="req-ra-box" style="margin-top:16px;border:1px solid var(--border);border-radius:8px;padding:12px">
+      <div style="font-weight:700;font-size:12px;margin-bottom:8px">Generar reasignación al Job ${esc(reqCurrentJob)} con lo que hay en Stock</div>
+      ${filas.map(({res,it})=>{ const max=Math.floor(Math.min(res.quantity_requerida,res.quantity_en_stock)); return `
+      <label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11px">
+        <input type="checkbox" class="req-ra-chk" data-id="${esc(it.id)}" checked>
+        <span style="flex:1;font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number)}</span>
+        <span style="color:var(--muted)">pide ${res.quantity_requerida} · Stock ${res.quantity_en_stock}</span>
+        <input type="number" class="req-ra-qty" data-id="${esc(it.id)}" min="1" max="${max}" value="${max}" style="width:70px;padding:3px 6px;font-size:11px">
+      </label>`;}).join('')}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <span style="font-size:10px;color:var(--muted)">Se crea una orden RA nueva y se descuenta de Stock. Los renglones cubiertos completos quedan como "Reasignado".</span>
+        <button class="btn btn-p" id="btn-req-ra" onclick="reqGenerarReasignacion()" style="font-size:11px;white-space:nowrap;flex-shrink:0;margin-left:10px">Reasignar</button>
+      </div>
+    </div>`);
+}
+
+async function reqGenerarReasignacion(){
+  const items = [...document.querySelectorAll('.req-ra-chk:checked')].map(chk=>{
+    const it = reqItems.find(x=>String(x.id)===chk.dataset.id);
+    const inp = document.querySelector(`.req-ra-qty[data-id="${CSS.escape(chk.dataset.id)}"]`);
+    const q = Math.min(parseInt(inp.value)||0, parseInt(inp.max)||0);
+    return it && q>0 ? {item_id:it.id, part_number:it.part_number, brand:it.brand||'', quantity:q} : null;
+  }).filter(Boolean);
+  if(!items.length){ toast('Selecciona al menos un material con cantidad','er'); return; }
+  if(!confirm(`¿Crear una orden de reasignación con ${items.length} material(es) para el Job ${reqCurrentJob}?`)) return;
+  const btn=document.getElementById('btn-req-ra'); btn.disabled=true; btn.textContent='Generando…';
+  try{
+    const resp = await fetch('/api/requisiciones/reasignar-stock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job:reqCurrentJob, items})});
+    const d = (resp.headers.get('content-type')||'').includes('json') ? await resp.json() : {error:`Error ${resp.status} del servidor`};
+    if(d.error){ toast(d.error,'er'); return; }
+    // Marcar "Reasignado" los renglones cuya cantidad pedida quedó cubierta completa
+    let completos=0, parciales=0;
+    for(const res of d.resultado||[]){
+      const it = reqItems.find(x=>x.id===res.item_id); if(!it) continue;
+      if(res.asignado >= (parseFloat(it.quantity)||0) && res.asignado>0){
+        const u = await apiCall('PUT','/requisiciones/'+it.id,{status:'Reasignado'});
+        if(!u.error){ it.status='Reasignado'; completos++; }
+      }
+      else if(res.asignado>0) parciales++;
+    }
+    closeMo('mo-req-stock');
+    reqRenderTable();
+    if(typeof loadStock==='function') loadStock();
+    toast(`Orden ${d.order_number} creada · $${Number(d.total||0).toLocaleString('en-US',{minimumFractionDigits:2})} · ${completos} renglón(es) Reasignado${parciales?` · ${parciales} parcial(es): siguen como estaban`:''}`,'ok',7000);
+  }catch(e){ toast('Error: '+e.message,'er'); }
+  finally{ btn.disabled=false; btn.textContent='Reasignar'; }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
