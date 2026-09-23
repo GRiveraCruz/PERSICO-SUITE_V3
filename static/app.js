@@ -7268,6 +7268,13 @@ const reqPendiente = it => it.cantidad_pendiente ?? Math.max(0,(parseFloat(it.qu
 async function reqInitSelectors(){
   await populateJobSelector('req-job-select');
   await populateJobSelector('req-up-job');
+  // populateJobSelector() reescribe el <select> y perdía el Job elegido, pero la tabla se
+  // quedaba con datos viejos (p. ej. "Reasignado" después de eliminar la orden en otro
+  // módulo). Se restaura el Job y se recarga desde el servidor.
+  if(reqCurrentJob){
+    document.getElementById('req-job-select').value = reqCurrentJob;
+    await reqRenderTab();
+  }
 }
 
 function reqOpenUpload(){
@@ -7924,7 +7931,7 @@ loadReassign = async function() {
       return `<tr>
         <td><b style="color:var(--gold);font-family:'DM Mono',monospace">${esc(o.order_number)}</b></td>
         <td style="color:var(--muted)">${(o.created_at||'').slice(0,10)}</td>
-        <td style="color:var(--muted2)">${(o.items||[]).length} items</td>
+        <td style="color:var(--muted2)">${(o.items||[]).length} items${o.created_by?` · ${esc(o.created_by)}`:''}${o.origen&&o.origen.startsWith('Requisición')?' · <span style="color:#6d28d9">desde requisición</span>':''}</td>
         <td style="text-align:right;font-weight:700;color:var(--green)">${fmt(total)}</td>
         <td>
           <button onclick="printReassignOrder('${esc(o.order_number)}')" class="btn-reload" style="font-size:10px;padding:3px 8px">PDF</button>

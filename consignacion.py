@@ -69,6 +69,11 @@ def db_enabled():
     return bool(_orm and getattr(_orm, "CONSIG_DB_ENABLED", False))
 
 
+def _current_user():
+    from flask import session
+    return session.get("user", "")
+
+
 def _now():
     return datetime.datetime.now()
 
@@ -549,7 +554,8 @@ def api_create_order():
 
             if is_new:
                 order_number = t.next_folio()
-                order = {"order_number": order_number, "created_at": now, "items": []}
+                order = {"order_number": order_number, "created_at": now, "items": [],
+                         "created_by": _current_user(), "origen": "Reasignación manual"}
                 orders.append(order)
             else:
                 order_number = str(data.get("order_number", "")).strip().upper()
@@ -571,7 +577,7 @@ def api_create_order():
                     "label_code": str(it.get("label_code") or stk.get("label_code", "")).strip().upper(),
                     "job": str(it.get("job", "")).strip().upper(),
                     "unit_cost": cost, "quantity": qty, "total_cost": round(cost * qty, 2),
-                    "added_at": now,
+                    "added_at": now, "added_by": _current_user(),
                 })
             order["updated_at"] = now
             t.save("orders", orders)
@@ -645,7 +651,8 @@ def api_order_pdf(order_number):
               <td>{_h(it.get('description'))}</td><td>{_h(it.get('job'))}</td>
               <td style="text-align:right">{_h(it.get('quantity', 0))}</td>
               <td style="text-align:right">${float(it.get('unit_cost', 0) or 0):,.2f}</td>
-              <td style="text-align:right">${t:,.2f}</td></tr>""")
+              <td style="text-align:right">${t:,.2f}</td>
+              <td>{_h(it.get('added_by') or order.get('created_by') or '—')}</td></tr>""")
         html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>{_h(order['order_number'])}</title>
         <style>
           body{{font-family:Arial,sans-serif;font-size:11px;color:#222;margin:30px}}
@@ -661,9 +668,9 @@ def api_order_pdf(order_number):
         </style></head><body>
         <div class="tag">MATERIAL EN CONSIGNACIÓN</div>
         <h1>Orden de Reasignación: {_h(order['order_number'])}</h1>
-        <div class="sub">Fecha: {_h(order.get('created_at', '')[:10])} &nbsp;|&nbsp; Persico México</div>
+        <div class="sub">Fecha: {_h(order.get('created_at', '')[:10])} &nbsp;|&nbsp; Generada por: <b>{_h(order.get('created_by') or '— (orden anterior al registro de usuario)')}</b> &nbsp;|&nbsp; Persico México</div>
         <table><tr><th>No. Parte</th><th>Fabricante</th><th>Descripción</th><th>Job</th>
-          <th style="text-align:right">Cant.</th><th style="text-align:right">Costo Unit.</th><th style="text-align:right">Total USD</th></tr>
+          <th style="text-align:right">Cant.</th><th style="text-align:right">Costo Unit.</th><th style="text-align:right">Total USD</th><th>Agregó</th></tr>
         {''.join(rows)}
         </table>
         <div class="total">Total: ${total:,.2f} USD</div>

@@ -9621,7 +9621,7 @@ def api_get_reassign():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-def _reassign_create_order(order_number, is_new, items):
+def _reassign_create_order(order_number, is_new, items, origen="Reasignación manual"):
     """Crea una orden RA nueva (folio asignado aquí) o agrega items a una existente,
     descontando Stock. Regresa (dict, http_status). Lo usan POST /api/reassign y
     la reasignación desde Requisición de Compra. Llamar SIN tener tomado `lock`."""
@@ -9641,7 +9641,8 @@ def _reassign_create_order(order_number, is_new, items):
             else:
                 return {"error":"No se pudo asignar un folio RA libre"}, 500
             order = {"order_number": order_number,
-                     "created_at": datetime.datetime.now().isoformat(), "items": []}
+                     "created_at": datetime.datetime.now().isoformat(), "items": [],
+                     "created_by": session.get("user", ""), "origen": origen}
             orders.append(order)
         else:
             order = next((o for o in orders if o["order_number"]==order_number), None)
@@ -9664,6 +9665,7 @@ def _reassign_create_order(order_number, is_new, items):
                 "unit_cost":   cost, "quantity": qty,
                 "total_cost":  round(cost*qty, 2),
                 "added_at":    datetime.datetime.now().isoformat(),
+                "added_by":    session.get("user", ""),
             })
         order["updated_at"] = datetime.datetime.now().isoformat()
         reassign_save(orders)
@@ -9771,7 +9773,7 @@ def _return_items_to_inventory(records, items, id_prefix):
         devuelto.append({"part_number": pnum, "manufacturer": mfr, "quantity": qty, "accion": accion})
     return devuelto
 
-def _req_revert_order(order_number, jobs):
+def _req_revert_order(order_number, jobs, order_items=None):
     """Si la orden salió de Requisición de Compra, quita su cantidad de los renglones
     (cantidad_reasignada / reasignaciones) y regresa a "Solicitado" los que estaban
     "Reasignado" y vuelven a tener pendiente. Regresa cuántos renglones se ajustaron."""
@@ -9781,11 +9783,21 @@ def _req_revert_order(order_number, jobs):
     try:
         n = 0
         rows = s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.job.in_(list(jobs))).all()
+        # Renglones reasignados antes de rev18 no tienen historial: se identifican por
+        # Job + No. de parte (o etiqueta) de los items de la orden eliminada.
+        legacy = {(str(i.get("job") or "").upper(), _req_pn(c)) for i in (order_items or [])
+                  for c in (i.get("part_number"), i.get("label_code")) if _req_pn(c)}
         for row in rows:
             d = row.data
             regs = d.get("reasignaciones") or []
             quitar = sum(float(r.get("cantidad") or 0) for r in regs if r.get("order_number") == order_number)
-            if not quitar: continue
+            if not quitar:
+                if (not regs and d.get("status") == "Reasignado"
+                        and (str(row.job or "").upper(), _req_pn(d.get("part_number"))) in legacy):
+                    d["status"] = "Solicitado"; row.status = "Solicitado"
+                    d["cantidad_reasignada"] = 0
+                    row.data = d; _orm_flag_modified(row, "data"); n += 1
+                continue
             d["reasignaciones"] = [r for r in regs if r.get("order_number") != order_number]
             d["cantidad_reasignada"] = max(0.0, float(d.get("cantidad_reasignada") or 0) - quitar)
             if d.get("status") == "Reasignado" and float(d.get("quantity") or 0) - d["cantidad_reasignada"] > 0:
@@ -9816,7 +9828,7 @@ def api_delete_reassign_order(order_number):
             reassign_save([o for o in orders if o is not order])   # la orden sigue existiendo y no se pierde material
         jobs = {str(i.get("job") or "").upper() for i in order.get("items") or []} - {""}
         try:
-            req_ajustados = _req_revert_order(num, jobs)
+            req_ajustados = _req_revert_order(num, jobs, order.get("items") or [])
         except Exception as e:
             print(f"[REQ] No se pudo revertir la requisición de {num}: {e}")
             req_ajustados = None
@@ -9857,10 +9869,11 @@ def api_reassign_pdf(order_number):
           .total{{text-align:right;font-weight:bold;font-size:13px;color:#1a7a1a;margin-top:12px}}
           .footer{{margin-top:30px;font-size:10px;color:#999;border-top:1px solid #ddd;padding-top:8px}}
         </style></head><body>
-        <h1>Orden de Reasignación: {order['order_number']}</h1>
-        <div class="sub">Fecha: {order.get('created_at','')[:10]} &nbsp;|&nbsp; Persico México</div>
+        <h1>Orden de Reasignación: {_html.escape(order['order_number'])}</h1>
+        <div class="sub">Fecha: {order.get('created_at','')[:10]} &nbsp;|&nbsp; Generada por: <b>{_html.escape(order.get('created_by') or '— (orden anterior al registro de usuario)')}</b>
+          {('&nbsp;|&nbsp; Origen: ' + _html.escape(order['origen'])) if order.get('origen') else ''} &nbsp;|&nbsp; Persico México</div>
         <table>
-          <tr><th>No. Parte</th><th>Fabricante</th><th>Descripción</th><th>Job</th><th style="text-align:right">Cant.</th><th style="text-align:right">Costo Unit.</th><th style="text-align:right">Total USD</th></tr>
+          <tr><th>No. Parte</th><th>Fabricante</th><th>Descripción</th><th>Job</th><th style="text-align:right">Cant.</th><th style="text-align:right">Costo Unit.</th><th style="text-align:right">Total USD</th><th>Agregó</th></tr>
         """
         total = 0.0
         for item in order.get("items",[]):
@@ -9874,6 +9887,7 @@ def api_reassign_pdf(order_number):
               <td style="text-align:right">{item.get('quantity',0)}</td>
               <td style="text-align:right">${item.get('unit_cost',0):,.2f}</td>
               <td style="text-align:right">${t:,.2f}</td>
+              <td>{_html.escape(item.get('added_by') or order.get('created_by') or '—')}</td>
             </tr>"""
         html += f"""</table>
         <div class="total">Total: ${total:,.2f} USD</div>
@@ -10356,7 +10370,7 @@ def api_requisiciones_reasignar_stock():
                               "pedido": pedido, "asignado": asignado})
         if not ra_items:
             return jsonify({"error": "Ninguno de los materiales tiene existencia en Stock"}), 400
-        body, code = _reassign_create_order("", True, ra_items)
+        body, code = _reassign_create_order("", True, ra_items, origen=f"Requisición de Compra ({job})")
         if code != 200:
             return jsonify(body), code
         # Descontar de la requisición lo reasignado (antes no se hacía y el renglón seguía
