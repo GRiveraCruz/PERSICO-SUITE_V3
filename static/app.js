@@ -7917,10 +7917,28 @@ stockRender = function() {
 
 // ── Update loadReassign to show delete and PDF buttons for admins
 const _origLoadReassign = loadReassign;
+// ── Columna "Job" de las tablas de reasignación (Stock y Consignación): cada Job es un
+//    botón que filtra la tabla por ese Job (usa el mismo filtro del costado).
+function raJobChips(o, fltId, active){
+  const jobs = [...new Set((o.items||[]).map(i=>(i.job||'').toUpperCase()).filter(Boolean))];
+  return jobs.map(j=>{ const on = active && j===active.toUpperCase();
+    return `<button onclick="raFilterJob('${fltId}','${esc(j)}')" title="${on?'Quitar filtro':'Filtrar por este Job'}"
+      style="font-family:'DM Mono',monospace;font-size:11px;font-weight:600;padding:2px 8px;margin:1px 3px 1px 0;border-radius:10px;cursor:pointer;
+      border:1px solid ${on?'var(--red)':'var(--border)'};background:${on?'rgba(200,16,46,.12)':'transparent'};color:${on?'var(--red)':'var(--gold)'}">${esc(j)}</button>`;}).join('') || '<span style="color:var(--muted)">—</span>';
+}
+function raFilterJob(fltId, job){
+  const inp = document.getElementById(fltId); if(!inp) return;
+  inp.value = inp.value.trim().toUpperCase()===job.toUpperCase() ? '' : job;   // segundo clic quita el filtro
+  (fltId==='cra-job-flt' ? loadCsgReassign : loadReassign)();
+}
+function raCountText(n, job, fltId){
+  return `${n} ${n===1?'orden':'órdenes'}${job?` · Job ${esc(job)} <a href="#" onclick="raFilterJob('${fltId}','${esc(job)}');return false" style="color:var(--red);margin-left:6px">✕ quitar filtro</a>`:''}`;
+}
+
 loadReassign = async function() {
   const job = document.getElementById('ra-job-flt')?.value.trim()||'';
   try {
-    const url = '/api/reassign'+(job?`?job=${job}`:'');
+    const url = '/api/reassign'+(job?`?job=${encodeURIComponent(job)}`:'');
     const d   = await fetch(url).then(r=>r.json());
     if(d.error){toast(d.error,'er');return;}
     raNextNum = d.next_number;
@@ -7930,6 +7948,7 @@ loadReassign = async function() {
       const total = (o.items||[]).reduce((s,i)=>s+parseFloat(i.total_cost||0),0);
       return `<tr>
         <td><b style="color:var(--gold);font-family:'DM Mono',monospace">${esc(o.order_number)}</b></td>
+        <td>${raJobChips(o,'ra-job-flt',job)}</td>
         <td style="color:var(--muted)">${(o.created_at||'').slice(0,10)}</td>
         <td style="color:var(--muted2)">${(o.items||[]).length} items${o.created_by?` · ${esc(o.created_by)}`:''}${o.origen&&o.origen.startsWith('Requisición')?' · <span style="color:#6d28d9">desde requisición</span>':''}</td>
         <td style="text-align:right;font-weight:700;color:var(--green)">${fmt(total)}</td>
@@ -7939,7 +7958,7 @@ loadReassign = async function() {
         </td>
       </tr>`;
     }).join('');
-    document.getElementById('ra-count').textContent=`${d.orders.length} órdenes`;
+    document.getElementById('ra-count').innerHTML=raCountText(d.orders.length, job, 'ra-job-flt');
   }catch(e){toast('Error cargando reasignaciones','er');}
 };
 
@@ -8153,11 +8172,11 @@ async function loadCsgReassign(){
     const isAdm = USER_PERMS && USER_PERMS.is_admin;
     document.getElementById('cra-tb').innerHTML = (d.orders||[]).slice().reverse().map(o=>{
       const total = (o.items||[]).reduce((s,i)=>s+parseFloat(i.total_cost||0),0);
-      const jobsTxt = [...new Set((o.items||[]).map(i=>i.job).filter(Boolean))].join(', ');
       return `<tr>
         <td><b style="color:var(--gold);font-family:'DM Mono',monospace">${esc(o.order_number)}</b></td>
+        <td>${raJobChips(o,'cra-job-flt',job)}</td>
         <td style="color:var(--muted)">${esc((o.created_at||'').slice(0,10))}</td>
-        <td style="color:var(--muted2)">${(o.items||[]).length} items${jobsTxt?` · ${esc(jobsTxt)}`:''}</td>
+        <td style="color:var(--muted2)">${(o.items||[]).length} items${o.created_by?` · ${esc(o.created_by)}`:''}</td>
         <td style="text-align:right;font-weight:700;color:var(--green)">${fmt(total)}</td>
         <td>
           <button onclick="printCsgReassignOrder('${esc(o.order_number)}')" class="btn-reload" style="font-size:10px;padding:3px 8px">PDF</button>
@@ -8165,7 +8184,7 @@ async function loadCsgReassign(){
         </td>
       </tr>`;
     }).join('');
-    document.getElementById('cra-count').textContent=`${(d.orders||[]).length} órdenes`;
+    document.getElementById('cra-count').innerHTML=raCountText((d.orders||[]).length, job, 'cra-job-flt');
   }catch(e){toast('Error cargando reasignaciones de consignación: '+e.message,'er');}
 }
 
