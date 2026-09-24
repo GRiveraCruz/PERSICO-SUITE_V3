@@ -7499,10 +7499,10 @@ function reqSetTipo(tipo){
 async function reqRenderTab(){
   if(!reqCurrentJob) return;
   const tb = document.getElementById('req-tb');
-  tb.innerHTML = '<tr><td colspan="7"><div class="es"><div class="spinner"></div></div></td></tr>';
+  tb.innerHTML = '<tr><td colspan="8"><div class="es"><div class="spinner"></div></div></td></tr>';
   try{
     const d = await fetch(`/api/requisiciones/${encodeURIComponent(reqCurrentJob)}?tipo=${reqCurrentTipo}`).then(r=>r.json());
-    if(d.error){ toast(d.error,'er'); tb.innerHTML=`<tr><td colspan="7"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
+    if(d.error){ toast(d.error,'er'); tb.innerHTML=`<tr><td colspan="8"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
     reqItems = d.items || [];
     const porRevisar = reqItems.filter(i=>i.revision).length;
     document.getElementById('req-tab-count').textContent = `${REQ_TIPO_LABELS[reqCurrentTipo]} — ${reqItems.length} renglón(es)${porRevisar?` · ⚠ ${porRevisar} por revisar`:''}`;
@@ -7513,7 +7513,7 @@ async function reqRenderTab(){
 function reqRenderTable(){
   const tb = document.getElementById('req-tb');
   if(!reqItems.length){
-    tb.innerHTML = '<tr><td colspan="7"><div class="es"><span class="ei">📋</span><br>Sin renglones subidos para este BOM todavía.</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="8"><div class="es"><span class="ei">📋</span><br>Sin renglones subidos para este BOM todavía.</div></td></tr>';
     return;
   }
   // Leyenda de colores (una sola vez, junto al conteo de renglones)
@@ -7523,15 +7523,16 @@ function reqRenderTable(){
   }
   tb.innerHTML = reqItems.map(it=>{
     const [fg,bg] = REQ_STATUS_COLOR[it.status] || ['var(--text)','transparent'];
-    const reas = parseFloat(it.cantidad_reasignada)||0, pend = reqPendiente(it);
+    const reas = parseFloat(it.cantidad_reasignada)||0, comprada=parseFloat(it.cantidad_comprada)||0, pend = reqPendiente(it);
     const tip = (it.reasignaciones||[]).map(r=>`${r.order_number}: ${r.cantidad}`).join(' · ');
     return `
     <tr style="box-shadow:inset 4px 0 0 ${fg}">
+      <td><input type="checkbox" class="req-oc-check" value="${esc(it.id)}" ${it.status==='Solicitado'&&pend>0?'':'disabled'} aria-label="Seleccionar ${esc(it.part_number)}"></td>
       <td>${esc(it.brand||'—')}</td>
       <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number||'')}</td>
       <td style="color:var(--muted2)"><div title="${esc(it.description||'')}" style="max-width:min(420px,32vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.description||'')}</div></td>
       <td style="text-align:right" ${tip?`title="Reasignado en ${esc(tip)}"`:''}>
-        ${reas>0 ? `<b style="color:${pend>0?'var(--text)':'var(--muted)'}">${pend}</b><div style="font-size:10px;color:#6d28d9">de ${it.quantity} · ${reas} reasignado</div>` : (it.quantity ?? 0)}
+        ${reas>0||comprada>0 ? `<b style="color:${pend>0?'var(--text)':'var(--muted)'}">${pend}</b><div style="font-size:10px;color:#6d28d9">de ${it.quantity} · ${reas} reasignado · ${comprada} comprado</div>` : (it.quantity ?? 0)}
         ${it.revision?`<div style="margin-top:4px;padding:4px 6px;border:1px solid var(--amber);border-radius:6px;background:rgba(245,158,11,.08);font-size:10px;color:var(--amber);white-space:normal;text-align:left;min-width:150px">
           ⚠ Nueva requisición pide <b>${it.revision.cantidad_nueva}</b> (actual ${it.revision.cantidad_actual})
           <div style="margin-top:3px"><button onclick="reqRevision('${esc(it.id)}','aceptar')" class="btn-reload" style="font-size:10px;padding:2px 6px">Aceptar</button>
@@ -7616,6 +7617,37 @@ async function reqBuscarStock(){
       cell.innerHTML = html;
     });
   }catch(e){ box.innerHTML = 'Error: '+e; }
+}
+
+function reqSeleccionarTodos(checked){
+  document.querySelectorAll('.req-oc-check:not(:disabled)').forEach(el=>{el.checked=checked;});
+}
+
+async function reqPrepararOC(){
+  const ids = new Set([...document.querySelectorAll('.req-oc-check:checked')].map(el=>el.value));
+  const elegidos = reqItems.filter(it=>ids.has(String(it.id)) && it.status==='Solicitado' && reqPendiente(it)>0);
+  if(!elegidos.length){toast('Selecciona renglones Solicitado con cantidad pendiente','er');return;}
+  try{
+    const r = await apiCall('POST','/requisiciones/buscar-stock',{items:elegidos.map(it=>({part_number:it.part_number,quantity:reqPendiente(it)}))});
+    if(r.error){toast(r.error,'er');return;}
+    const conStock = elegidos.filter((it,i)=>Number(r.resultados[i].quantity_en_stock)>0);
+    const libres = elegidos.filter((it,i)=>Number(r.resultados[i].quantity_en_stock)<=0);
+    if(conStock.length) alert('Estos materiales tienen existencia en Stock y se retiraron de la orden: '+conStock.map(it=>it.part_number).join(', ')+'. Revisa si corresponde reasignarlos.');
+    if(!libres.length){toast('No quedan materiales sin existencia para comprar','er');return;}
+    await openNewGPO();
+    document.getElementById('gpo-job-type').value='Unico';
+    document.getElementById('gpo-job-unico').value=reqCurrentJob;
+    gpoJobTypeChange();
+    gpoAutoFillCPO();
+    gpoItems=libres.map((it,idx)=>({
+      line:idx+1, cat_type:reqCurrentTipo==='componentes_mayores'?'major':reqCurrentTipo,
+      cat_code:'',brand:it.brand||'',part_number:it.part_number,
+      description:it.description||'',label_code:'',quantity:Number(reqPendiente(it)),
+      unit_price:0,total:0,job:reqCurrentJob,notes:'',requisicion_item_id:it.id
+    }));
+    gpoRenderItems();
+    toast('Selecciona proveedor y esquema tributario; captura el precio unitario de cada renglón','if',6500);
+  }catch(e){toast('No se pudo preparar la orden: '+e,'er');}
 }
 
 // ── Reasignar a este Job lo que sí hay en Stock (una orden RA nueva)
@@ -9203,7 +9235,7 @@ function gpoRenderItems() {
       <td style="font-family:'DM Mono',monospace;font-size:11px">${esc(i.part_number)}</td>
       <td style="color:var(--muted2)">${esc(i.description)}</td>
       <td style="text-align:right">${i.quantity}</td>
-      <td style="text-align:right">${fmt(i.unit_price)}</td>
+      <td style="text-align:right"><input type="number" min="0" step="0.01" aria-label="Precio unitario de ${esc(i.part_number)}" value="${i.unit_price}" oninput="gpoCambiarPrecio(${idx},this.value)" style="width:90px;padding:4px;color:var(--text);background:var(--inp);border:1px solid var(--border);border-radius:4px"></td>
       <td style="text-align:right;font-weight:700;color:var(--green)">${fmt(i.total)}</td>
       <td style="font-family:'DM Mono',monospace;font-size:10px;color:var(--gold)">${esc(i.job||'—')}</td>
       <td style="color:var(--muted);font-size:10px">${esc(i.notes||'')}</td>
@@ -9214,6 +9246,17 @@ function gpoRenderItems() {
   const esqFolio = document.getElementById('gpo-esquema')?.value;
   gpoUpdateTotalPreview(gpoEsquemasCache.find(e=>e.folio===esqFolio));
   gpoUpdateSaveBtnState();
+}
+
+function gpoCambiarPrecio(idx,value){
+  const precio=Number(value);
+  gpoItems[idx].unit_price=Number.isFinite(precio)&&precio>=0?precio:0;
+  gpoItems[idx].total=Math.round(gpoItems[idx].unit_price*gpoItems[idx].quantity*100)/100;
+  const row=document.getElementById('gpo-items-tb').rows[idx];
+  row.cells[8].textContent='$'+gpoItems[idx].total.toLocaleString('en-US',{minimumFractionDigits:2});
+  const total=gpoItems.reduce((s,i)=>s+i.total,0);
+  document.getElementById('gpo-subtotal').textContent='$'+total.toLocaleString('en-US',{minimumFractionDigits:2});
+  gpoUpdateTotalPreview(gpoEsquemasCache.find(e=>e.folio===document.getElementById('gpo-esquema').value));
 }
 
 function gpoRemoveItem(idx) {
@@ -9325,12 +9368,21 @@ async function saveGPO() {
     };
     const d = await fetch('/api/gpo',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload)}).then(r=>r.json());
+    if(d.stock_bloqueado?.length){
+      const bloqueados=new Set(d.stock_bloqueado.map(x=>x.index));
+      alert('Hay materiales en Stock y se retiraron de esta orden: '+d.stock_bloqueado.map(x=>x.part_number+' ('+x.quantity_en_stock+')').join(', ')+'. Revisa la reasignación antes de emitir.');
+      gpoItems=gpoItems.filter((_,idx)=>!bloqueados.has(idx));
+      gpoItems.forEach((it,idx)=>it.line=idx+1);
+      gpoRenderItems();
+      return;
+    }
     if(d.error){toast(d.error,'er');return;}
     closeMo('mo-gpo');
     toast(`PO emitida: ${d.po_number} · ${gpoItems.length} items ✓`,'ok',6000);
     // Abrir PDF en nueva pestaña
     setTimeout(()=>window.open(`/api/gpo/${d.po_number}/pdf`,'_blank'),500);
     await loadPO();
+    if(reqCurrentJob && typeof reqRenderTab==='function') reqRenderTab();
   }catch(e){toast('Error: '+e.message,'er');}
   finally{btn.disabled=false;btn.textContent='💾 Emitir Orden de Compra';}
 }

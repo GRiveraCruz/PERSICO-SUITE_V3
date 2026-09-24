@@ -5348,14 +5348,18 @@ def api_delete_gpo(po_number):
                    r.get("po_number","").upper().replace("PO#","PO-").replace("PO_","PO-") != po_clean]
             if len(new) == len(records):
                 return jsonify({"error": "PO no encontrada"}), 404
+            removed = next(r for r in records if
+                           r.get("po_number","").upper().replace("PO#","PO-").replace("PO_","PO-") == po_clean)
             gpo_save(new)
             # Remove related IPO items
-            year = datetime.datetime.now().year
+            year = int(str(removed.get("created_at") or "")[:4] or datetime.datetime.now().year)
             ipo = po_load(year)
             ipo_new = [r for r in ipo if
                        str(r.get("gpo_number","")).upper().replace("PO#","PO-").replace("PO_","PO-") != po_clean
                        and str(r.get("clave","")).upper().replace("PO#","PO-").replace("PO_","PO-") != po_clean]
             po_save(year, ipo_new)
+            if removed.get("status") != "Cancelada":
+                _req_revertir_po(removed)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -10550,6 +10554,8 @@ def api_requisiciones_update(item_id):
                     row.data["quantity"] = rev["cantidad_nueva"]
                     if row.data.get("status") == "Reasignado" and float(rev["cantidad_nueva"]) - float(row.data.get("cantidad_reasignada") or 0) > 0:
                         row.data["status"] = "Solicitado"; row.status = "Solicitado"
+                    if row.data.get("status") == "Comprado" and _req_con_pendiente(row.data)["cantidad_pendiente"] > 0:
+                        row.data["status"] = "Solicitado"; row.status = "Solicitado"
                 row.data.pop("revision", None)
             row.data["updated_by"] = session.get("user", ""); row.data["updated_at"] = datetime.datetime.now().isoformat()
             _orm_flag_modified(row, "data")
@@ -10582,14 +10588,45 @@ def api_requisiciones_delete(item_id):
 REQ_ESTATUS_REASIGNABLES = ("Solicitado", "Homologado")   # Comprado/Cancelado/Reasignado no se reasignan
 
 def _req_con_pendiente(item):
-    """Copia del renglón con cantidad_reasignada y cantidad_pendiente (= pedida − reasignada).
+    """Copia del renglón con cantidad_reasignada y cantidad_pendiente (= pedida − reasignada − comprada).
     Lo pendiente es lo que Compras todavía tiene que comprar."""
     it = dict(item)
     qty = float(it.get("quantity") or 0)
     reas = float(it.get("cantidad_reasignada") or 0)
+    comprada = float(it.get("cantidad_comprada") or 0)
     it["cantidad_reasignada"] = reas
-    it["cantidad_pendiente"] = max(0.0, qty - reas)
+    it["cantidad_comprada"] = comprada
+    it["cantidad_pendiente"] = max(0.0, qty - reas - comprada)
     return it
+
+def _req_revertir_po(rec):
+    """Devuelve a la requisición las cantidades de una PO anulada o eliminada."""
+    if not _orm or not _orm.DB_ENABLED:
+        return
+    linked = [it for it in rec.get("items", []) if it.get("requisicion_item_id")]
+    if not linked:
+        return
+    s = _orm.get_session()
+    try:
+        ids = [it["requisicion_item_id"] for it in linked]
+        rows = (s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.item_id.in_(ids))
+                .order_by(_orm.RequisicionCompra.id).with_for_update().all())
+        by_id = {r.item_id: r for r in rows}
+        for it in linked:
+            row = by_id.get(it["requisicion_item_id"])
+            if not row: continue
+            d = dict(row.data)
+            d["cantidad_comprada"] = max(0, float(d.get("cantidad_comprada") or 0) - float(it["quantity"]))
+            d["ordenes_compra"] = [o for o in d.get("ordenes_compra", [])
+                                    if o.get("po_number") != rec.get("po_number")]
+            if d.get("status") == "Comprado" and _req_con_pendiente(d)["cantidad_pendiente"] > 0:
+                d["status"] = "Solicitado"
+                row.status = "Solicitado"
+            row.data = d
+            _orm_flag_modified(row, "data")
+        s.commit()
+    finally:
+        s.close()
 
 def _req_match_index(records):
     """Índice para buscar registros de Stock/Consignación por No. de parte O por
@@ -11063,8 +11100,10 @@ def api_get_gpo():
 
 @app.route("/api/gpo", methods=["POST"])
 def api_create_gpo():
+    if not can("create", "gpo"): return jsonify({"error": "Sin permiso para emitir órdenes de compra"}), 403
+    req_session = None
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         supplier  = data.get("supplier", {})
         pt_sv     = str(data.get("pt_sv","")).strip().upper()
         cpo       = str(data.get("cpo","")).strip().upper()
@@ -11081,6 +11120,54 @@ def api_create_gpo():
         if not esquema_tributario or not esquema_tributario.get("folio"):
             return jsonify({"error": "Debes seleccionar el Esquema Tributario antes de emitir la Orden de Compra"}), 400
         with lock:
+            # Sesión independiente: gpo_load/gpo_save usan scoped_session y cierran
+            # la sesión habitual; compartirla liberaría el bloqueo de la requisición.
+            req_session = _orm.SessionLocal.session_factory() if _orm and _orm.DB_ENABLED else None
+            try:
+                req_rows = {}
+                req_ids = [str(it.get("requisicion_item_id")) for it in items if it.get("requisicion_item_id")]
+                if req_ids:
+                    if not req_session or len(req_ids) != len(set(req_ids)):
+                        return jsonify({"error": "Requisiciones inválidas o repetidas"}), 400
+                    rows = (req_session.query(_orm.RequisicionCompra)
+                            .filter(_orm.RequisicionCompra.item_id.in_(req_ids))
+                            .order_by(_orm.RequisicionCompra.id).with_for_update().all())
+                    req_rows = {r.item_id: r for r in rows}
+                    if len(req_rows) != len(req_ids):
+                        return jsonify({"error": "Uno de los renglones de requisición ya no existe. Recarga la lista."}), 409
+                # Consultar la existencia actual justo antes de generar el folio.
+                # Cada renglón con stock se devuelve al navegador para retirarlo del borrador.
+                stock_records = ([r.data for r in req_session.query(_orm.Stock).all()]
+                                 if req_session else stock_load())
+                stock_find = _req_match_index(stock_records)
+                blocked = []
+                for idx, it in enumerate(items):
+                    pn = _req_pn(it.get("part_number"))
+                    if not pn: return jsonify({"error": "Todos los materiales requieren número de parte"}), 400
+                    qty_input = float(it.get("quantity") or 0)
+                    if qty_input <= 0 or qty_input != int(qty_input):
+                        return jsonify({"error": f"Cantidad inválida para {pn}"}), 400
+                    qty_stock = sum(max(0, float(r.get("quantity") or 0)) for r in stock_find(pn)[0])
+                    if qty_stock > 0:
+                        blocked.append({"index": idx, "part_number": pn, "quantity_en_stock": qty_stock})
+                    rid = it.get("requisicion_item_id")
+                    if rid:
+                        row = req_rows[str(rid)]
+                        pending = _req_con_pendiente(row.data)["cantidad_pendiente"]
+                        if (row.status != "Solicitado" or row.job != job_main
+                                or _req_pn(row.data.get("part_number")) != pn
+                                or qty_input > pending):
+                            return jsonify({"error": f"El renglón {pn} cambió o excede lo pendiente. Recarga la requisición."}), 409
+                if blocked:
+                    return jsonify({"error": "Hay materiales en Stock; se retiraron del borrador.", "stock_bloqueado": blocked}), 409
+                if not supplier or not supplier.get("nombre"):
+                    return jsonify({"error": "Selecciona un proveedor"}), 400
+                if any(float(it.get("unit_price") or 0) <= 0 for it in items):
+                    return jsonify({"error": "Captura un precio unitario mayor a cero para cada material"}), 400
+            except (ValueError, TypeError):
+                return jsonify({"error": "Cantidad, existencia o precio inválido"}), 400
+            if req_ids and _orm.engine.dialect.name == "postgresql":
+                _orm.acquire_year_lock(req_session, "generated_pos", None)
             po_number = gpo_next_number()
             now = datetime.datetime.now().isoformat()
             po_items = []
@@ -11106,6 +11193,7 @@ def api_create_gpo():
                     "total":       round(qty * up, 2),
                     "job":         item_job,
                     "notes":       str(it.get("notes","")).strip(),
+                    "requisicion_item_id": str(it.get("requisicion_item_id") or ""),
                 })
             subtotal     = round(sum(i["total"] for i in po_items), 2)
             iva_amt      = round(subtotal * iva_pct / 100, 2)
@@ -11144,9 +11232,10 @@ def api_create_gpo():
                 "created_by":    session.get("user",""),
                 "created_at":    now,
             }
-            records = gpo_load()
-            records.append(rec)
-            gpo_save(records)
+            if not req_ids:
+                records = gpo_load()
+                records.append(rec)
+                gpo_save(records)
             # Registrar en IPOs por item
             year = datetime.datetime.now().year
             ipo_records = po_load(year)
@@ -11175,7 +11264,32 @@ def api_create_gpo():
                     "quantity":             it["quantity"],
                     "unit_price":           it["unit_price"],
                 })
-            po_save(year, ipo_records)
+            if req_ids:
+                if _orm.engine.dialect.name == "postgresql":
+                    _orm.acquire_year_lock(req_session, "purchase_orders", year)
+                req_session.add(_orm.GeneratedPO(data=rec, po_number=po_number))
+                for ipo in ipo_records[-len(po_items):]:
+                    req_session.add(_orm.PurchaseOrder(
+                        data=ipo, content_hash=_orm.canonical_hash(ipo), year=year,
+                        po_number=po_number, job=ipo["entregar_a"]))
+            else:
+                po_save(year, ipo_records)
+            if req_ids:
+                for it in po_items:
+                    rid = it.get("requisicion_item_id")
+                    if not rid: continue
+                    row = req_rows[rid]
+                    d = dict(row.data)
+                    d["cantidad_comprada"] = float(d.get("cantidad_comprada") or 0) + it["quantity"]
+                    d.setdefault("ordenes_compra", []).append({
+                        "po_number": po_number, "cantidad": it["quantity"],
+                        "fecha": now, "usuario": session.get("user", "")})
+                    if _req_con_pendiente(d)["cantidad_pendiente"] <= 0:
+                        d["status"] = "Comprado"
+                        row.status = "Comprado"
+                    row.data = d
+                    _orm_flag_modified(row, "data")
+                req_session.commit()
             # Actualizar último precio en catálogo
             for it in po_items:
                 ct = it.get("cat_type","")
@@ -11192,6 +11306,9 @@ def api_create_gpo():
         return jsonify({"ok": True, "po_number": po_number, "record": rec})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        if req_session:
+            req_session.close()
 
 def _numero_a_letras(num):
     u  = ['','uno','dos','tres','cuatro','cinco','seis','siete','ocho','nueve',
@@ -11266,6 +11383,8 @@ def api_gpo_modificar(po_number):
             status = rec.get("status","")
             if status == "Entregada":
                 return jsonify({"error":"Las órdenes entregadas no se pueden modificar"}), 400
+            if tipo == "nueva_version" and any(it.get("requisicion_item_id") for it in rec.get("items", [])):
+                return jsonify({"error": "Esta orden está vinculada a una requisición. Cancélala y emite una nueva orden con los renglones pendientes."}), 400
 
             now = datetime.datetime.now().isoformat()
             user = session.get("user","")
@@ -11445,6 +11564,8 @@ def api_gpo_modificar(po_number):
                         break  # Found the right year, stop
 
             gpo_save(records)
+            if tipo == "cancelar":
+                _req_revertir_po(rec)
         return jsonify({"ok": True, "record": rec})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

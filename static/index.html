@@ -4167,16 +4167,19 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:11px;color:var(--muted)"><span id="req-tab-count">—</span></div>
-          <button class="btn-reload" onclick="reqBuscarStock()">Buscar en Stock</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-reload" onclick="reqBuscarStock()">Buscar en Stock</button>
+            <button class="btn-new" onclick="reqPrepararOC()">Crear orden con solicitados</button>
+          </div>
         </div>
 
         <div class="tw">
           <table>
             <thead><tr>
-              <th>Marca</th><th>No. Parte</th><th>Descripción</th><th style="text-align:right" title="Pendiente por comprar (pedido − reasignado)">Cantidad</th>
+              <th><input type="checkbox" aria-label="Seleccionar solicitados" onchange="reqSeleccionarTodos(this.checked)"></th><th>Marca</th><th>No. Parte</th><th>Descripción</th><th style="text-align:right" title="Pendiente por comprar (pedido − reasignado)">Cantidad</th>
               <th>Estatus</th><th>En Stock</th><th></th>
             </tr></thead>
-            <tbody id="req-tb"><tr><td colspan="7"><div class="es">Selecciona un Job para ver su BOM.</div></td></tr></tbody>
+            <tbody id="req-tb"><tr><td colspan="8"><div class="es">Selecciona un Job para ver su BOM.</div></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -7504,7 +7507,6 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
 </body>
 </html>
-
 
 
 
