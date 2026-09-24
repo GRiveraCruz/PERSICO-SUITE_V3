@@ -7304,8 +7304,16 @@ async function reqUploadFile(file){
     const r = await fetch('/api/requisiciones/upload', {method:'POST', body:fd});
     const d = await r.json();
     if(d.error){ statusEl.innerHTML = `<span style="color:var(--red)">⚠ ${esc(d.error)}</span>`; return; }
-    statusEl.innerHTML = `<span style="color:#1f8a4c">✅ ${d.imported} renglón(es) importado(s)</span>`;
-    toast(`BOM importado: ${d.imported} renglón(es) ✓`,'ok');
+    const li = (arr,f) => arr.map(x=>`<li>${f(x)}</li>`).join('');
+    statusEl.innerHTML = `<div style="font-size:12px;line-height:1.6">
+      <div style="color:#1f8a4c;font-weight:700">✅ Requisición procesada</div>
+      <div>• ${d.agregados} renglón(es) nuevo(s) agregado(s)</div>
+      <div>• ${d.actualizados.length} actualizado(s) por mayor cantidad</div>${d.actualizados.length?`<ul style="margin:0 0 0 18px;font-size:11px;color:var(--muted2)">${li(d.actualizados,x=>`${esc(x.part_number)}: ${x.de} → ${x.a}`)}</ul>`:''}
+      <div>• ${d.iguales} sin cambios (misma cantidad, no se duplicaron)</div>
+      ${d.revision.length?`<div style="color:var(--amber);font-weight:700">• ${d.revision.length} para revisión (no se cambiaron):</div><ul style="margin:0 0 0 18px;font-size:11px;color:var(--amber)">${li(d.revision,x=>`${esc(x.part_number)}: actual ${x.actual} → archivo ${x.nueva}${x.status==='Comprado'||x.status==='Cancelado'?` (renglón ${esc(x.status)})`:''}`)}</ul>`:''}
+      ${d.consolidados_en_archivo?`<div style="color:var(--muted)">• ${d.consolidados_en_archivo} renglón(es) repetido(s) dentro del archivo se sumaron en uno</div>`:''}
+    </div>`;
+    toast(`Requisición: ${d.agregados} nuevo(s) · ${d.actualizados.length} actualizado(s) · ${d.iguales} igual(es)${d.revision.length?` · ${d.revision.length} para revisión`:''}`,'ok',6000);
     if(job===reqCurrentJob && tipo===reqCurrentTipo) reqLoadJob();
   }catch(e){ statusEl.innerHTML = `<span style="color:var(--red)">Error: ${e}</span>`; }
 }
@@ -7334,7 +7342,8 @@ async function reqRenderTab(){
     const d = await fetch(`/api/requisiciones/${encodeURIComponent(reqCurrentJob)}?tipo=${reqCurrentTipo}`).then(r=>r.json());
     if(d.error){ toast(d.error,'er'); tb.innerHTML=`<tr><td colspan="7"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
     reqItems = d.items || [];
-    document.getElementById('req-tab-count').textContent = `${REQ_TIPO_LABELS[reqCurrentTipo]} — ${reqItems.length} renglón(es)`;
+    const porRevisar = reqItems.filter(i=>i.revision).length;
+    document.getElementById('req-tab-count').textContent = `${REQ_TIPO_LABELS[reqCurrentTipo]} — ${reqItems.length} renglón(es)${porRevisar?` · ⚠ ${porRevisar} por revisar`:''}`;
     reqRenderTable();
   }catch(e){ toast('Error al cargar el BOM: '+e,'er'); }
 }
@@ -7361,6 +7370,10 @@ function reqRenderTable(){
       <td style="color:var(--muted2)"><div title="${esc(it.description||'')}" style="max-width:min(420px,32vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.description||'')}</div></td>
       <td style="text-align:right" ${tip?`title="Reasignado en ${esc(tip)}"`:''}>
         ${reas>0 ? `<b style="color:${pend>0?'var(--text)':'var(--muted)'}">${pend}</b><div style="font-size:10px;color:#6d28d9">de ${it.quantity} · ${reas} reasignado</div>` : (it.quantity ?? 0)}
+        ${it.revision?`<div style="margin-top:4px;padding:4px 6px;border:1px solid var(--amber);border-radius:6px;background:rgba(245,158,11,.08);font-size:10px;color:var(--amber);white-space:normal;text-align:left;min-width:150px">
+          ⚠ Nueva requisición pide <b>${it.revision.cantidad_nueva}</b> (actual ${it.revision.cantidad_actual})
+          <div style="margin-top:3px"><button onclick="reqRevision('${esc(it.id)}','aceptar')" class="btn-reload" style="font-size:10px;padding:2px 6px">Aceptar</button>
+          <button onclick="reqRevision('${esc(it.id)}','descartar')" class="btn-reload" style="font-size:10px;padding:2px 6px">Descartar</button></div></div>`:''}
       </td>
       <td>
         <select onchange="reqUpdateStatus('${it.id}',this.value)" style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg}">
@@ -7380,6 +7393,17 @@ async function reqUpdateStatus(itemId, status){
     const it = reqItems.find(x=>x.id===itemId);
     if(it) it.status = status;
     reqRenderTable();      // refresca el color del estatus
+  }catch(e){ toast('Error: '+e,'er'); }
+}
+
+async function reqRevision(itemId, accion){
+  const it = reqItems.find(x=>x.id===itemId); if(!it || !it.revision) return;
+  if(accion==='aceptar' && !confirm(`¿Cambiar la cantidad de ${it.part_number} de ${it.revision.cantidad_actual} a ${it.revision.cantidad_nueva}?`)) return;
+  try{
+    const r = await apiCall('PUT','/requisiciones/'+itemId,{revision:accion});
+    if(r.error){ toast(r.error,'er'); return; }
+    toast(accion==='aceptar'?`Cantidad actualizada a ${it.revision.cantidad_nueva}`:'Se conservó la cantidad actual','ok');
+    await reqRenderTab();
   }catch(e){ toast('Error: '+e,'er'); }
 }
 
