@@ -7025,8 +7025,19 @@ def api_dashboard_project_manager():
         if not names:
             return jsonify(out)
         wanted = {_norm_pm(n) for n in names}
-        jobs = [j for j in scan_jobs()
-                if _norm_pm(j.get("pm")) in wanted and (j.get("status") or "").strip().upper() in PM_DASH_STATUS]
+        mine = [j for j in scan_jobs() if _norm_pm(j.get("pm")) in wanted]
+        jobs = [j for j in mine if (j.get("status") or "").strip().upper() in PM_DASH_STATUS]
+        # Gráfica 1 (pastel): todos los Jobs del PM por estatus
+        cats = {"OPEN": "Open", "WIP": "WIP", "DONE": "Cerrado", "CLOSED": "Cerrado", "CERRADO": "Cerrado",
+                "CANCELLED": "Cancelado", "CANCELED": "Cancelado", "CANCELADO": "Cancelado"}
+        est = {"Open": 0, "WIP": 0, "Cerrado": 0, "Cancelado": 0}
+        for j in mine:
+            k = cats.get((j.get("status") or "").strip().upper(), "Otro")
+            est[k] = est.get(k, 0) + 1
+        year = int(request.args.get("year") or CURRENT_YEAR)
+        year_jobs = [j for j in mine if str(_year_of(j) or "") == str(year)]
+        out.update(estatus=est, total_jobs=len(mine), year=year,
+                   years=sorted({int(_year_of(j)) for j in mine if _year_of(j)} | {CURRENT_YEAR}, reverse=True), grafica=[])
         cfg_by_job = {}
         for cfg in projcfg_load():
             for jc in cfg.get("jobs") or []:
@@ -7042,7 +7053,7 @@ def api_dashboard_project_manager():
                     cra_pool=_consig.load("orders") if (_consig and CONSIG_EN_COSTO_JOB) else None,
                     crc_pool=_consig.load("recovery") if (_consig and CONSIG_EN_COSTO_JOB) else None)
             return pools_by_year[y]
-        for j in sorted(jobs, key=lambda x: x.get("job_number", "")):
+        for j in sorted({x["job_number"]: x for x in jobs + year_jobs}.values(), key=lambda x: x.get("job_number", "")):
             jn = j["job_number"]
             y = int(_year_of(j) or CURRENT_YEAR)
             jc = cfg_by_job.get(jn.strip().upper(), {})
@@ -7069,7 +7080,16 @@ def api_dashboard_project_manager():
                            resultado_operativo=round(ro, 2), resultado_pct=round(ro / base * 100, 1) if base else None)
             except Exception as e:
                 row["error"] = str(e)
-            out["jobs"].append(row)
+            if j in jobs:
+                out["jobs"].append(row)
+            if j in year_jobs and "error" not in row:
+                # Gráficas 2 y 3: Target = base (Internal Target o revenue), Cost = base − resultado operativo,
+                # margen = (Target − Cost) / Cost, como en PROJECT_MANAGER_GRAPHICS.xlsx.
+                cost = round(row["base"] - row["resultado_operativo"], 2)
+                out["grafica"].append({"job_number": jn, "status": row["status"], "target": row["base"], "cost": cost,
+                                       "target_configurado": row["internal_target"] is not None,
+                                       # sin target (revenue 0 y sin Configurar Proyecto) el margen no tiene contra qué medirse
+                                       "margen": round((row["base"] - cost) / cost, 4) if cost > 0 and row["base"] > 0 else None})
         return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
