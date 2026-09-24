@@ -7094,6 +7094,85 @@ def api_dashboard_project_manager():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/dashboard/purchasing", methods=["GET"])
+def api_dashboard_purchasing():
+    """Dashboard de inicio del perfil PURCHASING.
+    - Jobs creados en el año: Target Compras (Configurar Proyecto) vs monto adquirido
+      (órdenes de compra IPO del Job, USD) y % de ahorro = (target − adquirido) / target.
+    - Jobs en WIP: por tipo de BOM, si hay requisición, última actualización,
+      % reasignado y % ordenado (promedio por renglón, sin renglones Cancelados)."""
+    me = session.get("user")
+    info = get_user_perms(me) if me else {}
+    if not (is_admin() or info.get("role") == "PURCHASING"):
+        return jsonify({"error": "Sin permiso"}), 403
+    try:
+        year = int(request.args.get("year") or CURRENT_YEAR)
+        all_jobs = scan_jobs()
+        cfg_by_job = {}
+        for cfg in projcfg_load():
+            for jc in cfg.get("jobs") or []:
+                cfg_by_job.setdefault((jc.get("job_number") or "").strip().upper(), jc)
+        pools = dict(wh_pool=wh_load(year), po_pool=po_load(year), fx_all=fx_load_all(),
+                     ra_pool=reassign_load(), rc_pool=recovery_load(),
+                     via_pool=_svc_load(VIATICOS_FILE), gv_pool=_svc_load(GASTOS_FILE), env_pool=_svc_load(ENVIOS_FILE),
+                     cra_pool=_consig.load("orders") if (_consig and CONSIG_EN_COSTO_JOB) else None,
+                     crc_pool=_consig.load("recovery") if (_consig and CONSIG_EN_COSTO_JOB) else None)
+        grafica = []
+        for j in sorted([j for j in all_jobs if str(_year_of(j) or "") == str(year)], key=lambda x: x.get("job_number", "")):
+            jn = j["job_number"]
+            jc = cfg_by_job.get(jn.strip().upper(), {})
+            tc = jc.get("target_compras")
+            tc = float(tc) if tc not in (None, "") else None
+            try:
+                d = _build_report_data(jn, year, year, year, **pools)
+                adq = round(float(d.get("purchasing_total") or 0), 2)
+            except Exception as e:
+                grafica.append({"job_number": jn, "error": str(e)}); continue
+            grafica.append({"job_number": jn, "status": j.get("status", ""), "customer": j.get("customer", ""),
+                            "target_compras": tc, "adquirido": adq,
+                            "ahorro_pct": round((tc - adq) / tc, 4) if tc else None})
+        # Tabla de Jobs en WIP (requisiciones por tipo)
+        wip = sorted([j for j in all_jobs if (j.get("status") or "").strip().upper() == "WIP"], key=lambda x: x.get("job_number", ""))
+        tabla = []
+        reqs = {}
+        if _orm and _orm.DB_ENABLED and wip:
+            s = _orm.get_session()
+            try:
+                for r in s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.job.in_([j["job_number"] for j in wip])).all():
+                    reqs.setdefault((r.job, r.tipo), []).append(r.data)
+            finally:
+                s.close()
+        for j in wip:
+            fila = {"job_number": j["job_number"], "customer": j.get("customer", ""), "pm": j.get("pm", ""), "boms": {}}
+            for tipo in REQ_TIPOS:
+                rows = reqs.get((j["job_number"], tipo)) or []
+                if not rows:
+                    fila["boms"][tipo] = None; continue
+                vivos = [r for r in rows if r.get("status") != "Cancelado"]
+                fr_reas, fr_ord = [], []
+                for r in vivos:
+                    q = float(r.get("quantity") or 0)
+                    reas = float(r.get("cantidad_reasignada") or 0)
+                    if r.get("status") == "Reasignado" and not reas: reas = q      # renglones anteriores a rev18
+                    fr = min(1.0, reas / q) if q > 0 else 0.0
+                    fr_reas.append(fr)
+                    fr_ord.append((1.0 - fr) if r.get("status") == "Comprado" else 0.0)
+                # última actualización: alta, edición, reasignaciones y cambios de cantidad por carga
+                fechas = [str(r.get(k) or "") for r in rows for k in ("updated_at", "created_at") if r.get(k)]
+                fechas += [str(h.get("fecha") or "") for r in rows for h in (r.get("reasignaciones") or []) + (r.get("cambios_cantidad") or []) if h.get("fecha")]
+                fila["boms"][tipo] = {
+                    "renglones": len(rows), "cancelados": len(rows) - len(vivos),
+                    "ultima_actualizacion": max(fechas)[:10] if fechas else "",
+                    "pct_reasignado": round(sum(fr_reas) / len(fr_reas), 4) if fr_reas else 0,
+                    "pct_ordenado": round(sum(fr_ord) / len(fr_ord), 4) if fr_ord else 0}
+            tabla.append(fila)
+        return jsonify({"year": year, "years": sorted({int(_year_of(j)) for j in all_jobs if _year_of(j)} | {CURRENT_YEAR}, reverse=True),
+                        "grafica": grafica, "wip": tabla, "tipos": list(REQ_TIPOS),
+                        "requisiciones_disponibles": bool(_orm and _orm.DB_ENABLED),
+                        "now": datetime.datetime.now().isoformat(timespec="minutes")})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/dashboard/general-management", methods=["GET"])
 def api_dashboard_general_management():
     """Dashboard de inicio para el perfil GENERAL MANAGEMENT.
