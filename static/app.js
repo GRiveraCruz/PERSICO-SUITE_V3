@@ -6710,20 +6710,22 @@ function renderPMDashboard(d, previewUser){
 
 // ── Gráficas del Dashboard PM (SVG propio, sin librerías)
 const PM_EST_COLOR = {Open:'#2563eb', WIP:'#f59e0b', Cerrado:'#16a34a', Cancelado:'#9ca3af', Otro:'#a855f7'};
+const PM_CERRADO = ['DONE','CLOSED','CERRADO'];
 function pmChartsHTML(d, previewUser, card){
   const g = d.grafica||[];
+  const gc = g.filter(x=>PM_CERRADO.includes(String(x.status||'').trim().toUpperCase()));   // tendencia: solo Jobs cerrados
   const yearSel = `<select onchange="loadPMDashboard(${previewUser?`'${esc(previewUser)}'`:'null'}, this.value)" style="font-size:11px;padding:2px 6px;margin-left:8px">${
     (d.years||[]).map(y=>`<option ${y==d.year?'selected':''}>${y}</option>`).join('')}</select>`;
-  const box = (title, body, extra='') => `<div style="${card};flex:1;min-width:300px">
+  const box = (title, body, extra='', flex='1 1 0') => `<div style="${card};flex:${flex};min-width:280px">
       <div style="display:flex;align-items:center;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:8px">${title}${extra}</div>${body}</div>`;
   const vacio = t => `<div style="padding:40px 0;text-align:center;color:var(--muted);font-size:12px">${t}</div>`;
   return `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
-      ${box(`Estatus de mis Jobs (${d.total_jobs||0})`, pmPieSVG(d.estatus||{}))}
-      ${box(`Target vs Cost · Jobs ${d.year}`, g.length?pmBarsSVG(g):vacio('Sin Jobs creados en '+d.year), yearSel)}
+      ${box(`Estatus de mis Jobs (${d.total_jobs||0})`, pmPieSVG(d.estatus||{}), '', '0 1 300px')}
+      ${box(`Target vs Cost · Jobs ${d.year}`, g.length?pmBarsSVG(g):vacio('Sin Jobs creados en '+d.year), yearSel, '1 1 600px')}
     </div>
     <div style="${card};margin-bottom:16px">
-      <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Tendencia del margen de ganancia · Jobs ${d.year} · (Target − Cost) / Cost</div>
-      ${g.some(x=>x.margen!=null)?pmTrendSVG(g):vacio('Sin Jobs con costo registrado en '+d.year)}
+      <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Tendencia del margen de ganancia · Jobs cerrados ${d.year} · (Target − Cost) / Cost</div>
+      ${gc.some(x=>x.margen!=null)?pmTrendSVG(gc,{excl:'cerrados sin target o sin costo'}):vacio('Sin Jobs cerrados con target y costo en '+d.year)}
     </div>`;
 }
 
@@ -6744,7 +6746,7 @@ function pmPieSVG(est){
   const legend = Object.keys(PM_EST_COLOR).filter(k=>k!=='Otro'||est.Otro).map(k=>`<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin:5px 0">
       <span style="width:12px;height:12px;border-radius:3px;background:${PM_EST_COLOR[k]}"></span>${k}
       <b style="margin-left:auto;padding-left:14px">${est[k]||0}</b><span style="color:var(--muted);width:48px;text-align:right">${((est[k]||0)/tot*100).toFixed(1)}%</span></div>`).join('');
-  return `<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap"><svg viewBox="0 0 200 200" style="width:180px;height:180px">${slices}</svg><div style="flex:1;min-width:150px">${legend}</div></div>`;
+  return `<div style="display:flex;flex-direction:column;align-items:center;gap:8px"><svg viewBox="0 0 200 200" style="width:150px;height:150px">${slices}</svg><div style="width:100%;max-width:240px">${legend}</div></div>`;
 }
 
 function pmBarsSVG(g, lbl={t:'Target', c:'Cost', over:'Cost sobre target'}){

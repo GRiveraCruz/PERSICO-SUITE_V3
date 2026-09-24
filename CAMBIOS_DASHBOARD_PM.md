@@ -115,3 +115,17 @@ Tres gráficas nuevas entre las tarjetas de resumen y la tabla, dibujadas en SVG
 - **Tendencia:** 4 Jobs sin target excluidos y 4 marcados fuera de escala. 674-00 aparece
   debajo del mínimo (target $10 vs costo $9,977).
 - Sin errores de JavaScript propios del dashboard.
+
+---
+# rev29 — Ajustes al Dashboard PM
+
+- **Pastel más compacto:** columna fija de 300 px, con el círculo de 150 px y la leyenda
+  debajo. La gráfica de barras usa el resto del ancho (en una pantalla de 1900 px pasó de
+  compartir la mitad a unos 1,530 px).
+- **Tendencia del margen solo con Jobs cerrados:** estatus Done, Closed o Cerrado.
+  - El título dice "Jobs cerrados".
+  - La nota indica cuántos cerrados no se grafican por no tener target o costo.
+  - Las barras Target vs Cost siguen mostrando todos los Jobs del año.
+
+Probado en Chromium a 1900 px: pastel 300 px, barras 1,530 px; la tendencia muestra
+solo 652-51 y 652-53 (los dos Jobs "Done" de la prueba). Sin errores de JavaScript.
