@@ -7568,10 +7568,11 @@ function reqOpenOC(){
   reqOCValidado = false;
   document.getElementById('btn-req-oc-go').disabled = true;
   document.getElementById('req-oc-msg').innerHTML = '';
+  document.getElementById('req-oc-filtro').value = '';
   document.getElementById('req-oc-list').innerHTML = filas.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
-    <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase"><th style="width:28px"><input type="checkbox" checked onchange="document.querySelectorAll('.req-oc-chk:not(:disabled)').forEach(c=>c.checked=this.checked);reqOCInvalidar()"></th>
+    <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase"><th style="width:28px"><input type="checkbox" id="req-oc-todos" checked title="Marcar / desmarcar los renglones visibles" onchange="reqOCMarcarVisibles(this.checked)"></th>
       <th style="text-align:left">Marca</th><th style="text-align:left">No. Parte</th><th style="text-align:left">Descripción</th><th style="text-align:right">Pendiente</th><th style="text-align:right">A comprar</th></tr></thead><tbody>${
-    filas.map(it=>{ const p=reqPendiente(it); return `<tr id="req-oc-row-${esc(it.id)}" style="border-bottom:1px solid var(--border)">
+    filas.map(it=>{ const p=reqPendiente(it); return `<tr id="req-oc-row-${esc(it.id)}" class="req-oc-row" data-search="${esc([it.brand,it.part_number,it.description].join(' ').toLowerCase())}" style="border-bottom:1px solid var(--border)">
       <td><input type="checkbox" class="req-oc-chk" data-id="${esc(it.id)}" checked onchange="reqOCInvalidar()"></td>
       <td>${esc(it.brand||'')}</td><td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number)}</td>
       <td><div style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.description||'')}">${esc(it.description||'')}</div><div class="req-oc-alerta" style="font-size:10px;font-weight:600;color:var(--red);white-space:normal;max-width:300px"></div></td>
@@ -7580,8 +7581,35 @@ function reqOpenOC(){
     : '<div style="padding:24px;text-align:center;color:var(--muted)">No hay renglones Solicitado/Homologado con cantidad pendiente.</div>';
   document.getElementById('btn-req-oc-val').disabled = !filas.length;
   document.getElementById('mo-req-oc').classList.add('on');
+  reqOCCuenta();
+  setTimeout(()=>document.getElementById('req-oc-filtro').focus(), 50);
 }
-function reqOCInvalidar(){ reqOCValidado=false; document.getElementById('btn-req-oc-go').disabled=true; }
+function reqOCInvalidar(){ reqOCValidado=false; document.getElementById('btn-req-oc-go').disabled=true; reqOCCuenta(); }
+// Filtro: solo oculta renglones; lo marcado se conserva aunque quede oculto.
+function reqOCFiltrar(q){
+  const t = (q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  document.querySelectorAll('.req-oc-row').forEach(r=>{
+    r.style.display = t.every(w=>r.dataset.search.includes(w)) ? '' : 'none';
+  });
+  reqOCCuenta();
+}
+function reqOCMarcarVisibles(on){
+  document.querySelectorAll('.req-oc-row').forEach(r=>{
+    if(r.style.display==='none') return;
+    const c = r.querySelector('.req-oc-chk'); if(c && !c.disabled) c.checked = on;
+  });
+  reqOCInvalidar();
+}
+function reqOCCuenta(){
+  const el = document.getElementById('req-oc-cuenta'); if(!el) return;
+  const rows = [...document.querySelectorAll('.req-oc-row')];
+  const vis = rows.filter(r=>r.style.display!=='none').length;
+  const sel = document.querySelectorAll('.req-oc-chk:checked:not(:disabled)').length;
+  el.textContent = rows.length ? `${sel} seleccionado(s) · mostrando ${vis} de ${rows.length}` : '';
+  const todos = document.getElementById('req-oc-todos');
+  if(todos){ const v = rows.filter(r=>r.style.display!=='none').map(r=>r.querySelector('.req-oc-chk')).filter(c=>!c.disabled);
+    todos.checked = v.length>0 && v.every(c=>c.checked); }
+}
 function reqOCSeleccion(){
   return [...document.querySelectorAll('.req-oc-chk:checked:not(:disabled)')].map(c=>{
     const it = reqItems.find(x=>String(x.id)===c.dataset.id);
@@ -7612,6 +7640,7 @@ async function reqValidarOC(){
       : `<span style="color:var(--red);font-weight:700">Ningún material quedó para comprar.</span>`;
     reqOCValidado = validos>0;
     document.getElementById('btn-req-oc-go').disabled = !reqOCValidado;
+    reqOCCuenta();
   }catch(e){ toast('Error: '+e,'er'); }
   finally{ btn.disabled=false; btn.textContent='1. Validar existencias'; }
 }

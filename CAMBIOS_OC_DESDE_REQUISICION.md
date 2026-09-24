@@ -94,3 +94,25 @@ también rellenaba huecos antiguos.
 muestra PO-000000008 tres veces seguidas sin consumirlo. Luego se emiten 8 y 9; se
 elimina la 9 y la siguiente es la 10. Cinco órdenes simultáneas reciben 11–15, sin
 duplicados. La suite de orden de compra desde requisición sigue pasando.
+
+---
+# rev32 — Filtro en la selección de materiales de la Orden de Compra
+
+- **Campo de filtro** arriba de la lista del modal "Orden de Compra desde la requisición".
+  Busca por **marca, No. de parte o descripción**, sin importar mayúsculas.
+- **Varias palabras:** se combinan (ej. "banner wlb" muestra solo lo que contiene ambas).
+- **Selección conservada:** el filtro solo oculta renglones. Lo marcado se mantiene
+  aunque quede oculto y se incluye al validar y al pasar a la orden.
+- **Casilla del encabezado:** marca o desmarca **solo los renglones visibles**.
+- **Contador:** "N seleccionado(s) · mostrando X de Y".
+- **Al abrir el modal,** el cursor queda en el filtro.
+- Como el resto de las búsquedas de la suite, el filtro se aplica 250 ms después de la
+  última tecla.
+
+Probado en Chromium:
+- "bni" → 1 de 4.
+- Desmarcar la casilla del encabezado con ese filtro quita solo BNI009T; quedan 3
+  seleccionados al limpiar el filtro.
+- "banner wlb" → WLB32.
+- La selección enviada son los 3 marcados, incluidos los ocultos.
+- Sin errores de JavaScript.
