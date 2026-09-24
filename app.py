@@ -22,8 +22,20 @@ try:
     import db as _orm  # SQLAlchemy — capa de datos para los módulos ya migrados (distinto del
                         # DB_ENABLED/db_conn de más abajo, que es psycopg2 directo, usado solo por Ventas)
     from sqlalchemy.orm.attributes import flag_modified as _orm_flag_modified
-except ImportError:
+except ImportError as _e_orm:
     _orm = None
+    import os as __os_chk
+    if __os_chk.environ.get("DATABASE_URL"):
+        # Antes esto pasaba en silencio: con DATABASE_URL configurada pero sin poder
+        # importar db.py (normalmente porque SQLAlchemy no se instaló en el build), toda
+        # la app corría en MODO JSON sobre DATA_DIR — usuarios, Jobs, etc. salían de
+        # data_seed y NINGÚN usuario real podía entrar ("Usuario o contraseña incorrectos").
+        print("=" * 78)
+        print(f"[DB] ✗✗ ERROR GRAVE: DATABASE_URL está configurada pero no se pudo cargar la capa "
+              f"de base de datos (db.py): {_e_orm}")
+        print("[DB] ✗✗ La aplicación está corriendo en MODO JSON: los usuarios y datos que ve NO son "
+              "los de PostgreSQL. Revisar que requirements.txt incluya 'sqlalchemy>=2.0' y el Build Log.")
+        print("=" * 78)
     def _orm_flag_modified(*a, **k): pass
 try:
     import psycopg2
