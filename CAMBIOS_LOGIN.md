@@ -69,3 +69,40 @@ Antes pasaba en silencio.
 
 **Causa probable en el repositorio:** `requirements.txt` desactualizado o ausente tras la
 subida desordenada. Todos los ZIP entregados (rev08–rev27) incluyen `sqlalchemy>=2.0`.
+
+---
+# rev28 — CAUSA REAL: SQLAlchemy 2.1 cambió el conector de PostgreSQL
+
+**Log de Railway con rev27:**
+`[DB] ✗✗ ERROR GRAVE: … no se pudo cargar la capa de base de datos (db.py): No module named 'psycopg'`
+
+**Causa:**
+- `requirements.txt` pedía `sqlalchemy>=2.0` sin tope. SQLAlchemy **2.1.0** (la versión
+  más reciente hoy) cambió el conector predeterminado de `postgresql://` de **psycopg2**
+  a **psycopg (v3)**, que no está instalado.
+- Cualquier build nuevo en Railway instaló la 2.1.0, `import db` falló y la app quedó en
+  modo JSON con los usuarios de ejemplo: nadie podía entrar.
+- No fue un cambio en el código de la suite. Las pruebas locales usaban 2.0.54, por eso
+  no se detectó.
+
+Reproducido en local con 2.1.0: mismo error, mismo log.
+
+**Corrección:**
+- `db.py`: nueva función `_pg_url()` que convierte `postgres://` y `postgresql://` a
+  **`postgresql+psycopg2://`** (conector explícito). Se aplica a `DATABASE_URL` y
+  `CONSIG_DATABASE_URL`.
+- `migrations/env.py`: el mismo conector explícito para Alembic.
+- `requirements.txt`: `sqlalchemy>=2.0,<2.1`, la serie probada. Aun con 2.1 funcionaría
+  gracias al conector explícito.
+- La conexión directa psycopg2 del módulo de Ventas no cambia.
+
+**Verificado (4 combinaciones):** SQLAlchemy 2.1.0 y 2.0.54 × URL `postgres://` y
+`postgresql://`. En todas arrancan las tres líneas `[DB]` (Ventas, Consignación 4 tablas,
+49 tablas) y el login valida contra la base: la contraseña real funciona y la de ejemplo
+ya no. La suite de reasignaciones pasa con ambas versiones.
+
+**Qué revisar después del deploy:** en el Deploy Log deben aparecer las tres líneas
+`[DB]` y **ninguna** con "✗✗ ERROR GRAVE".
+
+**Nota:** rev26 (clave de sesión compartida) no era la causa de este problema, pero se
+conserva como protección por si `SECRET_KEY` llegara a faltar.
