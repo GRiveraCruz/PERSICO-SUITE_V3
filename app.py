@@ -85,15 +85,57 @@ app  = Flask(__name__, static_folder="static", static_url_path="/static")
 # configurarla es que las sesiones no sobreviven un reinicio/redeploy (el usuario
 # tiene que volver a iniciar sesión), lo cual es una señal imposible de ignorar en
 # vez de un hueco de seguridad silencioso.
+def _shared_generated_secret():
+    """Clave de sesión generada UNA vez y compartida por todos los workers y reinicios.
+
+    Sin SECRET_KEY, antes cada worker de gunicorn (Procfile: --workers=2) generaba su
+    propia clave al arrancar: el login se aceptaba en un worker, pero la siguiente
+    petición caía en el otro, que no reconocía la cookie → 401 → de regreso al login.
+    En la práctica NADIE podía entrar (reproducido: 2 de 10 sesiones completas).
+
+    Ahora la clave aleatoria se guarda en la base de datos (tabla app_secrets) o, sin
+    base, en DATA_DIR/.flask_secret_key. El primero que llega la crea; los demás la
+    leen. Sigue sin haber una clave fija en el código (el hueco que se quitó antes)."""
+    if _orm and getattr(_orm, "DB_ENABLED", False):
+        from sqlalchemy import text
+        for intento in range(3):
+            try:
+                with _orm.engine.begin() as c:
+                    c.execute(text("CREATE TABLE IF NOT EXISTS app_secrets (name TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+                    c.execute(text("INSERT INTO app_secrets (name, value) VALUES ('flask_secret_key', :v) "
+                                   "ON CONFLICT (name) DO NOTHING"), {"v": secrets.token_hex(32)})
+                    v = c.execute(text("SELECT value FROM app_secrets WHERE name = 'flask_secret_key'")).scalar()
+                if v:
+                    return v, "base de datos (tabla app_secrets)"
+            except Exception as e:      # dos workers creando la tabla a la vez: se reintenta
+                print(f"[SEGURIDAD] Intento {intento + 1} de leer/crear la clave compartida en la base: {e}")
+                import time as _t; _t.sleep(0.5 + intento)
+    path = _os.path.join(_DATA, ".flask_secret_key")
+    try:
+        _os.makedirs(_DATA, exist_ok=True)
+        fd = _os.open(path, _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL, 0o600)   # solo el primero la crea
+        with _os.fdopen(fd, "w") as f:
+            f.write(secrets.token_hex(32))
+    except FileExistsError:
+        pass
+    except Exception as e:
+        print(f"[SEGURIDAD] No se pudo guardar la clave en {path}: {e}")
+        return secrets.token_hex(32), "temporal (solo este proceso)"
+    for _ in range(10):                  # por si el otro worker la está terminando de escribir
+        with open(path, "r") as f:
+            v = f.read().strip()
+        if len(v) >= 32:
+            return v, f"archivo {path}"
+        import time as _t; _t.sleep(0.1)
+    return secrets.token_hex(32), "temporal (solo este proceso)"
+
 _SECRET_KEY = _os.environ.get("SECRET_KEY")
 if not _SECRET_KEY:
-    _SECRET_KEY = secrets.token_hex(32)
-    print("[SEGURIDAD] ⚠ La variable de entorno SECRET_KEY no está configurada. "
-          "Se generó una clave temporal solo para este proceso — las sesiones NO "
-          "sobrevivirán un reinicio ni se compartirán entre workers. Configura "
+    _SECRET_KEY, _origen_clave = _shared_generated_secret()
+    print("[SEGURIDAD] ⚠ La variable de entorno SECRET_KEY no está configurada. Se usa una clave "
+          f"generada y compartida entre workers — origen: {_origen_clave}. Recomendado: configurar "
           "SECRET_KEY en Railway (Variables) con un valor largo y aleatorio "
-          "(ej. `python -c \"import secrets; print(secrets.token_hex(32))\"`) "
-          "antes de considerar esto listo para producción.")
+          "(ej. `python -c \"import secrets; print(secrets.token_hex(32))\"`).")
 app.secret_key = _SECRET_KEY
 lock = Lock()
 JOB_RE = re.compile(r"^\d+-\d+$")
