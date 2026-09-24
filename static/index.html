@@ -4167,19 +4167,17 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:11px;color:var(--muted)"><span id="req-tab-count">—</span></div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn-reload" onclick="reqBuscarStock()">Buscar en Stock</button>
-            <button class="btn-new" onclick="reqPrepararOC()">Crear orden con solicitados</button>
-          </div>
+          <button class="btn-reload" onclick="reqBuscarStock()">Buscar en Stock</button>
+          <button class="btn-reload" onclick="reqOpenOC()" style="margin-left:6px;border-color:var(--red);color:var(--red)">Generar Orden de Compra</button>
         </div>
 
         <div class="tw">
           <table>
             <thead><tr>
-              <th><input type="checkbox" aria-label="Seleccionar solicitados" onchange="reqSeleccionarTodos(this.checked)"></th><th>Marca</th><th>No. Parte</th><th>Descripción</th><th style="text-align:right" title="Pendiente por comprar (pedido − reasignado)">Cantidad</th>
+              <th>Marca</th><th>No. Parte</th><th>Descripción</th><th style="text-align:right" title="Pendiente por comprar (pedido − reasignado)">Cantidad</th>
               <th>Estatus</th><th>En Stock</th><th></th>
             </tr></thead>
-            <tbody id="req-tb"><tr><td colspan="8"><div class="es">Selecciona un Job para ver su BOM.</div></td></tr></tbody>
+            <tbody id="req-tb"><tr><td colspan="7"><div class="es">Selecciona un Job para ver su BOM.</div></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -4222,6 +4220,22 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 </div>
 
 <!-- Modal: Resultado de Buscar en Stock -->
+<div class="mo" id="mo-req-oc">
+  <div class="md" style="max-width:820px;width:min(820px,95vw)">
+    <div class="mh"><h2>🧾 Orden de Compra desde la requisición</h2><button class="px" onclick="closeMo('mo-req-oc')">Cerrar</button></div>
+    <div class="mb2">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Renglones <b>Solicitado</b> u <b>Homologado</b> con cantidad pendiente (pedido − reasignado − ya comprado). Selecciona los que vas a comprar y valida existencias: lo que haya en Stock no se puede comprar.</div>
+      <div id="req-oc-list" style="max-height:52vh;overflow-y:auto">—</div>
+      <div id="req-oc-msg" style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div class="mf">
+      <button class="btn btn-s" onclick="closeMo('mo-req-oc')">Cancelar</button>
+      <button class="btn btn-s" id="btn-req-oc-val" onclick="reqValidarOC()">1. Validar existencias</button>
+      <button class="btn btn-p" id="btn-req-oc-go" onclick="reqContinuarOC()" disabled>2. Continuar a Orden de Compra</button>
+    </div>
+  </div>
+</div>
+
 <div class="mo" id="mo-req-stock">
   <div class="md" style="max-width:560px">
     <div class="mh"><h2>🔍 Stock y Consignación</h2><button class="px" onclick="closeMo('mo-req-stock')">Cerrar</button></div>
@@ -7507,6 +7521,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
 </body>
 </html>
+
 
 
 
