@@ -7577,13 +7577,14 @@ function reqRenderManuf(){
       <td>${esc(it.description||'—')}</td>
       <td>${edit(it,'material')}</td>
       <td>${edit(it,'acabado')}</td>
-      <td><select onchange="reqManufSet('${esc(it.id)}','fabricacion',this.value)" style="font-size:11px;padding:4px 6px">
+      <td><select onchange="reqManufSet('${esc(it.id)}','fabricacion',this.value)" ${reqCubierto(it)?'disabled':''} style="font-size:11px;padding:4px 6px">
         <option value="" ${!it.fabricacion?'selected':''}>—</option>${REQ_FABRICACION.map(f=>`<option ${it.fabricacion===f?'selected':''}>${f}</option>`).join('')}</select></td>
-      <td><select onchange="reqManufSet('${esc(it.id)}','status',this.value)" style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg}">
-        ${REQ_MANUF_STATUS.map(s=>`<option ${it.status===s?'selected':''}>${s}</option>`).join('')}</select></td>
+      <td><select onchange="reqManufSet('${esc(it.id)}','status',this.value)" ${reqCubierto(it)?`disabled title="Comprada al 100%: para cambiarla elimina o cancela la orden"`:''} style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg}">
+        ${REQ_MANUF_STATUS.map(s=>`<option ${it.status===s?'selected':''}>${s}</option>`).join('')}</select>${reqCubierto(it)?' 🔒':''}
+        ${(it.compras||[]).length?`<div style="font-size:9px;color:#15803d">${(it.compras||[]).map(c=>esc(c.po_number)+(c.cantidad>1?' ×'+c.cantidad:'')).join(', ')}</div>`:''}</td>
       <td style="font-size:11px">${who(it.created_by, it.created_at)}</td>
       <td style="font-size:11px">${who(it.fabricacion_por, it.fabricacion_fecha)}</td>
-      <td><button class="fi-del" onclick="reqDeleteItem('${esc(it.id)}')">Eliminar</button></td></tr>`;}).join('');
+      <td>${(parseFloat(it.cantidad_comprada)||0)>0?'<span style="color:var(--muted)" title="Tiene órdenes de compra: no se puede eliminar">—</span>':`<button class="fi-del" onclick="reqDeleteItem('${esc(it.id)}')">Eliminar</button>`}</td></tr>`;}).join('');
 }
 
 function reqRenderTable(){
@@ -7645,6 +7646,10 @@ let reqOCValidado = false;
 const REQ_OC_CAT = {electrico:'electrico', mecanico:'mecanico', componentes_mayores:'major', manufactura:''};
 function reqOpenOC(){
   if(!reqCurrentJob){ toast('Selecciona un Job','er'); return; }
+  if(reqCurrentTipo==='manufactura') return reqOpenOCManuf();
+  document.getElementById('btn-req-oc-val').style.display='';
+  document.getElementById('btn-req-oc-go').textContent='2. Continuar a Orden de Compra';
+  document.getElementById('req-oc-ayuda').innerHTML='Renglones <b>Solicitado</b> u <b>Homologado</b> con cantidad pendiente (pedido − reasignado − ya comprado). Selecciona los que vas a comprar y valida existencias: lo que haya en Stock no se puede comprar.';
   const filas = reqItems.filter(it=>REQ_REASIGNABLES.includes(it.status) && reqPendiente(it)>0);
   reqOCValidado = false;
   document.getElementById('btn-req-oc-go').disabled = true;
@@ -7665,7 +7670,31 @@ function reqOpenOC(){
   reqOCCuenta();
   setTimeout(()=>document.getElementById('req-oc-filtro').focus(), 50);
 }
-function reqOCInvalidar(){ reqOCValidado=false; document.getElementById('btn-req-oc-go').disabled=true; reqOCCuenta(); }
+function reqOCInvalidar(){
+  if(reqCurrentTipo==='manufactura'){ reqOCValidado = reqOCSeleccion().length>0; document.getElementById('btn-req-oc-go').disabled=!reqOCValidado; reqOCCuenta(); return; }
+  reqOCValidado=false; document.getElementById('btn-req-oc-go').disabled=true; reqOCCuenta(); }
+// Manufactura: solo piezas con Fabricación "Externa" en Solicitado; sin validación de Stock
+function reqOpenOCManuf(){
+  const filas = reqItems.filter(it=>it.fabricacion==='Externa' && it.status==='Solicitado' && reqPendiente(it)>0);
+  document.getElementById('req-oc-msg').innerHTML = '';
+  document.getElementById('req-oc-filtro').value = '';
+  document.getElementById('btn-req-oc-val').style.display='none';     // piezas por fabricar: no se buscan en Stock
+  document.getElementById('btn-req-oc-go').textContent='Continuar a Orden de Compra';
+  document.getElementById('req-oc-ayuda').innerHTML='Piezas con Fabricación <b>Externa</b> en estatus <b>Solicitado</b>. Selecciona las que vas a mandar fabricar y la cantidad; en el siguiente paso eliges el proveedor y los precios.';
+  const otras = reqItems.filter(it=>it.fabricacion!=='Externa' && it.status==='Solicitado').length;
+  document.getElementById('req-oc-list').innerHTML = filas.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase"><th style="width:28px"><input type="checkbox" id="req-oc-todos" checked onchange="reqOCMarcarVisibles(this.checked)"></th>
+      <th style="text-align:left">ID pieza</th><th>Rev.</th><th style="text-align:left">Tipo</th><th style="text-align:left">Material</th><th style="text-align:left">Acabado</th><th style="text-align:right">Cantidad</th></tr></thead><tbody>${
+    filas.map(it=>{ const p=reqPendiente(it); return `<tr id="req-oc-row-${esc(it.id)}" class="req-oc-row" data-search="${esc([it.part_number,it.description,it.material,it.acabado].join(' ').toLowerCase())}" style="border-bottom:1px solid var(--border)">
+      <td><input type="checkbox" class="req-oc-chk" data-id="${esc(it.id)}" checked onchange="reqOCInvalidar()"></td>
+      <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number)}</td><td style="text-align:center"><b>${esc(it.rev_plano||'')}</b></td>
+      <td>${esc(it.description||'')}</td><td>${esc(it.material||'')}</td><td>${esc(it.acabado||'')}</td>
+      <td style="text-align:right"><input type="number" class="req-oc-qty" data-id="${esc(it.id)}" min="1" value="${p}" style="width:70px;font-size:11px;padding:3px" onchange="reqOCInvalidar()"></td></tr>`;}).join('')}</tbody></table>`
+    : `<div style="padding:24px;text-align:center;color:var(--muted)">No hay piezas con Fabricación <b>Externa</b> en estatus Solicitado.${otras?`<br><span style="font-size:11px">${otras} pieza(s) Solicitada(s) sin Fabricación Externa: cámbiala en la tabla para poder comprarlas.</span>`:''}</div>`;
+  document.getElementById('mo-req-oc').classList.add('on');
+  reqOCInvalidar();
+  setTimeout(()=>document.getElementById('req-oc-filtro').focus(), 50);
+}
 // Filtro: solo oculta renglones; lo marcado se conserva aunque quede oculto.
 function reqOCFiltrar(q){
   const t = (q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -7695,7 +7724,7 @@ function reqOCSeleccion(){
   return [...document.querySelectorAll('.req-oc-chk:checked:not(:disabled)')].map(c=>{
     const it = reqItems.find(x=>String(x.id)===c.dataset.id);
     const inp = document.querySelector(`.req-oc-qty[data-id="${CSS.escape(c.dataset.id)}"]`);
-    const q = Math.min(parseFloat(inp.value)||0, reqPendiente(it));
+    const q = reqCurrentTipo==='manufactura' ? (parseFloat(inp.value)||0) : Math.min(parseFloat(inp.value)||0, reqPendiente(it));
     return it && q>0 ? {it, q} : null; }).filter(Boolean);
 }
 async function reqValidarOC(){
@@ -7735,7 +7764,11 @@ async function reqContinuarOC(){
   if(js && ![...js.options].some(o=>o.value===job)) js.insertAdjacentHTML('beforeend', `<option value="${esc(job)}">${esc(job)}</option>`);
   if(js) js.value = job;
   gpoJobTypeChange();
-  gpoItems = sel.map(({it,q},i)=>({line:i+1, cat_type:REQ_OC_CAT[tipo]||'', cat_code:'', brand:(it.brand||'').toUpperCase(),
+  gpoItems = sel.map(({it,q},i)=> tipo==='manufactura'
+    ? ({line:i+1, cat_type:'', cat_code:'', brand:'', part_number:it.part_number,
+        description:[it.description, it.material, it.acabado].filter(Boolean).join(' · ') + (it.rev_plano?` · Plano rev ${it.rev_plano}`:''),
+        label_code:'', quantity:q, unit_price:0, total:0, job, notes:`Fabricación externa según plano ${it.part_number} rev ${it.rev_plano||''}`, req_item_id:it.id})
+    : ({line:i+1, cat_type:REQ_OC_CAT[tipo]||'', cat_code:'', brand:(it.brand||'').toUpperCase(),
     part_number:it.part_number, description:it.description||'', label_code:'', quantity:q, unit_price:0, total:0,
     job, notes:'', req_item_id:it.id}));
   gpoRenderItems();

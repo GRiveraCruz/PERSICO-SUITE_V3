@@ -74,3 +74,42 @@ nuevo; el estatus y la fabricación se conservan.
   - El enlace del ID abre el PDF.
   - Al pasar a Eléctrico y regresar, cada pestaña conserva su encabezado y su leyenda.
   - Sin errores de JavaScript.
+
+---
+# rev38 — Orden de Compra desde el BOM de Manufactura
+
+- **Botón "Generar Orden de Compra"** en la pestaña Manufactura, junto a "Subir planos".
+- **Qué piezas se listan:** solo las que tienen **Fabricación = Externa** y estatus
+  **Solicitado**. Si hay piezas Solicitadas sin Fabricación Externa, el modal lo indica
+  para que se cambie en la tabla.
+- **Sin validación de Stock:** son piezas por fabricar, así que no aparece el paso
+  "Validar existencias". El filtro (ID, tipo, material, acabado) y la selección funcionan
+  igual que en compras.
+- **Cantidad:** libre, por defecto 1, porque el plano no trae cantidad. Al emitir, la
+  cantidad requerida de la pieza pasa a ser la que se ordenó.
+- **Formulario de orden de compra:** se abre con el Job y cada pieza como renglón:
+  - No. de parte: el ID de la pieza.
+  - Descripción: "Tipo · Material · Acabado · Plano rev X".
+  - Nota: "Fabricación externa según plano … rev …".
+  - Proveedor, esquema y precios se capturan como en cualquier orden.
+
+## Controles en el servidor
+- **Fabricación:** comprar una pieza de manufactura que no sea **Externa** → error 400.
+- **Stock:** no se revisa en piezas de manufactura; en compras sigue igual.
+- **Pieza comprada al 100 %:** pasa a **Comprado** 🔒 con el folio visible debajo del
+  estatus. El **estatus y la Fabricación quedan bloqueados**, y la pieza no se puede
+  eliminar.
+- **Eliminar o cancelar la orden:** la pieza vuelve a **Solicitado** y se desbloquea.
+
+## Cómo se probó
+- **PostgreSQL (7 verificaciones nuevas, más las 15 de rev37):**
+  - Pieza sin Fabricación Externa → rechazada.
+  - Externa ×2 → Comprado con cantidad 2, sin validar Stock.
+  - Con la pieza comprada, cambiar estatus o fabricación → 400; eliminarla → 400.
+  - Eliminar la orden → Solicitado, y el estatus vuelve a ser editable.
+- **Chromium:**
+  - Con D002 y D007 Externas y D003 Interna, el modal lista solo D002 y D007, sin botón
+    de validar Stock.
+  - D002 ×3 → orden PO-000000001, con las descripciones armadas desde el plano.
+  - Ambas quedan Comprado 🔒 con el folio; D003 sigue Solicitado.
+  - Sin errores de JavaScript.

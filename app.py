@@ -10537,6 +10537,10 @@ def api_requisiciones_update(item_id):
             es_manuf = (row.tipo or row.data.get("tipo")) == "manufactura"
             if es_manuf:
                 # BOM de Manufactura: sus propios estatus y la Fabricación (con quién la cambió)
+                cambia_fab = "fabricacion" in data and str(data.get("fabricacion") or "") != row.data.get("fabricacion", "")
+                if _req_cubierto(row.data) and ((nuevo_status and nuevo_status != row.data.get("status")) or cambia_fab):
+                    return jsonify({"error": "Esta pieza ya está comprada al 100% (orden de compra emitida); su estatus y su "
+                                             "fabricación no se pueden modificar. Para cambiarlos, elimina o cancela la orden."}), 400
                 if nuevo_status and nuevo_status != row.data.get("status"):
                     if nuevo_status not in REQ_STATUS_MANUF:
                         return jsonify({"error": f"Estatus inválido. Debe ser uno de: {', '.join(REQ_STATUS_MANUF)}"}), 400
@@ -10748,6 +10752,8 @@ def _req_registrar_compra(po_number, po_items):
             if not row: continue
             d = row.data
             d["cantidad_comprada"] = float(d.get("cantidad_comprada") or 0) + float(it["quantity"])
+            if d.get("tipo") == "manufactura" and d["cantidad_comprada"] > float(d.get("quantity") or 0):
+                d["quantity"] = d["cantidad_comprada"]     # el plano no trae cantidad: manda lo que se ordenó
             d.setdefault("compras", []).append({"po_number": po_number, "cantidad": it["quantity"], "unit_price": it.get("unit_price"),
                                                 "fecha": ahora, "usuario": session.get("user", "")})
             _req_aplicar_estatus(d, row)
@@ -11390,18 +11396,25 @@ def api_create_gpo():
         # ni más de lo pendiente (pedido − reasignado − ya comprado).
         ligados = [it for it in items if it.get("req_item_id")]
         if ligados:
-            en_stock = _req_en_stock(ligados)
+            filas = _req_rows([it["req_item_id"] for it in ligados])
+            es_manuf = lambda it: (filas.get(str(it["req_item_id"])) or {}).get("tipo") == "manufactura"
+            # Piezas del BOM de Manufactura: se fabrican afuera, no se buscan en Stock;
+            # solo se pueden comprar las marcadas con Fabricación "Externa".
+            for it in [x for x in ligados if es_manuf(x)]:
+                f = filas[str(it["req_item_id"])]
+                if f.get("fabricacion") != "Externa":
+                    return jsonify({"error": f"{it.get('part_number')}: solo se compran piezas con Fabricación \"Externa\" (tiene \"{f.get('fabricacion') or 'sin definir'}\")"}), 400
+            en_stock = _req_en_stock([x for x in ligados if not es_manuf(x)])
             if en_stock:
                 return jsonify({"error": "Hay materiales con existencia en Stock; no se pueden comprar. Se quitaron de la orden: reasígnalos desde la requisición.",
                                 "en_stock": en_stock}), 409
-            filas = _req_rows([it["req_item_id"] for it in ligados])
             for it in ligados:
                 f = filas.get(str(it["req_item_id"]))
                 if not f:
                     return jsonify({"error": f"El renglón de requisición de {it.get('part_number')} ya no existe"}), 400
                 if f.get("status") not in REQ_ESTATUS_REASIGNABLES:
                     return jsonify({"error": f"{it.get('part_number')} ya está {f.get('status')} en la requisición"}), 400
-                if float(it.get("quantity") or 0) > f["cantidad_pendiente"]:
+                if f.get("tipo") != "manufactura" and float(it.get("quantity") or 0) > f["cantidad_pendiente"]:
                     return jsonify({"error": f"{it.get('part_number')}: se piden {it.get('quantity')} pero solo quedan {f['cantidad_pendiente']:g} pendientes"}), 400
         with lock:
             po_number = gpo_alloc_number()
