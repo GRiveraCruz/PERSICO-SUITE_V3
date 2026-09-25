@@ -9464,13 +9464,18 @@ async function gpoMonedaChange() {
   if(moneda === 'MXN') {
     fxRow.style.display = '';
     try {
-      const d = await fetch('/api/fx/lookup?date='+new Date().toISOString().slice(0,10)).then(r=>r.json());
+      const hoy = new Date().toISOString().slice(0,10);
+      const d = await fetch('/api/fx/lookup?date='+hoy).then(r=>r.json());
       if(d.rate) {
         gpoCurrentFX = d.rate;
-        document.getElementById('gpo-fx-val').textContent  = d.rate.toFixed(4);
-        document.getElementById('gpo-fx-date').textContent = `(${d.date||'último disponible'})`;
+        document.getElementById('gpo-fx-val').textContent  = Number(d.rate).toFixed(4);
+        document.getElementById('gpo-fx-date').textContent = `(${d.date||hoy})`;
+      } else {
+        gpoCurrentFX = null;
+        document.getElementById('gpo-fx-val').textContent  = 'No disponible';
+        document.getElementById('gpo-fx-date').textContent = '— no hay tipo de cambio registrado para hoy; actualízalo en Finanzas ▸ Tipo de Cambio';
       }
-    } catch(e) { document.getElementById('gpo-fx-val').textContent = 'No disponible'; }
+    } catch(e) { gpoCurrentFX = null; document.getElementById('gpo-fx-val').textContent = 'No disponible'; }
   } else {
     fxRow.style.display = 'none';
     gpoCurrentFX = null;

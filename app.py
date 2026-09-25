@@ -6699,13 +6699,20 @@ def api_fx_auto_status():
     })
 
 
+@app.route("/api/fx/lookup", methods=["GET"])
 def api_fx_lookup():
-    """Quick single-date lookup: ?date=YYYY-MM-DD"""
+    """Quick single-date lookup: ?date=YYYY-MM-DD
+    (La función existía pero sin su @app.route: el formulario de Orden de Compra
+    recibía 404 y mostraba "No disponible" al elegir MXN.)"""
     try:
-        date_str = request.args.get("date", "")
+        date_str = request.args.get("date", "") or datetime.date.today().isoformat()
         fx_all   = fx_load_all()
         rate     = fx_rate_for_date(date_str, fx_all)
-        return jsonify({"date": date_str, "rate": rate, "found": rate is not None})
+        usada = date_str
+        if rate is not None:     # fecha real del tipo de cambio (fin de semana → último día hábil)
+            d0 = datetime.datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+            usada = next((k for k in ((d0 - datetime.timedelta(days=o)).isoformat() for o in range(8)) if k in fx_all), date_str)
+        return jsonify({"date": usada, "requested": date_str, "rate": rate, "found": rate is not None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -11654,6 +11661,13 @@ def api_create_gpo():
         esquema_tributario = data.get("esquema_tributario") or None
         moneda    = str(data.get("moneda","USD")).upper()
         fx_rate   = float(data.get("fx_rate") or 1.0) if moneda=="MXN" else 1.0
+        fx_hoy    = fx_rate_for_date(datetime.date.today().isoformat(), fx_load_all())
+        if moneda == "MXN" and fx_rate <= 1.0:
+            # Antes una orden en MXN sin tipo de cambio se guardaba con 1.0 (total_usd = pesos).
+            if not fx_hoy:
+                return jsonify({"error": "No hay tipo de cambio MXN/USD registrado para hoy (ni en los 7 días previos). "
+                                         "Actualízalo en Finanzas ▸ Tipo de Cambio antes de emitir una orden en pesos."}), 400
+            fx_rate = float(fx_hoy)
         if not items:
             return jsonify({"error": "La PO debe tener al menos un item"}), 400
         if not esquema_tributario or not esquema_tributario.get("folio"):
@@ -11765,7 +11779,7 @@ def api_create_gpo():
                     "subtotal":             it["total"],
                     "moneda":               moneda,          # ← CRITICAL: store currency
                     "tipo_cambio":          fx_rate if moneda=="MXN" else 1.0,
-                    "subtotal_mxn":         round(it["total"] * fx_rate, 2) if moneda=="MXN" else it["total"],
+                    "subtotal_mxn":         it["total"] if moneda=="MXN" else round(it["total"] * (fx_hoy or 1.0), 2),
                     "estatus":              "Emitida",
                     "descuento_financiero": 0,
                     "pct_descuento":        0,
@@ -11935,7 +11949,7 @@ def api_gpo_modificar(po_number):
                             else:
                                 new_sub = 0.0
                             ir["subtotal"]     = new_sub
-                            ir["subtotal_mxn"] = round(new_sub * fx_rate, 2) if moneda=="MXN" else new_sub
+                            ir["subtotal_mxn"] = new_sub if moneda=="MXN" else round(new_sub * fx_rate, 2)
                             ir["estatus"]      = "Cierre Anticipado"
                             changed = True
                     if changed:
@@ -12036,7 +12050,7 @@ def api_gpo_modificar(po_number):
                                 "subtotal":             it["total"],
                                 "moneda":               moneda,
                                 "tipo_cambio":          fx_rate if moneda=="MXN" else 1.0,
-                                "subtotal_mxn":         round(it["total"]*fx_rate,2) if moneda=="MXN" else it["total"],
+                                "subtotal_mxn":         it["total"] if moneda=="MXN" else round(it["total"]*fx_rate,2),
                                 "estatus":              "Emitida",
                                 "descuento_financiero": 0,
                                 "pct_descuento":        0,
