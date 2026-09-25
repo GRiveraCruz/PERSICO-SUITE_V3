@@ -1367,6 +1367,7 @@ def api_projconfig_horas_consumidas():
     try:
         jobs = [j.strip().upper() for j in (request.args.get("jobs") or "").split(",") if j.strip()]
         if not jobs: return jsonify({"error": "Indica los Jobs"}), 400
+        if len(jobs) > 60: return jsonify({"error": "Máximo 60 Jobs por consulta"}), 400
         years = set(available_years()) | set(wh_available_years()) | {CURRENT_YEAR}
         if _orm and _orm.DB_ENABLED:
             try:
@@ -1398,12 +1399,18 @@ def api_projconfig_horas_consumidas():
         depto_perfil = {_norm_depto(d): perfil for perfil, deptos in PERFILES_COSTO for d in deptos}
         perfil_linea = {perfil: k for k, _n, perfil in LINEAS_MO}
         out = {}
+        wh_anio = {}
+        def wh_de(y, job_main):
+            # con varios Jobs se lee cada año una sola vez y se filtra en memoria
+            if len(jobs) <= 3: return wh_load_matching(y, job_main)
+            if y not in wh_anio: wh_anio[y] = wh_load(y)
+            return [r for r in wh_anio[y] if job_main.upper() in (r.get("work_code") or "").upper()]
         for jn in jobs:
             job_main = "-".join(jn.split("-")[:2]) if "-" in jn else jn
             acc = {k: 0.0 for k, _n, _p in LINEAS_MO}; costo = {k: 0.0 for k, _n, _p in LINEAS_MO}
             otras, otras_costo, horas_sin_tarifa = {}, 0.0, 0.0
             for y in years:
-                for r in wh_load_matching(y, job_main):
+                for r in wh_de(y, job_main):
                     try: h = float(r.get("hours") or 0)
                     except (TypeError, ValueError): continue
                     if h <= 0: continue
@@ -10676,6 +10683,9 @@ def api_requisiciones_update(item_id):
                 if op and ((nuevo_status and nuevo_status != row.data.get("status")) or cambia_fab):
                     return jsonify({"error": f"Esta pieza está en la Orden de Producción {op}; su estatus y fabricación los "
                                              "controla la orden (concluirla → Fabricado, cancelarla → Solicitado)."}), 400
+                data.pop("quantity", None)       # en manufactura quantity = normal + mirror (no directa)
+                if ("qty_normal" in data or "qty_mirror" in data) and op:
+                    return jsonify({"error": f"La pieza está en la Orden de Producción {op}; sus cantidades no se pueden cambiar."}), 400
                 if "qty_normal" in data or "qty_mirror" in data:
                     try:
                         qn = max(0.0, float(data.get("qty_normal", row.data.get("qty_normal", 1)) or 0))
@@ -11111,6 +11121,21 @@ def _op_requiere_db():
     if not (_orm and _orm.DB_ENABLED):
         return jsonify({"error": "Este módulo requiere la base de datos — contacta a soporte."}), 400
 
+def _sesion_propia():
+    """Sesión SQLAlchemy independiente (no la scoped_session del hilo). Necesaria cuando,
+    con la transacción abierta, se llaman helpers como salida_save()/apartado_save() que
+    usan y cierran la sesión compartida del hilo: con la compartida, esos helpers
+    cerraban nuestra transacción, perdían el descuento preparado y liberaban el bloqueo."""
+    return _orm.SessionLocal.session_factory()
+
+def _pg_lock(s, clave):
+    """Bloqueo transaccional de PostgreSQL (se libera al commit/rollback). Serializa
+    operaciones de manufactura entre los workers de gunicorn — el `lock` de Python solo
+    protege un proceso. (Auditoría rev47: A04, A05, A06)"""
+    if _orm and _orm.DB_ENABLED:
+        from sqlalchemy import text
+        s.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": clave})
+
 # ── Almacén de Piezas de Manufactura ─────────────────────────────
 def _mstock_mov(s, job, pieza, normal, mirror, tipo, folio, nota=""):
     """Suma (o resta, con cantidades negativas) existencias Normal / Mirror de una pieza
@@ -11169,9 +11194,23 @@ def api_manuf_stock():
     for d in recs:
         if q and q not in d.get("part_id", "") and q not in d.get("job", ""): continue
         pn, pm = pend.get((d["job"], d["part_id"]), (0.0, 0.0))
+        movs = d.get("movimientos") or []
+        d = {**d, "movimientos": movs[-1:], "total_movimientos": len(movs)}   # historial completo: /movimientos
         out.append({**d, "pendiente_normal": pn, "pendiente_mirror": pm,
                     "disponible_normal": max(0.0, d["qty_normal"] - pn), "disponible_mirror": max(0.0, d["qty_mirror"] - pm)})
     return jsonify({"records": out, "total": len(out)})
+
+@app.route("/api/manuf-stock/movimientos", methods=["GET"])
+def api_manuf_stock_movimientos():
+    if not (can("view", "manuf-stock") or can("view", "salida")): return jsonify({"error": "Sin permiso"}), 403
+    if (r := _op_requiere_db()): return r
+    clave = f'{(request.args.get("job") or "").strip().upper()}|{(request.args.get("id") or "").strip().upper()}'
+    s = _orm.get_session()
+    try:
+        row = s.query(_orm.ManufStock).filter(_orm.ManufStock.clave == clave).one_or_none()
+        return jsonify({"movimientos": (row.data.get("movimientos") or []) if row else []})
+    finally:
+        s.close()
 
 @app.route("/api/ordenes-produccion/<folio>/pieza/<rid>/terminar", methods=["POST"])
 def api_op_pieza_terminar(folio, rid):
@@ -11191,6 +11230,8 @@ def api_op_pieza_terminar(folio, rid):
         if marcar:
             pend = [n for k, n in OP_PROCESOS if (p.get("procesos") or {}).get(k, {}).get("estado") == "Pendiente"]
             if pend: return jsonify({"error": f"{p['part_id']}: faltan procesos por concluir ({', '.join(pend)})"}), 400
+            if not any((p.get("procesos") or {}).get(k, {}).get("estado") == "Concluido" for k, _ in OP_PROCESOS):
+                return jsonify({"error": f"{p['part_id']}: configura y concluye al menos un proceso antes de marcar el lote terminado"}), 400
             p["lote_terminado"] = {"por": session.get("user", ""), "fecha": datetime.datetime.now().isoformat()}
         else:
             p.pop("lote_terminado", None)
@@ -11215,6 +11256,7 @@ def api_op_pieza_ingresar(folio, rid):
     if n < 0 or m < 0 or n + m <= 0: return jsonify({"error": "Indica cuántas piezas Normal y/o Mirror se ingresan"}), 400
     s = _orm.get_session()
     try:
+        _pg_lock(s, f"op|{folio.upper()}")     # reintentos o clics dobles no sobreingresan
         row = _op_get(s, folio)
         if not row: return jsonify({"error": "Orden no encontrada"}), 404
         rec = row.data
@@ -11286,6 +11328,7 @@ def api_op_create():
     user, ahora = session.get("user", ""), datetime.datetime.now().isoformat()
     s = _orm.get_session()
     try:
+        _pg_lock(s, f"op-crear|{job}")         # dos usuarios no pueden ordenar la misma pieza a la vez
         filas = {r.item_id: r for r in s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.item_id.in_(ids)).all()}
         piezas = []
         for i in ids:
@@ -11358,6 +11401,10 @@ def api_op_update(folio):
             if nuevo == "Concluida":
                 h, t = _op_avance(rec)
                 if h < t: return jsonify({"error": f"Faltan procesos por concluir ({h} de {t}); no se puede concluir la orden."}), 400
+                if t == 0: return jsonify({"error": "La orden no tiene procesos configurados; configura al menos uno por pieza antes de concluirla."}), 400
+                sin = [p.get("part_id") for p in rec.get("piezas") or []
+                       if not any((p.get("procesos") or {}).get(k, {}).get("estado") != "No aplica" for k, _ in OP_PROCESOS)]
+                if sin: return jsonify({"error": f"Piezas sin ningún proceso configurado: {', '.join(sin)}"}), 400
             rec["status"] = nuevo
             hist.append({"fecha": ahora, "usuario": user, "accion": f"Estatus: {previo} → {nuevo}"})
             if nuevo == "Concluida":   _op_sync_requisicion(s, rec, estado_pieza="Fabricado")
@@ -12074,7 +12121,9 @@ def api_create_gpo():
             req_actualizados = _req_registrar_compra(po_number, po_items)
         except Exception as e:
             print(f"[REQ] No se pudo registrar la compra {po_number} en la requisición: {e}")
-            req_actualizados = None
+            return jsonify({"ok": True, "po_number": po_number, "record": rec, "requisicion_renglones": None,
+                            "advertencia": f"La orden {po_number} se emitió, pero no se pudo actualizar la requisición ({e}). "
+                                           "Revísala: los renglones pueden seguir como pendientes."})
         return jsonify({"ok": True, "po_number": po_number, "record": rec, "requisicion_renglones": req_actualizados})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -15221,13 +15270,18 @@ def api_create_salida():
             manuf = [it for it in items if it.get("origen") == "manufactura"]
             if manuf:
                 if not (_orm and _orm.DB_ENABLED): return jsonify({"error": "Requiere base de datos"}), 400
-                pend = _mstock_pendientes(job)
-                s_m = _orm.get_session()
+                agrup = {}
+                for it in manuf:          # renglones repetidos de la misma pieza se suman
+                    pid = str(it.get("part_number", "")).strip().upper()
+                    n = float(it.get("qty_normal") or 0); m = float(it.get("qty_mirror") or 0)
+                    if n < 0 or m < 0: return jsonify({"error": f"{pid}: cantidad negativa"}), 400
+                    a = agrup.setdefault(pid, [0.0, 0.0]); a[0] += n; a[1] += m
+                s_m = _sesion_propia()
                 try:
-                    for it in manuf:
-                        pid = str(it.get("part_number", "")).strip().upper()
-                        n = float(it.get("qty_normal") or 0); m = float(it.get("qty_mirror") or 0)
-                        if n < 0 or m < 0 or n + m <= 0: continue
+                    _pg_lock(s_m, f"mstock-salida|{job}")
+                    pend = _mstock_pendientes(job)
+                    for pid, (n, m) in agrup.items():
+                        if n + m <= 0: continue
                         st = s_m.query(_orm.ManufStock).filter(_orm.ManufStock.clave == f"{job}|{pid}").one_or_none()
                         if st is None: return jsonify({"error": f"{pid} no tiene existencias para el Job {job}"}), 400
                         pn, pm = pend.get((job, pid), (0.0, 0.0))
@@ -15274,18 +15328,22 @@ def api_surtir_salida(sal_id):
             if rec.get("status")=="Surtida": return jsonify({"error":"Ya fue surtida"}), 400
             now = datetime.datetime.now().isoformat()
             manuf = [it for it in rec.get("items",[]) if it.get("origen") == "manufactura"]
+            s_m = None
             if manuf:
-                # piezas de manufactura: se descuentan de su almacén (todo o nada)
-                s_m = _orm.get_session()
+                # Piezas de manufactura: el descuento se prepara (flush) pero se confirma
+                # DESPUÉS de guardar la salida como Surtida; si algo falla antes, se revierte
+                # y la salida sigue Pendiente sin descuento. (Auditoría rev47: A03)
+                s_m = _sesion_propia()
                 try:
+                    _pg_lock(s_m, f"mstock-salida|{rec['job'].upper()}")
                     for it in manuf:
                         _mstock_mov(s_m, rec["job"], {"part_id": it["part_number"]}, -float(it.get("qty_normal") or 0),
                                     -float(it.get("qty_mirror") or 0), "Salida de almacén", rec["id"])
-                    s_m.commit()
+                    s_m.flush()
                 except ValueError as e:
-                    s_m.rollback(); return jsonify({"error": str(e)}), 400
-                finally:
-                    s_m.close()
+                    s_m.rollback(); s_m.close(); return jsonify({"error": str(e)}), 400
+                except Exception:
+                    s_m.rollback(); s_m.close(); raise
             apartados = apartado_load()
             for it in rec.get("items",[]):
                 if it.get("origen") == "manufactura": continue
@@ -15300,7 +15358,14 @@ def api_surtir_salida(sal_id):
                     apt["updated_at"]=now
             apartado_save(apartados)
             rec["status"]="Surtida"; rec["surtido_at"]=now; rec["surtido_by"]=session.get("user","")
-            salida_save(records)
+            try:
+                salida_save(records)
+                if s_m is not None: s_m.commit()
+            except Exception:
+                if s_m is not None: s_m.rollback()
+                raise
+            finally:
+                if s_m is not None: s_m.close()
         return jsonify({"ok": True, "record": rec})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
@@ -15311,7 +15376,23 @@ def api_delete_salida(sal_id):
         with lock:
             records=salida_load(); new=[r for r in records if r["id"]!=sal_id]
             if len(new)==len(records): return jsonify({"error":"Salida no encontrada"}), 404
-            salida_save(new)
+            rec = next(r for r in records if r["id"]==sal_id)
+            manuf = [it for it in rec.get("items",[]) if it.get("origen")=="manufactura"]
+            if rec.get("status")=="Surtida" and manuf and _orm and _orm.DB_ENABLED:
+                # regresar las piezas con un movimiento compensatorio (queda trazabilidad)
+                s_m = _sesion_propia()
+                try:
+                    _pg_lock(s_m, f"mstock-salida|{rec['job'].upper()}")
+                    for it in manuf:
+                        _mstock_mov(s_m, rec["job"], {"part_id": it["part_number"]}, float(it.get("qty_normal") or 0),
+                                    float(it.get("qty_mirror") or 0), "Cancelación de salida", rec["id"])
+                    salida_save(new); s_m.commit()
+                except Exception:
+                    s_m.rollback(); raise
+                finally:
+                    s_m.close()
+            else:
+                salida_save(new)
         return jsonify({"ok": True})
     except Exception as e: return jsonify({"error": str(e)}), 500
 

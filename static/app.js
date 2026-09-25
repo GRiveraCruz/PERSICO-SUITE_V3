@@ -7643,8 +7643,11 @@ async function loadManufStock(){
     document.getElementById('ms-count').textContent = `${manufStock.length} pieza(s)`;
   }catch(e){ toast('Error cargando piezas de manufactura: '+e,'er'); }
 }
-function msMovimientos(i){
+async function msMovimientos(i){
   const r = manufStock[i]; if(!r) return;
+  // el listado solo trae el último movimiento; el historial completo se pide al abrir
+  try{ const d = await apiCall('GET',`/manuf-stock/movimientos?job=${encodeURIComponent(r.job)}&id=${encodeURIComponent(r.part_id)}`);
+       if(!d.error) r.movimientos = d.movimientos||[]; }catch(e){}
   document.getElementById('ms-titulo').textContent = `${r.part_id} · Job ${r.job}`;
   document.getElementById('ms-body').innerHTML = `<div style="font-size:12px;margin-bottom:8px">Existencia: <b>Normal ${r.qty_normal}</b> · <b>Mirror ${r.qty_mirror}</b> · Disponible para salida: Normal ${r.disponible_normal}, Mirror ${r.disponible_mirror}</div>
     <table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="font-size:10px;color:var(--muted);text-transform:uppercase"><th style="text-align:left">Fecha</th><th style="text-align:left">Movimiento</th><th style="text-align:left">Folio</th><th style="text-align:right">Normal</th><th style="text-align:right">Mirror</th><th style="text-align:left">Usuario</th></tr></thead><tbody>${
@@ -9796,6 +9799,7 @@ async function saveGPO() {
       return;
     }
     if(d.error){toast(d.error,'er');return;}
+    if(d.advertencia) setTimeout(()=>alert('⚠ '+d.advertencia), 400);
     if(gpoItems.some(i=>i.req_item_id) && typeof reqRenderTab==='function' && reqCurrentJob) setTimeout(()=>reqRenderTab(),300);
     closeMo('mo-gpo');
     toast(`PO emitida: ${d.po_number} · ${gpoItems.length} items ✓`,'ok',6000);
