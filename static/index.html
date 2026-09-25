@@ -1602,7 +1602,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
 <!-- ── Modal: Entrada por OC ── -->
 <div class="mo" id="mo-ing-po" style="align-items:flex-start;padding:24px 16px;overflow-y:auto;z-index:150">
-  <div class="md" style="max-width:860px;width:100%;margin:auto;max-height:none">
+  <div class="md" style="max-width:min(1320px,96vw);width:100%;margin:auto;max-height:none">
     <div class="mh">
       <h2>🛒 Ingreso por Orden de Compra</h2>
       <button class="px" onclick="closeMo('mo-ing-po')">Cerrar</button>
@@ -1656,7 +1656,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
 <!-- ── Modal: Ingreso con SAE ── -->
 <div class="mo" id="mo-ing-sae" style="align-items:flex-start;padding:24px 16px;overflow-y:auto;z-index:150">
-  <div class="md" style="max-width:860px;width:100%;margin:auto;max-height:none">
+  <div class="md" style="max-width:min(1320px,96vw);width:100%;margin:auto;max-height:none">
     <div class="mh">
       <h2>📋 Ingreso con SAE</h2>
       <button class="px" onclick="closeMo('mo-ing-sae')">Cerrar</button>
@@ -6925,7 +6925,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
      MODAL: NUEVA ORDEN DE COMPRA (GPO)
 ══════════════════════════════════════════════════ -->
 <div class="mo" id="mo-gpo" style="z-index:200;align-items:flex-start;padding:24px 16px;overflow-y:auto">
-  <div class="md" style="max-width:860px;width:100%;margin:auto;max-height:none">
+  <div class="md" style="max-width:min(1320px,96vw);width:100%;margin:auto;max-height:none">
     <div class="mh">
       <h2>🛒 Nueva Orden de Compra — <span id="gpo-num-preview" style="color:var(--gold);font-family:'DM Mono',monospace">PO-…</span></h2>
       <button class="px" onclick="closeMo('mo-gpo')">Cerrar</button>
@@ -7073,8 +7073,8 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       </div>
 
       <!-- Lista de items agregados -->
-      <div id="gpo-items-list" style="display:none">
-        <table class="tbl" style="font-size:11px">
+      <div id="gpo-items-list" style="display:none;overflow-x:auto">
+        <table class="tbl" style="font-size:11px;width:100%">
           <thead><tr>
             <th>#</th><th>Tipo</th><th>Código</th><th>Marca</th><th>No. Parte</th>
             <th>Descripción</th><th style="text-align:right">Qty</th>
@@ -7255,7 +7255,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
 <!-- ── Modal: Modificar Orden de Compra ── -->
 <div class="mo" id="mo-gpo-mod" style="align-items:flex-start;padding:24px 16px;overflow-y:auto;z-index:200">
-  <div class="md" style="max-width:860px;width:100%;margin:auto;max-height:none">
+  <div class="md" style="max-width:min(1320px,96vw);width:100%;margin:auto;max-height:none">
     <div class="mh">
       <h2>✏ Modificar Orden de Compra</h2>
       <button class="px" onclick="closeMo('mo-gpo-mod')">Cerrar</button>

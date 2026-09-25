@@ -9304,7 +9304,7 @@ function gpoRenderItems() {
       <td style="font-family:'DM Mono',monospace;font-size:10px;color:var(--gold)">${esc(i.cat_code||'—')}</td>
       <td style="font-weight:600">${esc(i.brand)}</td>
       <td style="font-family:'DM Mono',monospace;font-size:11px">${esc(i.part_number)}</td>
-      <td style="color:var(--muted2)">${esc(i.description)}</td>
+      <td style="color:var(--muted2);white-space:normal;word-break:break-word;min-width:220px;max-width:340px;line-height:1.35">${esc(i.description)}</td>
       <td style="text-align:right">${i.quantity}</td>
       <td style="text-align:right"><input type="number" min="0" step="0.01" value="${i.unit_price||''}" placeholder="0.00" onchange="gpoSetPrice(${idx},this.value)" style="width:90px;text-align:right;font-size:11px;padding:3px;${i.unit_price?'':'border-color:var(--red)'}"></td>
       <td style="text-align:right;font-weight:700;color:var(--green)">${fmt(i.total)}${i.req_item_id?'<div style="font-size:9px;color:#6d28d9;font-weight:400">requisición</div>':''}</td>
@@ -10249,7 +10249,7 @@ function ipoRenderPO(po) {
       <td style="font-family:'DM Mono',monospace;font-size:10px;color:var(--gold)">${esc(it.cat_code||'—')}</td>
       <td style="font-family:'DM Mono',monospace;font-size:11px">${esc(it.part_number||'—')}</td>
       <td>${esc(it.brand||'—')}</td>
-      <td style="color:var(--muted2);max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(it.description||'—')}</td>
+      <td style="color:var(--muted2);white-space:normal;word-break:break-word;min-width:220px;max-width:340px;line-height:1.35">${esc(it.description||'—')}</td>
       <td style="font-family:'DM Mono',monospace;color:var(--gold);font-size:11px">${esc(it.job||'—')}</td>
       <td style="text-align:right">${qOrd}</td>
       <td style="text-align:right;color:${qDel>=qOrd?'var(--green)':'var(--muted)'}">${qDel}</td>
@@ -12541,7 +12541,7 @@ function gpoModPopulateItems(items) {
   const inpS = `background:var(--inp);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:11px;width:100%;outline:none`;
   document.getElementById('gpo-mod-items-body').innerHTML = items.map((it,i)=>`
     <tr id="gpo-mod-row-${i}">
-      <td><input type="text" value="${esc(it.description||it.desc||'')}" style="${inpS}"></td>
+      <td style="min-width:280px"><textarea rows="1" class="gm-desc" oninput="gpoModAutoAlto(this)" style="${inpS};resize:vertical;line-height:1.35;font-family:inherit;overflow:hidden">${esc(it.description||it.desc||'')}</textarea></td>
       <td><input type="text" value="${esc(it.part_number||it.pnum||'')}" style="${inpS};font-family:'DM Mono',monospace"></td>
       <td><input type="text" value="${esc(it.brand||it.manufacturer||'')}" style="${inpS}"></td>
       <td><input type="number" min="0" step="1" value="${it.quantity||0}" oninput="gpoModRecalc()"
@@ -12555,7 +12555,10 @@ function gpoModPopulateItems(items) {
         style="background:none;border:none;color:var(--muted);cursor:pointer">Eliminar</button></td>
     </tr>`).join('');
   gpoModRecalc();
+  // la altura de cada descripción se ajusta a su texto completo (después de pintarse)
+  requestAnimationFrame(()=>document.querySelectorAll('#gpo-mod-items-body textarea.gm-desc').forEach(gpoModAutoAlto));
 }
+function gpoModAutoAlto(t){ t.style.height='auto'; t.style.height=(t.scrollHeight+2)+'px'; }
 
 function gpoModAddItem() {
   const tbody = document.getElementById('gpo-mod-items-body');
@@ -12563,7 +12566,7 @@ function gpoModAddItem() {
   const inpS = `background:var(--inp);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:11px;width:100%;outline:none`;
   const tr = document.createElement('tr');
   tr.innerHTML = `
-    <td><input type="text" placeholder="Descripción" style="${inpS}"></td>
+    <td style="min-width:280px"><textarea rows="1" class="gm-desc" placeholder="Descripción" oninput="gpoModAutoAlto(this)" style="${inpS};resize:vertical;line-height:1.35;font-family:inherit;overflow:hidden"></textarea></td>
     <td><input type="text" placeholder="No. Parte" style="${inpS};font-family:'DM Mono',monospace"></td>
     <td><input type="text" placeholder="Marca" style="${inpS}"></td>
     <td><input type="number" min="0" step="1" value="1" oninput="gpoModRecalc()" style="${inpS};text-align:right;color:var(--amber)"></td>
@@ -12577,7 +12580,7 @@ function gpoModRecalc() {
   const fmt = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2});
   let total = 0;
   document.querySelectorAll('#gpo-mod-items-body tr').forEach(tr => {
-    const inputs = tr.querySelectorAll('input');
+    const inputs = tr.querySelectorAll('input,textarea');
     const qty   = parseFloat(inputs[3]?.value||0)||0;
     const price = parseFloat(inputs[4]?.value||0)||0;
     const row   = qty * price;
@@ -12602,7 +12605,7 @@ async function gpoModGuardar() {
     } else if(gpoModTipo === 'nueva_version') {
       const items = [];
       document.querySelectorAll('#gpo-mod-items-body tr').forEach((tr, idx) => {
-        const inputs = tr.querySelectorAll('input');
+        const inputs = tr.querySelectorAll('input,textarea');
         const desc  = inputs[0]?.value?.trim()||'';
         const pnum  = inputs[1]?.value?.trim()||'';
         const brand = inputs[2]?.value?.trim()||'';
@@ -13266,7 +13269,7 @@ function saeRenderPO(po) {
     return `<tr>
       <td style="color:var(--muted);text-align:center">${i+1}</td>
       <td style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text)">${esc(it.part_number)}</td>
-      <td style="color:var(--muted2);max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${esc(it.description)}">${esc(it.description)}</td>
+      <td style="color:var(--muted2);white-space:normal;word-break:break-word;min-width:220px;max-width:340px;line-height:1.35">${esc(it.description)}</td>
       <td style="font-family:'DM Mono',monospace;color:var(--gold);font-size:11px">${esc(it.job||'—')}</td>
       <td style="text-align:right">${qOrd}</td>
       <td style="text-align:right;color:${qDel>=qOrd?'var(--green)':'var(--muted)'}">${qDel}</td>

@@ -116,3 +116,43 @@ Probado en Chromium:
 - "banner wlb" → WLB32.
 - La selección enviada son los 3 marcados, incluidos los ocultos.
 - Sin errores de JavaScript.
+
+---
+# rev33 — Formulario de Orden de Compra más amplio y descripción completa
+
+- **Ancho:** el modal de Orden de Compra (GPO) pasa de 860 px a hasta 1,320 px (96 % de
+  la pantalla en equipos más chicos). Solo cambia este modal; otros tres que compartían
+  el mismo estilo quedan igual.
+- **Descripción de cada renglón en varias líneas:** ancho de 220 a 340 px y salto de
+  línea automático, sin cortar texto. Toda la descripción queda visible.
+- **Tabla de renglones:** ocupa todo el ancho. Solo si la pantalla es muy angosta,
+  aparece desplazamiento horizontal dentro de la tabla, nunca columnas ocultas.
+
+Probado en Chromium con descripciones de 130 a 170 caracteres:
+- **1366 px:** modal de 1,311 px, todas las columnas visibles (incluido Eliminar), sin
+  desplazamiento horizontal; las descripciones ocupan 3 líneas.
+- **1920 px:** modal de 1,320 px, el mismo resultado.
+- Sin errores de JavaScript.
+
+---
+# rev34 — Mismo formato en los demás modales de compras
+
+Se aplicó a los otros tres modales que compartían el tamaño de 860 px:
+
+| Modal | Cambio |
+|---|---|
+| Ingreso por Orden de Compra (`mo-ing-po`) | hasta 1,320 px de ancho; descripción en varias líneas (antes se cortaba con "…") |
+| Ingreso con SAE (`mo-ing-sae`) | ídem |
+| Modificar Orden de Compra (`mo-gpo-mod`) | ídem; la descripción editable pasó de campo de una línea a **área de texto** que crece con el contenido (al abrir y al escribir) |
+
+**Modificar OC — detalle técnico:** las funciones que leen los renglones
+(`gpoModRecalc` y el guardado de "Nueva versión") ahora toman `input,textarea` en el
+mismo orden, así que cada valor sigue en su posición (descripción, No. de parte, marca,
+cantidad, precio).
+
+Probado en Chromium a 1366 px con descripciones de 130 a 170 caracteres:
+- **Tamaño:** los tres modales miden 1,311 px; la última columna queda dentro y ningún
+  texto se corta.
+- **Modificar OC:** total recalculado $520.00 (2×80 + 3×120). La lectura por posición
+  devuelve descripción, No. de parte, marca, cantidad y precio correctos en cada renglón.
+- Sin errores de JavaScript.
