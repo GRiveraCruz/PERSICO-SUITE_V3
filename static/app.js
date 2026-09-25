@@ -9918,6 +9918,7 @@ async function pcSearch(q) {
   });
 }
 
+let pcConfigEncontrada = false;
 async function pcSelectPTSV(item) {
   document.getElementById('pc-ptsv-results').style.display='none';
   document.getElementById('pc-ptsv-search').value = item.label;
@@ -9929,7 +9930,13 @@ async function pcSelectPTSV(item) {
   let existingConfig = null;
   try {
     const d = await fetch(`/api/projconfig?q=${encodeURIComponent(item.label)}`).then(r=>r.json());
-    existingConfig = (d.records||[]).find(r=>r.ptsv===item.label);
+    // Comparación tolerante: sin distinguir mayúsculas, guiones ni espacios ("PT0067" = "PT-0067").
+    // Antes se exigía igualdad exacta y una configuración guardada con otro formato no se cargaba
+    // (el Job aparecía en ceros aunque los datos existieran). Si hay varias, la más reciente.
+    const _normPT = v => String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+    existingConfig = (d.records||[]).filter(r=>_normPT(r.ptsv)===_normPT(item.label))
+      .sort((a,b)=>String(b.updated_at||'').localeCompare(String(a.updated_at||'')))[0] || null;
+    pcConfigEncontrada = !!existingConfig;
     if(existingConfig) (existingConfig.jobs||[]).forEach(j => { savedRows[j.job_number] = j; });
   } catch(e){}
 
@@ -9952,6 +9959,13 @@ async function pcSelectPTSV(item) {
   await Promise.all([pcCargarCostos(), pcCargarHorasConsumidas(jobDetails.map(j=>j.job_number))]);
   pcRenderJobs(jobDetails, savedRows);
   document.getElementById('pc-empty').style.display='none';
+  // Aviso cuando el PT no tiene configuración guardada (para no confundir "sin datos" con "en cero")
+  const _av = document.getElementById('pc-sin-config');
+  if(_av) _av.remove();
+  if(!pcConfigEncontrada){
+    document.getElementById('pc-jobs-body')?.insertAdjacentHTML('beforebegin', `<div id="pc-sin-config" style="margin:0 0 12px;padding:10px 14px;border:1px solid var(--amber);background:rgba(245,158,11,.08);border-radius:8px;font-size:12px;color:#b45309">
+      ⚠ <b>${esc(item.label)}</b> no tiene configuración guardada: los estimados aparecen vacíos. Si esperabas ver datos, la configuración pudo guardarse con otro PT/SV.</div>`);
+  }
   document.getElementById('pc-table-wrap').style.display='';
   document.getElementById('btn-pc-save').disabled=false;
 

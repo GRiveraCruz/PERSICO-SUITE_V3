@@ -12756,7 +12756,10 @@ def api_get_projconfig():
         records = projcfg_load()
         q = request.args.get("q","").upper()
         if q:
-            records = [r for r in records if q in r.get("ptsv","").upper()]
+            # sin distinguir guiones/espacios: "PT0067", "PT 0067" y "PT-0067" son el mismo PT
+            nq = re.sub(r"[^A-Z0-9]", "", q)
+            records = [r for r in records if q in r.get("ptsv","").upper()
+                       or (nq and nq in re.sub(r"[^A-Z0-9]", "", r.get("ptsv","").upper()))]
         return jsonify({"records": records})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -12770,7 +12773,9 @@ def api_create_projconfig():
         if not ptsv: return jsonify({"error":"PT/SV requerido"}), 400
         with lock:
             records = projcfg_load()
-            existing = next((r for r in records if r.get("ptsv","").upper()==ptsv), None)
+            _n = lambda v: re.sub(r"[^A-Z0-9]", "", str(v or "").upper())
+            existing = next((r for r in records if _n(r.get("ptsv")) == _n(ptsv)), None)
+            if existing: ptsv = existing.get("ptsv", ptsv).upper()     # conservar el nombre ya guardado
 
             jobs_in = data.get("jobs", [])
             if not can("delete", "projconfig") and existing:
@@ -12785,7 +12790,7 @@ def api_create_projconfig():
                             j[f] = 0
 
             # Remove existing config for same PT/SV (overwrite)
-            records = [r for r in records if r.get("ptsv","").upper() != ptsv]
+            records = [r for r in records if _n(r.get("ptsv")) != _n(ptsv)]
             rec = {
                 "id":         f"PC-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
                 "ptsv":       ptsv,

@@ -196,3 +196,32 @@ de departamento.
   25,000; al recargar el valor sigue ahí.
 - "Total consumido": $32,272.82 → 129 % contra los 25,000.
 - Chromium sin errores de JavaScript.
+
+---
+# rev49 — Configurar Proyecto: la configuración guardada se encuentra aunque el PT esté escrito distinto
+
+**Síntoma reportado (PT0067):** el Job aparecía con todos los estimados en 0, incluidos
+los materiales y la mano de obra guardada.
+
+**Causa probable:** para cargar la configuración guardada, la pantalla exigía que el nombre
+del PT fuera **idéntico carácter por carácter** (`r.ptsv === item.label`), y el servidor
+filtraba por texto contenido. Una configuración guardada como "PT0067" no se reconocía al
+abrir "PT-0067", ni con mayúsculas distintas o espacios. El Job se dibujaba como nuevo, en
+ceros, aunque los datos existieran en la base.
+
+**Corrección:**
+- **Carga:** servidor y pantalla comparan el PT **sin distinguir mayúsculas, guiones ni
+  espacios**. Si hay varias coincidencias, se toma la más reciente.
+- **Guardado:** reemplaza la configuración de ese PT aunque esté escrita distinto, conserva
+  el nombre ya guardado y **no crea duplicados**.
+- **Aviso:** si un PT de verdad no tiene configuración guardada, se muestra un aviso en
+  ámbar, para no confundir "sin datos" con "datos en cero".
+
+**Probado:**
+- Configuración guardada como "PT-0099" (mano de obra anterior 25,000, material 30,000).
+  Al abrirla como "pt 0099", "PT0099" o "PT-0099" carga los valores. "PT-0098", sin
+  configuración, muestra el aviso.
+- Guardar con "pt0099" reemplaza la existente ("PT-0099", sin duplicar).
+
+**Si PT0067 sigue en ceros con rev49:** la configuración de ese PT ya no tiene los valores
+en la base. Revisar la base original (V2) con la consulta del documento de despliegue.
