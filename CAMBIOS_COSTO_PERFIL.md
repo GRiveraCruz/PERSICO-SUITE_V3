@@ -163,3 +163,36 @@ de departamento.
   $5,058.78 (76 %); Ensamble $7,284.40 (91 %, ámbar).
 - **Horas sin tarifa:** 1,743.6 h, marcadas con ⚠.
 - Chromium sin errores de JavaScript.
+
+---
+# rev47 — Mano de obra guardada de proyectos anteriores: de nuevo visible
+
+## Qué pasó
+- **Tabla de mano de obra:** el valor guardado (Ing. Mecánica + Ing. Eléctrica +
+  Ensamble de proyectos configurados antes del formato por horas) **no se borró de los
+  datos**; se sigue leyendo y sumando. Pero en rev46, al agregar el renglón "Total
+  consumido", el renglón "monto anterior" quedó **debajo de los totales**, separado de
+  las líneas de mano de obra, y se veía como si hubiera desaparecido.
+- **Resumen por áreas del PT:** aquí sí faltaba desde rev44. Solo mostraba las líneas con
+  horas, así que en proyectos pasados la mano de obra aparecía en $0.
+
+## Corrección
+- **Renglón "Mano de obra registrada antes (monto sin desglose por horas)":**
+  - Vuelve a quedar **inmediatamente después de las líneas de mano de obra**, antes de
+    "Otras horas" y "Total consumido".
+  - Resaltado en ámbar y editable.
+  - Cuenta en la Mano de obra, la Suma, el Delta y el **Target M.O.**
+- **Resumen por áreas:** columna **"M.O. anterior (sin horas)"** cuando algún Job del PT
+  tiene ese monto.
+- **Nuevo en "Total consumido":** el costo real se compara contra la mano de obra
+  estimada total, incluido el monto anterior. Ejemplo: $32,272.82 de $25,000.00 → 129 %,
+  en rojo. En proyectos pasados sin horas por línea, esta es la comparación que sirve.
+
+## Cómo se probó (proyecto con formato anterior: Ing. Mecánica 12,000 + Ing. Eléctrica 8,000 + Ensamble 5,000, sin horas)
+- Se muestra el renglón con **25,000** justo después de Ensamble; Mano de obra 25,000;
+  Suma 55,000 (con 30,000 de material).
+- El resumen por áreas muestra la columna "M.O. anterior" con 25,000.
+- Al guardar se conservan `est_mo_anterior` 25,000, `target_mo` 25,000 y `est_ensamble`
+  25,000; al recargar el valor sigue ahí.
+- "Total consumido": $32,272.82 → 129 % contra los 25,000.
+- Chromium sin errores de JavaScript.
