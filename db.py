@@ -408,6 +408,14 @@ class SVNumber(Base, JSONBMixin):
     sv_number = Column(String, unique=True, nullable=False, index=True)
 
 
+class ManufStock(Base, JSONBMixin):
+    """Almacén de Piezas de Manufactura: existencias por Job + ID de pieza (Normal y
+    Mirror por separado), con historial de movimientos."""
+    __tablename__ = "manuf_stock"
+    clave = Column(String, unique=True, index=True)     # "JOB|ID"
+    job   = Column(String, index=True)
+
+
 class OrdenProduccion(Base, JSONBMixin):
     """Órdenes de Producción (Operaciones) — folio MNO-000001. Piezas de fabricación
     interna del BOM de Manufactura, con su matriz de procesos."""

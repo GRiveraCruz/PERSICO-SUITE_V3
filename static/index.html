@@ -462,6 +462,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <button onclick="switchMenu('consignacion','ng-almacenes')">Consignación</button>
         <button onclick="switchMenu('ingreso','ng-almacenes')">Ingreso de Material</button>
         <button onclick="switchMenu('apartados','ng-almacenes')">Apartados</button>
+        <button onclick="switchMenu('manuf-stock','ng-almacenes')">Piezas de Manufactura</button>
         <button onclick="switchMenu('salida','ng-almacenes')">Salida de Material</button>
       </div>
     </div>
@@ -1335,6 +1336,12 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         </div>
       </div>
 
+      <!-- Origen de la salida: Compra (Apartados) o Manufactura (Piezas de Manufactura) -->
+      <div style="display:flex;gap:6px;margin-bottom:12px">
+        <button type="button" id="sal-tab-btn-compra" onclick="salidaTab('compra')" class="btn-reload" style="font-weight:700;border-color:var(--red);color:var(--red)">🛒 Compra</button>
+        <button type="button" id="sal-tab-btn-manuf" onclick="salidaTab('manuf')" class="btn-reload">🏭 Manufactura</button>
+      </div>
+      <div id="sal-tab-compra">
       <!-- Apartados display -->
       <div id="sal-apt-empty" style="text-align:center;padding:32px;color:var(--muted);font-size:12px">
         Selecciona un Job para ver los materiales apartados disponibles
@@ -1383,6 +1390,18 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
               </tr></thead>
               <tbody id="sal-pending-wo-tb"></tbody>
             </table>
+          </div>
+        </div>
+      </div>
+      </div>
+      <div id="sal-tab-manuf" style="display:none">
+        <div id="sal-mf-empty" style="text-align:center;padding:28px;color:var(--muted);font-size:12px">Selecciona un Job para ver las piezas de manufactura disponibles</div>
+        <div id="sal-mf-content" style="display:none">
+          <div class="tw"><table style="font-size:12px">
+            <thead><tr><th>ID pieza</th><th>Tipo</th><th>Material</th><th style="text-align:right">Disp. Normal</th><th style="text-align:right">Disp. Mirror</th><th style="text-align:right">Salida Normal</th><th style="text-align:right">Salida Mirror</th></tr></thead>
+            <tbody id="sal-mf-tb"></tbody></table></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px">
+            <button class="btn btn-p" id="btn-sal-mf-save" onclick="salidaGuardarManuf()" style="background:var(--red)">Registrar salida de piezas</button>
           </div>
         </div>
       </div>
@@ -3190,6 +3209,34 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       <button class="btn btn-s" onclick="closeMo('mo-ta')">Cerrar</button>
       <button class="btn btn-p" onclick="taSave()">Guardar</button>
     </div>
+  </div>
+</div>
+
+<div class="module" id="mod-manuf-stock">
+  <div class="main-content" style="overflow-y:auto">
+    <div class="bar-top"><h1>🏭 Piezas de Manufactura</h1>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <input type="text" id="ms-flt-job" placeholder="Job (ej. 685-00)" oninput="loadManufStock()" style="width:150px;padding:6px 8px;font-size:12px">
+        <input type="text" id="ms-flt-q" placeholder="ID de pieza" oninput="loadManufStock()" style="width:170px;padding:6px 8px;font-size:12px">
+        <button class="btn-reload" onclick="loadManufStock()">Recargar</button>
+      </div></div>
+    <div style="padding:16px 24px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Piezas ingresadas desde Órdenes de Producción (lotes completos o parciales) o desde Órdenes de Compra del BOM de Manufactura. Se entregan con Salida de Almacén ▸ Manufactura.</div>
+      <div class="tw"><table>
+        <thead><tr><th>ID pieza</th><th>Job</th><th>Tipo</th><th>Material</th><th>Acabado</th>
+          <th style="text-align:right">Normal</th><th style="text-align:right">Mirror</th><th style="text-align:right">Total ingresado</th><th>Último movimiento</th></tr></thead>
+        <tbody id="ms-tb"><tr><td colspan="9"><div class="es">Cargando…</div></td></tr></tbody>
+      </table></div>
+      <div id="ms-count" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="mo" id="mo-ms">
+  <div class="md" style="max-width:820px;width:min(820px,95vw)">
+    <div class="mh"><h2 id="ms-titulo">Movimientos</h2><button class="px" onclick="closeMo('mo-ms')">Cerrar</button></div>
+    <div class="mb2" id="ms-body" style="max-height:60vh;overflow-y:auto">—</div>
+    <div class="mf"><button class="btn btn-p" onclick="closeMo('mo-ms')">Cerrar</button></div>
   </div>
 </div>
 

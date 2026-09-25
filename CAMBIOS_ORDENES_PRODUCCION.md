@@ -89,3 +89,66 @@ Aplica a usuarios nuevos; los existentes se ajustan en Config ▸ Administrador.
   - Sin errores de JavaScript.
 - **Regresión:** suites de manufactura/planos, orden de compra desde requisición y
   estatus de requisición; todas OK.
+
+---
+# rev41 — Lote terminado, ingreso al almacén y "Piezas de Manufactura"
+
+(Incluye también lo de rev40: tipo de cambio en órdenes de compra en MXN.)
+
+## 1. Orden de Producción — acciones por pieza
+Debajo de cada pieza en el modal de la orden hay una fila con:
+- **"Marcar lote terminado":** requiere que los procesos que aplican a esa pieza estén
+  concluidos. Registra usuario y fecha; tiene la opción "deshacer".
+- **"Ingresar al almacén":** lotes **completos o parciales**, con cantidades Normal y
+  Mirror por separado.
+  - El formulario propone lo que falta.
+  - El servidor no permite ingresar más de lo que falta ni ingresar en órdenes Canceladas.
+  - Muestra "Almacén: Normal 2/3 · Mirror 0/2" y "✔ completo" al terminar.
+- Cada ingreso queda en la pieza y en el historial de la orden.
+- El PDF del estatus agrega las columnas "Almacén N · M" y "Lote terminado".
+
+## 2. Almacenes ▸ Piezas de Manufactura (módulo nuevo)
+- **Listado:** ID de pieza (con enlace al plano), Job, Tipo, Material, Acabado,
+  existencia **Normal** y **Mirror**, total ingresado y último movimiento.
+- **Salidas pendientes:** si hay piezas comprometidas en salidas sin surtir, se indica.
+- **Filtros:** por Job y por ID.
+- **Clic en una fila:** historial de movimientos (ingresos por Orden de Producción, por
+  Orden de Compra y salidas), con folio, cantidades y usuario.
+- **Datos:** tabla nueva `manuf_stock` (una fila por Job + ID de pieza).
+- **Permiso nuevo:** "Piezas de Manufactura". Cada perfil hereda el nivel que tiene en
+  Apartados.
+
+## 3. Ingreso por Orden de Compra
+- Al recibir una GPO, los renglones que vienen del **BOM de Manufactura** entran a
+  **Piezas de Manufactura** y **no** a Apartados.
+- **Reparto Normal / Mirror:** primero se completa lo Normal requerido y el resto va a
+  Mirror.
+- Los demás renglones siguen yendo a Apartados como siempre.
+- El aviso indica cuántas piezas fueron a cada lugar.
+
+## 4. Salida de Almacén — pestaña Compra / Manufactura
+- **Compra:** el flujo de siempre (Apartados), sin cambios.
+- **Manufactura:** piezas del Job con su **disponible** (existencia − salidas pendientes),
+  y cantidades de salida Normal y Mirror. "Registrar salida de piezas" crea la salida
+  (folio WO) en Pendiente.
+- **Surtir:** descuenta del almacén de manufactura y registra el movimiento. Es todo o
+  nada: si ya no alcanza la existencia, no surte.
+
+## Cómo se probó
+- **PostgreSQL (13 verificaciones):**
+  - Lote terminado exige procesos concluidos.
+  - Ingreso parcial y tope por lo que falta.
+  - Almacén con Normal 2 / Mirror 1 en 2 lotes y datos del plano.
+  - Ingreso por OC: la pieza va a Manufactura (Normal 1 + Mirror 1) y el tornillo a
+    Apartados.
+  - La salida pendiente reserva existencia y no permite exceder lo disponible; al surtir
+    se descuenta.
+  - La salida de Compra sigue igual.
+  - Orden cancelada: no se ingresa.
+- **Chromium:**
+  - Lote terminado; ingreso 2/3 y luego el resto → "✔ completo".
+  - La pieza aparece en Piezas de Manufactura con 2 movimientos.
+  - Salida por la pestaña Manufactura (2 N, 1 M) → disponible 1/1.
+  - Sin errores de JavaScript.
+- **Regresión:** suites de órdenes de producción, orden de compra desde requisición y
+  planos; todas OK.

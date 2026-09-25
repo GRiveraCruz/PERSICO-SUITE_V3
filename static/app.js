@@ -122,6 +122,7 @@ function switchMenu(mod, groupId) {
   if(mod==='consignacion') { setTimeout(loadCsg,50); }
   if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
   if(mod==='ops-op') { setTimeout(loadOPs,50); }
+  if(mod==='manuf-stock') { setTimeout(loadManufStock,50); }
   if(mod==='consig-reassign') { setTimeout(loadCsgReassign,50); }
 }
 
@@ -3276,7 +3277,7 @@ function clExportPDF(){
 // ════════════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
-    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos','mo-op','mo-req-op'];
+    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos','mo-op','mo-req-op','mo-ms'];
     const open=mods.find(m=>document.getElementById(m).classList.contains('on'));
     if(open)closeMo(open); else if(_currentPanel)closePanel();
   }
@@ -3961,7 +3962,7 @@ function ivpExportCSV(){ window.open('/api/ivp/export/'+ivpActiveYear,'_blank');
 // ════════════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
-    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos','mo-op','mo-req-op'];
+    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos','mo-op','mo-req-op','mo-ms'];
     const open=mods.find(m=>document.getElementById(m).classList.contains('on'));
     if(open)closeMo(open); else if(_currentPanel)closePanel();
   }
@@ -5512,6 +5513,7 @@ const MODULE_LABELS = {
   // Almacenes
   'stock':'Stock', 'recovery':'Recuperaciones', 'reassign':'Reasignaciones',
   'consignacion':'Consignación', 'consig-reassign':'Reasignaciones Consignación',
+  'manuf-stock':'Piezas de Manufactura',
   'ingreso':'Ingreso de Material (⚡ Solo Control Total)', 'apartados':'Apartados', 'salida':'Salida de Material',
   // Servicio
   'viaticos':'Viáticos', 'gastos-viaje':'Gastos de Viaje', 'envios':'Envíos de Mensajería',
@@ -5544,7 +5546,7 @@ const MODULE_GROUPS = [
   { label: '⚡ Catálogos',            mods: ['cat-electrico','cat-mecanico','cat-servicios'] },
   { label: '🏭 Proveedores',          mods: ['proveedores'] },
   { label: '📄 Documentos de Compra', mods: ['gpo','po','ivp','reassign','consig-reassign','recovery'] },
-  { label: '🏬 Almacenes',            mods: ['stock','consignacion','ingreso','apartados','salida'] },
+  { label: '🏬 Almacenes',            mods: ['stock','consignacion','ingreso','apartados','manuf-stock','salida'] },
   { label: '✈ Servicio',             mods: ['viaticos','gastos-viaje','envios'] },
   { label: '📊 Reportes y Config',    mods: ['wh','report','multirpt','fx','projconfig'] },
   { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-pagos','fin-esquemas'] },
@@ -5738,6 +5740,7 @@ function applyPermsToDom(d) {
     'ivp':           ["switchMenu('ivp'"],
     'stock':         ["switchMenu('stock'"],
     'consignacion':  ["switchMenu('consignacion'"],
+    'manuf-stock':   ["switchMenu('manuf-stock'"],
     'consig-reassign':["switchMenu('consig-reassign'"],
     'ingreso':       ["switchMenu('ingreso'"],
     'apartados':     ["switchMenu('apartados'"],
@@ -7593,6 +7596,40 @@ async function reqCrearOP(){
   finally{ btn.disabled=false; btn.textContent='Crear Orden de Producción'; }
 }
 
+// ══ Almacenes ▸ Piezas de Manufactura ══
+let manufStock = [];
+async function loadManufStock(){
+  const job=(document.getElementById('ms-flt-job')?.value||'').trim(), q=(document.getElementById('ms-flt-q')?.value||'').trim();
+  const qs=new URLSearchParams(); if(job) qs.set('job',job); if(q) qs.set('q',q);
+  try{
+    const d = await apiCall('GET','/manuf-stock'+(qs.toString()?'?'+qs:''));
+    const tb=document.getElementById('ms-tb'); if(!tb) return;
+    if(d.error){ tb.innerHTML=`<tr><td colspan="9"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
+    manufStock = d.records||[];
+    tb.innerHTML = manufStock.map((r,i)=>{ const u=(r.movimientos||[]).slice(-1)[0];
+      const pend = (r.pendiente_normal||0)+(r.pendiente_mirror||0);
+      return `<tr class="tr-hover" style="cursor:pointer" onclick="msMovimientos(${i})">
+        <td style="font-family:'DM Mono',monospace;color:var(--gold)">${r.archivo_id?`<a href="/api/requisiciones/planos/${r.archivo_id}" target="_blank" onclick="event.stopPropagation()" style="color:var(--gold);text-decoration:none" title="Abrir plano">📄 </a>`:''}${esc(r.part_id)}${r.rev_plano?` <span style="font-size:10px;color:var(--muted)">rev ${esc(r.rev_plano)}</span>`:''}</td>
+        <td style="font-family:'DM Mono',monospace">${esc(r.job)}</td><td>${esc(r.tipo||'')}</td><td>${esc(r.material||'')}</td><td>${esc(r.acabado||'')}</td>
+        <td style="text-align:right;font-weight:700;color:${r.qty_normal>0?'var(--green)':'var(--muted)'}">${r.qty_normal}</td>
+        <td style="text-align:right;font-weight:700;color:${r.qty_mirror>0?'var(--green)':'var(--muted)'}">${r.qty_mirror}${pend?`<div style="font-size:9px;color:var(--amber);font-weight:400">${pend} en salida pendiente</div>`:''}</td>
+        <td style="text-align:right">${(r.ingresado_normal||0)+(r.ingresado_mirror||0)}</td>
+        <td style="font-size:11px">${u?`${esc(u.tipo)}<div style="font-size:9px;color:var(--muted)">${esc(u.folio||'')} · ${esc(String(u.fecha||'').slice(0,10))} · ${esc(u.usuario||'')}</div>`:''}</td></tr>`;}).join('')
+      || '<tr><td colspan="9"><div class="es">Sin piezas en el almacén de manufactura</div></td></tr>';
+    document.getElementById('ms-count').textContent = `${manufStock.length} pieza(s)`;
+  }catch(e){ toast('Error cargando piezas de manufactura: '+e,'er'); }
+}
+function msMovimientos(i){
+  const r = manufStock[i]; if(!r) return;
+  document.getElementById('ms-titulo').textContent = `${r.part_id} · Job ${r.job}`;
+  document.getElementById('ms-body').innerHTML = `<div style="font-size:12px;margin-bottom:8px">Existencia: <b>Normal ${r.qty_normal}</b> · <b>Mirror ${r.qty_mirror}</b> · Disponible para salida: Normal ${r.disponible_normal}, Mirror ${r.disponible_mirror}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="font-size:10px;color:var(--muted);text-transform:uppercase"><th style="text-align:left">Fecha</th><th style="text-align:left">Movimiento</th><th style="text-align:left">Folio</th><th style="text-align:right">Normal</th><th style="text-align:right">Mirror</th><th style="text-align:left">Usuario</th></tr></thead><tbody>${
+    (r.movimientos||[]).slice().reverse().map(m=>`<tr style="border-bottom:1px solid var(--border)"><td>${esc(String(m.fecha||'').slice(0,16).replace('T',' '))}</td><td>${esc(m.tipo)}</td>
+      <td style="font-family:'DM Mono',monospace">${esc(m.folio||'')}</td>
+      ${['normal','mirror'].map(k=>`<td style="text-align:right;font-weight:700;color:${m[k]>0?'#15803d':(m[k]<0?'var(--red)':'var(--muted)')}">${m[k]>0?'+':''}${m[k]}</td>`).join('')}<td>${esc(m.usuario||'')}</td></tr>`).join('')}</tbody></table>`;
+  document.getElementById('mo-ms').classList.add('on');
+}
+
 // ══ Operaciones ▸ Órdenes de Producción ══
 const OP_COLOR = {'Pendiente':['#a16207','#fef3c7'],'En proceso':['#1d4ed8','#dbeafe'],'En pausa':['#b45309','#ffedd5'],'Concluida':['#15803d','#dcfce7'],'Cancelada':['#6b7280','#e5e7eb']};
 let opActual = null, opCambios = {};
@@ -7645,7 +7682,7 @@ function opRender(){
           style="font-size:9.5px;padding:2px 1px;width:84px;border:1px solid ${c==='var(--muted)'?'var(--border)':c};border-radius:4px;color:${c};background:${bg};font-weight:${cur==='No aplica'?'400':'700'}">
           ${d.estados_proceso.map(e=>`<option value="${e}" ${cur===e?'selected':''}>${e==='Concluido'?'✔ Concluido':e}</option>`).join('')}</select>
           ${cur==='Concluido'&&inf?.concluido_por&&!(opCambios[p.req_item_id]||{})[pr.k]?`<div style="font-size:9px;color:var(--muted)">${esc(inf.concluido_por)} ${esc(String(inf.concluido_fecha||'').slice(0,10))}</div>`:''}</td>`;}).join('')}
-    </tr>`).join('');
+    </tr>${opFilaAcciones(p, o, ed)}`).join('');
   const hoy=new Date().toISOString().slice(0,10), tarde=o.fecha_entrega<hoy && !cerrada;
   document.getElementById('op-body').innerHTML = `
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
@@ -7667,6 +7704,34 @@ function opRender(){
   document.getElementById('btn-op-del').style.display = (USER_PERMS?.is_admin || (USER_PERMS?.permissions||{})['ops-op']==='full') && ['Pendiente','Cancelada'].includes(o.status) ? '' : 'none';
 }
 function opSetProc(rid, k, v){ (opCambios[rid] ||= {})[k] = v; }
+// Fila de acciones por pieza: Lote terminado e Ingresar al almacén (lotes completos o parciales)
+function opFilaAcciones(p, o, ed){
+  const rid = esc(p.req_item_id), cancel = o.status==='Cancelada';
+  const tn = +p.qty_normal||0, tm = +p.qty_mirror||0, inN = +p.ingresado_normal||0, inM = +p.ingresado_mirror||0;
+  const fN = Math.max(0, tn-inN), fM = Math.max(0, tm-inM), lt = p.lote_terminado;
+  const completo = fN<=0 && fM<=0;
+  const lote = lt
+    ? `<span style="color:#15803d;font-weight:700">✔ Lote terminado</span> <span style="color:var(--muted)">${esc(lt.por||'')} ${esc(String(lt.fecha||'').slice(0,10))}</span>${ed&&!cancel?` <a href="#" onclick="opTerminar('${rid}',false);return false" style="font-size:10px;color:var(--muted)">deshacer</a>`:''}`
+    : (ed&&!cancel ? `<button class="btn-reload" style="font-size:10px;padding:3px 10px" onclick="opTerminar('${rid}',true)">Marcar lote terminado</button>` : '<span style="color:var(--muted)">Lote en fabricación</span>');
+  const ingr = `Almacén: <b>Normal ${inN}/${tn}</b> · <b>Mirror ${inM}/${tm}</b>${completo?' <span style="color:#15803d;font-weight:700">✔ completo</span>':''}`;
+  const form = (!completo && !cancel && ed) ? `<span style="margin-left:10px">Ingresar: N <input type="number" id="op-in-n-${rid}" min="0" max="${fN}" value="${fN}" style="width:50px;font-size:11px;padding:2px">
+      M <input type="number" id="op-in-m-${rid}" min="0" max="${fM}" value="${fM}" style="width:50px;font-size:11px;padding:2px">
+      <button class="btn-reload" style="font-size:10px;padding:3px 10px;border-color:#15803d;color:#15803d" onclick="opIngresar('${rid}')">Ingresar al almacén</button></span>` : '';
+  return `<tr style="border-bottom:2px solid var(--border);background:rgba(0,0,0,.02)"><td></td><td colspan="${6+(opActual?.procesos?.length||6)}" style="font-size:11px;padding:4px 6px">${lote}<span style="margin-left:18px">${ingr}</span>${form}</td></tr>`;
+}
+async function opTerminar(rid, marcar){
+  const d = await apiCall('POST',`/ordenes-produccion/${encodeURIComponent(opActual.orden.folio)}/pieza/${encodeURIComponent(rid)}/terminar`,{terminado:marcar});
+  if(d.error){ toast(d.error,'er',6000); return; }
+  toast(marcar?'Lote terminado':'Lote reabierto','ok'); await opAbrir(opActual.orden.folio); loadOPs();
+}
+async function opIngresar(rid){
+  const n = parseFloat(document.getElementById('op-in-n-'+rid)?.value)||0, m = parseFloat(document.getElementById('op-in-m-'+rid)?.value)||0;
+  if(n+m<=0){ toast('Indica cuántas piezas Normal y/o Mirror se ingresan','er'); return; }
+  const d = await apiCall('POST',`/ordenes-produccion/${encodeURIComponent(opActual.orden.folio)}/pieza/${encodeURIComponent(rid)}/ingresar`,{normal:n, mirror:m});
+  if(d.error){ toast(d.error,'er',6000); return; }
+  toast(`Ingresado al almacén: Normal ${n}, Mirror ${m}`,'ok'); await opAbrir(opActual.orden.folio);
+  if(typeof loadManufStock==='function') loadManufStock();
+}
 async function opGuardar(){
   if(!opActual) return;
   const o=opActual.orden, body={procesos:opCambios};
@@ -10579,8 +10644,8 @@ async function ipoProcesar() {
     }).then(r=>r.json());
     if(d.error){toast(d.error,'er');return;}
     closeMo('mo-ing-po');
-    toast(`✓ Ingreso procesado — ${d.apartados_created} item(s) en Apartados`,'ok',5000);
-    await Promise.all([loadIngreso(), loadApartados()]);
+    toast(`✓ Ingreso procesado — ${d.apartados_created} item(s) en Apartados${d.manufactura_ingresadas?` · ${d.manufactura_ingresadas} pieza(s) a Piezas de Manufactura`:''}`,'ok',5000);
+    await Promise.all([loadIngreso(), loadApartados(), (typeof loadManufStock==='function' ? loadManufStock() : null)]);
   } catch(e){toast('Error: '+e.message,'er');}
   finally{btn.disabled=false;btn.textContent='✅ Procesar Ingreso';}
 }
@@ -10860,10 +10925,59 @@ async function salidaOpenModal() {
   sel.innerHTML = '<option value="">— Seleccionar Job —</option>'
     + '<option value="SHOPFLOOR">Shopfloor</option>'
     + (jobs||[]).map(j=>`<option value="${esc(j.job_number)}">${esc(j.job_number)} — ${esc(j.customer||'')}</option>`).join('');
+  salidaTab('compra');
   document.getElementById('mo-salida').classList.add('on');
 }
 
+// ── Pestañas del modal de salida: Compra (Apartados) / Manufactura (Piezas de Manufactura)
+let salidaTabActual = 'compra', salidaMf = [];
+function salidaTab(t){
+  salidaTabActual = t;
+  document.getElementById('sal-tab-compra').style.display = t==='compra' ? '' : 'none';
+  document.getElementById('sal-tab-manuf').style.display  = t==='manuf' ? '' : 'none';
+  document.getElementById('btn-sal-save').style.display   = t==='compra' ? '' : 'none';
+  [['compra','sal-tab-btn-compra'],['manuf','sal-tab-btn-manuf']].forEach(([k,id])=>{ const b=document.getElementById(id);
+    b.style.borderColor = k===t ? 'var(--red)' : ''; b.style.color = k===t ? 'var(--red)' : ''; b.style.fontWeight = k===t ? '700' : ''; });
+  if(t==='manuf') salidaCargarManuf();
+}
+async function salidaCargarManuf(){
+  const job = document.getElementById('sal-job').value;
+  const vacio = document.getElementById('sal-mf-empty'), cont = document.getElementById('sal-mf-content');
+  if(!job){ vacio.textContent='Selecciona un Job para ver las piezas de manufactura disponibles'; vacio.style.display=''; cont.style.display='none'; return; }
+  const d = await apiCall('GET','/manuf-stock?job='+encodeURIComponent(job));
+  if(d.error){ vacio.textContent=d.error; vacio.style.display=''; cont.style.display='none'; return; }
+  salidaMf = (d.records||[]).filter(r=>(r.disponible_normal||0)+(r.disponible_mirror||0)>0);
+  if(!salidaMf.length){ vacio.textContent=`No hay piezas de manufactura disponibles para el Job ${job}`; vacio.style.display=''; cont.style.display='none'; return; }
+  vacio.style.display='none'; cont.style.display='';
+  document.getElementById('sal-mf-tb').innerHTML = salidaMf.map((r,i)=>`<tr>
+    <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(r.part_id)}</td><td>${esc(r.tipo||'')}</td><td>${esc(r.material||'')}</td>
+    <td style="text-align:right;font-weight:700">${r.disponible_normal}</td><td style="text-align:right;font-weight:700">${r.disponible_mirror}</td>
+    <td style="text-align:right"><input type="number" id="sal-mf-n-${i}" min="0" max="${r.disponible_normal}" value="0" style="width:60px;text-align:right;padding:3px" ${r.disponible_normal>0?'':'disabled'}></td>
+    <td style="text-align:right"><input type="number" id="sal-mf-m-${i}" min="0" max="${r.disponible_mirror}" value="0" style="width:60px;text-align:right;padding:3px" ${r.disponible_mirror>0?'':'disabled'}></td></tr>`).join('');
+}
+async function salidaGuardarManuf(){
+  const job = document.getElementById('sal-job').value;
+  const items = salidaMf.map((r,i)=>({origen:'manufactura', part_number:r.part_id,
+    qty_normal:parseFloat(document.getElementById('sal-mf-n-'+i)?.value)||0, qty_mirror:parseFloat(document.getElementById('sal-mf-m-'+i)?.value)||0}))
+    .filter(x=>x.qty_normal+x.qty_mirror>0);
+  if(!job || !items.length){ toast('Indica cuántas piezas salen','er'); return; }
+  const bad = items.find((x,_)=>{ const r=salidaMf.find(y=>y.part_id===x.part_number); return x.qty_normal>r.disponible_normal || x.qty_mirror>r.disponible_mirror; });
+  if(bad){ toast(`${bad.part_number}: la cantidad supera lo disponible`,'er'); return; }
+  const btn=document.getElementById('btn-sal-mf-save'); btn.disabled=true; btn.textContent='Registrando…';
+  try{
+    const d = await fetch('/api/salida',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({job, solicitante:USER_PERMS?.user||'', items})}).then(r=>r.json());
+    if(d.error){ toast(d.error,'er',6000); return; }
+    closeMo('mo-salida');
+    toast(`Salida ${d.record?.id||''} registrada · ${items.length} pieza(s) de manufactura (pendiente de surtir)`,'ok',5000);
+    if(typeof loadSalida==='function') loadSalida();
+    if(typeof loadManufStock==='function') loadManufStock();
+  }catch(e){ toast('Error: '+e,'er'); }
+  finally{ btn.disabled=false; btn.textContent='Registrar salida de piezas'; }
+}
+
 async function salidaCargarApartados() {
+  if(salidaTabActual==='manuf') salidaCargarManuf();
   const job = document.getElementById('sal-job').value;
   if(!job){
     document.getElementById('sal-apt-content').style.display='none';
