@@ -121,6 +121,7 @@ function switchMenu(mod, groupId) {
   if(mod==='personal-listado') { setTimeout(loadPersonal,100); }
   if(mod==='consignacion') { setTimeout(loadCsg,50); }
   if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
+  if(mod==='ops-op') { setTimeout(loadOPs,50); }
   if(mod==='consig-reassign') { setTimeout(loadCsgReassign,50); }
 }
 
@@ -3275,7 +3276,7 @@ function clExportPDF(){
 // ════════════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
-    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos'];
+    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos','mo-op','mo-req-op'];
     const open=mods.find(m=>document.getElementById(m).classList.contains('on'));
     if(open)closeMo(open); else if(_currentPanel)closePanel();
   }
@@ -3960,7 +3961,7 @@ function ivpExportCSV(){ window.open('/api/ivp/export/'+ivpActiveYear,'_blank');
 // ════════════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
-    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos'];
+    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos','mo-op','mo-req-op'];
     const open=mods.find(m=>document.getElementById(m).classList.contains('on'));
     if(open)closeMo(open); else if(_currentPanel)closePanel();
   }
@@ -5828,6 +5829,7 @@ function applyPermsToDom(d) {
     // GPO / PO
     { pat:'openNewGPO(',      mod:'gpo',          need:'create' },
     { pat:'reqOpenOC(',       mod:'gpo',          need:'create' },
+    { pat:'reqOpenOP(',       mod:'ops-op',       need:'create' },
     { pat:'poOpenImport(',    mod:'po',           need:'full' },
     { pat:'deleteGPO(',       mod:'gpo',          need:'full' },
     { pat:'deleteIPO(',       mod:'po',           need:'full' },
@@ -7559,12 +7561,146 @@ function reqManufEditar(itemId, campo, actual){
   const v = prompt(`${campo==='material'?'Material':'Acabado'}:`, actual||''); if(v===null) return;
   reqManufSet(itemId, campo, v.trim());
 }
+function reqOpenOP(){
+  if(!reqCurrentJob){ toast('Selecciona un Job','er'); return; }
+  const filas = reqItems.filter(it=>it.fabricacion==='Interna' && it.status==='Solicitado' && !it.orden_produccion);
+  const otras = reqItems.filter(it=>it.status==='Solicitado' && it.fabricacion!=='Interna' && !it.orden_produccion).length;
+  document.getElementById('req-op-list').innerHTML = filas.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="font-size:10px;color:var(--muted);text-transform:uppercase"><th style="width:28px"><input type="checkbox" checked onchange="document.querySelectorAll('.req-op-chk').forEach(c=>c.checked=this.checked)"></th>
+      <th style="text-align:left">ID pieza</th><th>Rev.</th><th style="text-align:left">Tipo</th><th style="text-align:left">Material</th><th style="text-align:left">Acabado</th><th>Normal</th><th>Mirror</th></tr></thead><tbody>${
+    filas.map(it=>`<tr style="border-bottom:1px solid var(--border)"><td><input type="checkbox" class="req-op-chk" value="${esc(it.id)}" checked></td>
+      <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number)}</td><td style="text-align:center"><b>${esc(it.rev_plano||'')}</b></td>
+      <td>${esc(it.description||'')}</td><td>${esc(it.material||'')}</td><td>${esc(it.acabado||'')}</td>
+      <td style="text-align:center">${it.qty_normal ?? it.quantity ?? 1}</td><td style="text-align:center">${it.qty_mirror ?? 0}</td></tr>`).join('')}</tbody></table>`
+    : `<div style="padding:24px;text-align:center;color:var(--muted)">No hay piezas con Fabricación <b>Interna</b> en Solicitado.${otras?`<br><span style="font-size:11px">${otras} pieza(s) Solicitada(s) con otra fabricación: cámbiala a Interna en la tabla.</span>`:''}</div>`;
+  document.getElementById('btn-req-op-go').disabled = !filas.length;
+  if(!document.getElementById('req-op-fecha').value){ const d=new Date(Date.now()+14*864e5); document.getElementById('req-op-fecha').value=d.toISOString().slice(0,10); }
+  document.getElementById('mo-req-op').classList.add('on');
+}
+async function reqCrearOP(){
+  const ids=[...document.querySelectorAll('.req-op-chk:checked')].map(c=>c.value);
+  if(!ids.length){ toast('Selecciona al menos una pieza','er'); return; }
+  const btn=document.getElementById('btn-req-op-go'); btn.disabled=true; btn.textContent='Creando…';
+  try{
+    const d = await apiCall('POST','/ordenes-produccion',{job:reqCurrentJob, req_item_ids:ids,
+      prioridad:parseInt(document.getElementById('req-op-prio').value)||0, fecha_entrega:document.getElementById('req-op-fecha').value,
+      notas:document.getElementById('req-op-notas').value});
+    if(d.error){ toast(d.error,'er'); return; }
+    closeMo('mo-req-op'); document.getElementById('req-op-notas').value='';
+    toast(`Orden de Producción ${d.folio} creada · ${ids.length} pieza(s)`,'ok',5000);
+    await reqRenderTab(); opAbrir(d.folio);
+  }catch(e){ toast('Error: '+e,'er'); }
+  finally{ btn.disabled=false; btn.textContent='Crear Orden de Producción'; }
+}
+
+// ══ Operaciones ▸ Órdenes de Producción ══
+const OP_COLOR = {'Pendiente':['#a16207','#fef3c7'],'En proceso':['#1d4ed8','#dbeafe'],'En pausa':['#b45309','#ffedd5'],'Concluida':['#15803d','#dcfce7'],'Cancelada':['#6b7280','#e5e7eb']};
+let opActual = null, opCambios = {};
+async function loadOPs(){
+  const job=(document.getElementById('op-flt-job')?.value||'').trim(), st=document.getElementById('op-flt-st')?.value||'';
+  const qs=new URLSearchParams(); if(job) qs.set('job',job); if(st) qs.set('status',st);
+  try{
+    const d = await apiCall('GET','/ordenes-produccion'+(qs.toString()?'?'+qs:''));
+    if(d.error){ document.getElementById('op-tb').innerHTML=`<tr><td colspan="8"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
+    const hoy=new Date().toISOString().slice(0,10);
+    const badge=st=>{const [f,b]=OP_COLOR[st]||['#333','#eee']; return `<span style="font-size:11px;font-weight:700;padding:2px 10px;border-radius:10px;color:${f};background:${b}">${esc(st)}</span>`;};
+    document.getElementById('op-tb').innerHTML = (d.ordenes||[]).map(o=>{
+      const tarde = o.fecha_entrega && o.fecha_entrega<hoy && !['Concluida','Cancelada'].includes(o.status);
+      return `<tr class="tr-hover" style="cursor:pointer" onclick="opAbrir('${esc(o.folio)}')">
+        <td style="font-family:'DM Mono',monospace;font-weight:700;color:var(--gold)">${esc(o.folio)}</td>
+        <td style="font-family:'DM Mono',monospace">${esc(o.job)}</td>
+        <td>${o.piezas}<div style="font-size:10px;color:var(--muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((o.ids||[]).join(', '))}</div></td>
+        <td style="text-align:center;font-weight:700">${o.prioridad??''}</td>
+        <td style="${tarde?'color:var(--red);font-weight:700':''}">${tarde?'⚠ ':''}${esc(o.fecha_entrega||'')}</td>
+        <td>${badge(o.status)}</td>
+        <td style="min-width:120px">${o.avance==null?'<span style="font-size:11px;color:var(--muted)">sin procesos</span>':`<div style="height:8px;background:rgba(0,0,0,.06);border-radius:4px"><div style="height:8px;width:${o.avance}%;background:#15803d;border-radius:4px"></div></div><div style="font-size:10px;color:var(--muted)">${o.procesos_hechos}/${o.procesos_total} · ${o.avance}%</div>`}</td>
+        <td style="font-size:11px">${esc(o.created_by||'')}<div style="font-size:9px;color:var(--muted)">${esc(String(o.created_at||'').slice(0,10))}</div></td></tr>`;}).join('')
+      || '<tr><td colspan="8"><div class="es">Sin órdenes de producción</div></td></tr>';
+    document.getElementById('op-count').textContent = `${(d.ordenes||[]).length} orden(es) · siguiente folio ${d.next_number}`;
+  }catch(e){ toast('Error cargando órdenes: '+e,'er'); }
+}
+async function opAbrir(folio){
+  try{
+    const d = await apiCall('GET','/ordenes-produccion/'+encodeURIComponent(folio));
+    if(d.error){ toast(d.error,'er'); return; }
+    opActual = d; opCambios = {};
+    opRender();
+    document.getElementById('mo-op').classList.add('on');
+  }catch(e){ toast('Error: '+e,'er'); }
+}
+function opRender(){
+  const d=opActual, o=d.orden, ed=d.puede_editar, cerrada=['Concluida','Cancelada'].includes(o.status);
+  const [f,b]=OP_COLOR[o.status]||['#333','#eee'];
+  document.getElementById('op-titulo').innerHTML = `🏗 ${esc(o.folio)} <span style="font-size:12px;font-weight:700;padding:3px 10px;border-radius:10px;color:${f};background:${b};vertical-align:middle">${esc(o.status)}</span>`;
+  const dis = ed ? '' : 'disabled';
+  const PC = {'No aplica':['var(--muted)','transparent'],'Pendiente':['#b45309','#ffedd5'],'Concluido':['#15803d','#dcfce7']};
+  const filas = (o.piezas||[]).map(p=>`<tr style="border-bottom:1px solid var(--border)">
+      <td style="font-family:'DM Mono',monospace;white-space:nowrap">${p.archivo_id?`<a href="/api/requisiciones/planos/${p.archivo_id}" target="_blank" style="color:var(--gold);text-decoration:none" title="Abrir plano">📄 ${esc(p.part_id)}</a>`:esc(p.part_id)}</td>
+      <td style="text-align:center"><b>${esc(p.rev_plano||'')}</b></td>
+      ${['tipo','material','acabado'].map(k=>`<td style="white-space:normal;max-width:120px;line-height:1.25;font-size:11px">${esc(p[k]||'')}</td>`).join('')}
+      <td style="text-align:center">${p.qty_normal??0}</td><td style="text-align:center">${p.qty_mirror??0}</td>
+      ${d.procesos.map(pr=>{ const cur=(opCambios[p.req_item_id]||{})[pr.k] || (p.procesos?.[pr.k]?.estado) || 'No aplica';
+        const inf=p.procesos?.[pr.k]; const [c,bg]=PC[cur];
+        return `<td style="text-align:center"><select ${dis} ${cerrada?'disabled':''} onchange="opSetProc('${esc(p.req_item_id)}','${pr.k}',this.value)"
+          style="font-size:9.5px;padding:2px 1px;width:84px;border:1px solid ${c==='var(--muted)'?'var(--border)':c};border-radius:4px;color:${c};background:${bg};font-weight:${cur==='No aplica'?'400':'700'}">
+          ${d.estados_proceso.map(e=>`<option value="${e}" ${cur===e?'selected':''}>${e==='Concluido'?'✔ Concluido':e}</option>`).join('')}</select>
+          ${cur==='Concluido'&&inf?.concluido_por&&!(opCambios[p.req_item_id]||{})[pr.k]?`<div style="font-size:9px;color:var(--muted)">${esc(inf.concluido_por)} ${esc(String(inf.concluido_fecha||'').slice(0,10))}</div>`:''}</td>`;}).join('')}
+    </tr>`).join('');
+  const hoy=new Date().toISOString().slice(0,10), tarde=o.fecha_entrega<hoy && !cerrada;
+  document.getElementById('op-body').innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+      <div><div style="font-size:9px;color:var(--muted);text-transform:uppercase">Job</div><div style="font-family:'DM Mono',monospace;font-weight:700;font-size:15px">${esc(o.job)}</div></div>
+      <label style="font-size:10px;color:var(--muted)">PRIORIDAD<br><input type="number" id="op-prio" min="1" value="${o.prioridad}" ${dis} style="width:80px;padding:5px"></label>
+      <label style="font-size:10px;color:${tarde?'var(--red)':'var(--muted)'}">ENTREGA REQUERIDA${tarde?' ⚠ VENCIDA':''}<br><input type="date" id="op-fecha" value="${esc(o.fecha_entrega)}" ${dis} style="padding:5px"></label>
+      <label style="font-size:10px;color:var(--muted)">ESTATUS<br><select id="op-status" ${dis} style="padding:5px;font-weight:700">${d.estatus.map(s=>`<option ${o.status===s?'selected':''}>${s}</option>`).join('')}</select></label>
+      <label style="font-size:10px;color:var(--muted);flex:1;min-width:200px">NOTAS<br><input type="text" id="op-notas" value="${esc(o.notas||'')}" ${dis} style="width:100%;padding:5px"></label>
+      <div style="min-width:160px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase">Avance</div>
+        ${d.avance==null?'<span style="font-size:11px;color:var(--muted)">Configura los procesos de cada pieza</span>':`<div style="height:10px;background:rgba(0,0,0,.06);border-radius:5px"><div style="height:10px;width:${d.avance}%;background:#15803d;border-radius:5px"></div></div><div style="font-size:11px">${d.procesos_hechos} de ${d.procesos_total} procesos · ${d.avance}%</div>`}</div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Matriz de procesos: por pieza, elige <b>Pendiente</b> en los procesos que aplican y márcalos <b>✔ Concluido</b> al terminar. ${cerrada?'<b>La orden está '+esc(o.status)+': los procesos no se pueden modificar.</b>':''}${ed?'':' <b>Solo lectura: tu usuario no puede modificar órdenes de producción.</b>'}</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="font-size:10px;color:var(--muted);text-transform:uppercase;background:rgba(0,0,0,.04)"><th style="text-align:left;padding:6px">ID pieza</th><th>Rev.</th><th style="text-align:left">Tipo</th><th style="text-align:left">Material</th><th style="text-align:left">Acabado</th><th>Normal</th><th>Mirror</th>
+        ${d.procesos.map(pr=>`<th style="min-width:86px">${esc(pr.nombre)}</th>`).join('')}</tr></thead><tbody>${filas}</tbody></table></div>
+    <details style="margin-top:12px;font-size:11px;color:var(--muted)"><summary>Historial (${(o.historial||[]).length})</summary>
+      ${(o.historial||[]).slice().reverse().map(h=>`<div>${esc(String(h.fecha||'').slice(0,16).replace('T',' '))} · <b>${esc(h.usuario||'')}</b> · ${esc(h.accion||'')}</div>`).join('')}</details>`;
+  document.getElementById('btn-op-save').style.display = ed ? '' : 'none';
+  document.getElementById('btn-op-del').style.display = (USER_PERMS?.is_admin || (USER_PERMS?.permissions||{})['ops-op']==='full') && ['Pendiente','Cancelada'].includes(o.status) ? '' : 'none';
+}
+function opSetProc(rid, k, v){ (opCambios[rid] ||= {})[k] = v; }
+async function opGuardar(){
+  if(!opActual) return;
+  const o=opActual.orden, body={procesos:opCambios};
+  const prio=parseInt(document.getElementById('op-prio').value)||o.prioridad, fecha=document.getElementById('op-fecha').value, st=document.getElementById('op-status').value, notas=document.getElementById('op-notas').value;
+  if(prio!==o.prioridad) body.prioridad=prio; if(fecha!==o.fecha_entrega) body.fecha_entrega=fecha; if(notas!==(o.notas||'')) body.notas=notas;
+  if(st!==o.status){
+    if(st==='Cancelada' && !confirm(`¿Cancelar ${o.folio}? Sus piezas regresan a "Solicitado" en el BOM de Manufactura.`)) return;
+    body.status=st;
+  }
+  const btn=document.getElementById('btn-op-save'); btn.disabled=true; btn.textContent='Guardando…';
+  try{
+    const d = await apiCall('PUT','/ordenes-produccion/'+encodeURIComponent(o.folio), body);
+    if(d.error){ toast(d.error,'er',7000); return; }
+    toast(`${o.folio} guardada`+(body.status?` · ${body.status}`:''),'ok');
+    await opAbrir(o.folio); loadOPs();
+    if(typeof reqRenderTab==='function' && reqCurrentJob) reqRenderTab();
+  }catch(e){ toast('Error: '+e,'er'); }
+  finally{ btn.disabled=false; btn.textContent='Guardar cambios'; }
+}
+function opPDF(){ if(opActual) window.open('/api/ordenes-produccion/'+encodeURIComponent(opActual.orden.folio)+'/pdf','_blank'); }
+async function opEliminar(){
+  if(!opActual || !confirm(`¿Eliminar ${opActual.orden.folio}? Sus piezas regresan a "Solicitado".`)) return;
+  const d = await apiCall('DELETE','/ordenes-produccion/'+encodeURIComponent(opActual.orden.folio));
+  if(d.error){ toast(d.error,'er'); return; }
+  closeMo('mo-op'); toast('Orden eliminada','ok'); loadOPs(); if(reqCurrentJob) reqRenderTab();
+}
+
 function reqRenderManuf(){
   const tb = document.getElementById('req-tb');
   document.getElementById('req-thead').innerHTML = `<tr><th>ID pieza</th><th style="text-align:center">Rev.</th><th>Tipo</th><th>Material</th><th>Acabado</th>
+    <th style="text-align:center">Normal</th><th style="text-align:center">Mirror</th>
     <th>Fabricación</th><th>Estatus</th><th>Solicitante</th><th>Cambió Fabricación</th><th></th></tr>`;
   const leg = document.getElementById('req-legend'); if(leg) leg.innerHTML = REQ_MANUF_STATUS.map(st=>`<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;color:${REQ_MANUF_COLOR[st][0]};background:${REQ_MANUF_COLOR[st][1]}">${st}</span>`).join('');
-  if(!reqItems.length){ tb.innerHTML = '<tr><td colspan="10"><div class="es">Sin planos. Usa "📄 Subir planos (PDF)" para agregar las piezas.</div></td></tr>'; return; }
+  if(!reqItems.length){ tb.innerHTML = '<tr><td colspan="12"><div class="es">Sin planos. Usa "📄 Subir planos (PDF)" para agregar las piezas.</div></td></tr>'; return; }
   const who = (u,f) => u ? `${esc(u)}<div style="font-size:9px;color:var(--muted)">${esc(String(f||'').slice(0,10))}</div>` : '<span style="color:var(--muted)">—</span>';
   const edit = (it,campo) => `<span onclick="reqManufEditar('${esc(it.id)}','${campo}','${esc((it[campo]||'').replace(/'/g,''))}')" title="Clic para editar" style="cursor:pointer;${it[campo]?'':'color:var(--amber)'}">${it[campo]?esc(it[campo]):'capturar'}</span>`;
   tb.innerHTML = reqItems.map(it=>{
@@ -7577,14 +7713,17 @@ function reqRenderManuf(){
       <td>${esc(it.description||'—')}</td>
       <td>${edit(it,'material')}</td>
       <td>${edit(it,'acabado')}</td>
-      <td><select onchange="reqManufSet('${esc(it.id)}','fabricacion',this.value)" ${reqCubierto(it)?'disabled':''} style="font-size:11px;padding:4px 6px">
+      ${['qty_normal','qty_mirror'].map(k=>`<td style="text-align:center"><input type="number" min="0" step="1" value="${it[k] ?? (k==='qty_normal'?(it.quantity||1):0)}"
+          onchange="reqManufSet('${esc(it.id)}','${k}',this.value)" style="width:56px;text-align:center;font-size:11px;padding:3px"></td>`).join('')}
+      <td><select onchange="reqManufSet('${esc(it.id)}','fabricacion',this.value)" ${(reqCubierto(it)||it.orden_produccion)?'disabled':''} style="font-size:11px;padding:4px 6px">
         <option value="" ${!it.fabricacion?'selected':''}>—</option>${REQ_FABRICACION.map(f=>`<option ${it.fabricacion===f?'selected':''}>${f}</option>`).join('')}</select></td>
-      <td><select onchange="reqManufSet('${esc(it.id)}','status',this.value)" ${reqCubierto(it)?`disabled title="Comprada al 100%: para cambiarla elimina o cancela la orden"`:''} style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg}">
+      <td><select onchange="reqManufSet('${esc(it.id)}','status',this.value)" ${reqCubierto(it)?`disabled title="Comprada al 100%: para cambiarla elimina o cancela la orden"`:(it.orden_produccion?`disabled title="Lo controla la orden ${esc(it.orden_produccion)}"`:'')} style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg}">
         ${REQ_MANUF_STATUS.map(s=>`<option ${it.status===s?'selected':''}>${s}</option>`).join('')}</select>${reqCubierto(it)?' 🔒':''}
-        ${(it.compras||[]).length?`<div style="font-size:9px;color:#15803d">${(it.compras||[]).map(c=>esc(c.po_number)+(c.cantidad>1?' ×'+c.cantidad:'')).join(', ')}</div>`:''}</td>
+        ${(it.compras||[]).length?`<div style="font-size:9px;color:#15803d">${(it.compras||[]).map(c=>esc(c.po_number)+(c.cantidad>1?' ×'+c.cantidad:'')).join(', ')}</div>`:''}
+        ${it.orden_produccion?`<div style="font-size:10px"><a href="#" onclick="opAbrir('${esc(it.orden_produccion)}');return false" style="color:#1d4ed8">🏗 ${esc(it.orden_produccion)}</a></div>`:''}</td>
       <td style="font-size:11px">${who(it.created_by, it.created_at)}</td>
       <td style="font-size:11px">${who(it.fabricacion_por, it.fabricacion_fecha)}</td>
-      <td>${(parseFloat(it.cantidad_comprada)||0)>0?'<span style="color:var(--muted)" title="Tiene órdenes de compra: no se puede eliminar">—</span>':`<button class="fi-del" onclick="reqDeleteItem('${esc(it.id)}')">Eliminar</button>`}</td></tr>`;}).join('');
+      <td>${((parseFloat(it.cantidad_comprada)||0)>0||it.orden_produccion)?'<span style="color:var(--muted)" title="Tiene orden de compra o de producción: no se puede eliminar">—</span>':`<button class="fi-del" onclick="reqDeleteItem('${esc(it.id)}')">Eliminar</button>`}</td></tr>`;}).join('');
 }
 
 function reqRenderTable(){

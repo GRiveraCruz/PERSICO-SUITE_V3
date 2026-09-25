@@ -408,6 +408,14 @@ class SVNumber(Base, JSONBMixin):
     sv_number = Column(String, unique=True, nullable=False, index=True)
 
 
+class OrdenProduccion(Base, JSONBMixin):
+    """Órdenes de Producción (Operaciones) — folio MNO-000001. Piezas de fabricación
+    interna del BOM de Manufactura, con su matriz de procesos."""
+    __tablename__ = "ordenes_produccion"
+    folio = Column(String, unique=True, index=True)
+    job   = Column(String, index=True)
+
+
 class PlanoPDF(Base):
     """Planos PDF del BOM de Manufactura (Requisición de Compra). Se guardan en la base
     de datos —no en el volumen— para que no se pierdan en un redeploy. Cada subida del

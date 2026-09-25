@@ -3195,12 +3195,51 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
 <div class="module" id="mod-ops-op">
   <div class="main-content" style="overflow-y:auto">
-    <div class="bar-top"><h1>🏗 Órdenes de Producción</h1></div>
-    <div style="padding:24px;max-width:1100px">
-      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:24px;color:var(--muted2);font-size:12px">
-        🚧 Módulo en construcción.
+    <div class="bar-top"><h1>🏗 Órdenes de Producción</h1>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <input type="text" id="op-flt-job" placeholder="Job (ej. 685-00)" oninput="loadOPs()" style="width:150px;padding:6px 8px;font-size:12px">
+        <select id="op-flt-st" onchange="loadOPs()" style="font-size:12px;padding:6px"><option value="">Todos los estatus</option>
+          <option>Pendiente</option><option>En proceso</option><option>En pausa</option><option>Concluida</option><option>Cancelada</option></select>
+        <button class="btn-reload" onclick="loadOPs()">Recargar</button>
+      </div></div>
+    <div style="padding:16px 24px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Las órdenes se crean desde Compras ▸ Requisición de Compra ▸ Manufactura, con las piezas de Fabricación <b>Interna</b>.</div>
+      <div class="tw"><table>
+        <thead><tr><th>Folio</th><th>Job</th><th>Piezas</th><th style="text-align:center">Prioridad</th><th>Entrega requerida</th><th>Estatus</th><th>Avance</th><th>Creada por</th></tr></thead>
+        <tbody id="op-tb"><tr><td colspan="8"><div class="es">Cargando…</div></td></tr></tbody>
+      </table></div>
+      <div id="op-count" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="mo" id="mo-op" style="align-items:flex-start;padding:24px 16px;overflow-y:auto">
+  <div class="md" style="max-width:min(1320px,96vw);width:100%;margin:auto;max-height:none">
+    <div class="mh"><h2 id="op-titulo">Orden de Producción</h2><button class="px" onclick="closeMo('mo-op')">Cerrar</button></div>
+    <div class="mb2" id="op-body">—</div>
+    <div class="mf">
+      <button class="btn btn-s" id="btn-op-del" onclick="opEliminar()" style="margin-right:auto;display:none">Eliminar</button>
+      <button class="btn btn-s" onclick="opPDF()">📄 PDF del estatus</button>
+      <button class="btn btn-s" onclick="closeMo('mo-op')">Cerrar</button>
+      <button class="btn btn-p" id="btn-op-save" onclick="opGuardar()">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
+<div class="mo" id="mo-req-op">
+  <div class="md" style="max-width:860px;width:min(860px,95vw)">
+    <div class="mh"><h2>🏗 Nueva Orden de Producción</h2><button class="px" onclick="closeMo('mo-req-op')">Cerrar</button></div>
+    <div class="mb2">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Piezas con Fabricación <b>Interna</b> en estatus <b>Solicitado</b> que no están en otra orden. Heredan Tipo, Material, Acabado, plano y cantidades.</div>
+      <div id="req-op-list" style="max-height:44vh;overflow-y:auto">—</div>
+      <div style="display:flex;gap:14px;margin-top:12px;flex-wrap:wrap">
+        <label style="font-size:11px">Prioridad (1 = más urgente)<br><input type="number" id="req-op-prio" min="1" value="1" style="width:110px;padding:6px"></label>
+        <label style="font-size:11px">Fecha de entrega requerida<br><input type="date" id="req-op-fecha" style="padding:6px"></label>
+        <label style="font-size:11px;flex:1;min-width:220px">Notas<br><input type="text" id="req-op-notas" placeholder="Opcional" style="width:100%;padding:6px"></label>
       </div>
     </div>
+    <div class="mf"><button class="btn btn-s" onclick="closeMo('mo-req-op')">Cancelar</button>
+      <button class="btn btn-p" id="btn-req-op-go" onclick="reqCrearOP()">Crear Orden de Producción</button></div>
   </div>
 </div>
 
@@ -4171,7 +4210,8 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
           <button class="btn-reload" onclick="reqOpenOC()" style="margin-left:6px;border-color:var(--red);color:var(--red)">Generar Orden de Compra</button></span>
           <span id="req-btns-manuf" style="display:none"><input type="file" id="req-planos-file" accept=".pdf,application/pdf" multiple style="display:none" onchange="reqSubirPlanos(this.files)">
           <button class="btn-reload" onclick="document.getElementById('req-planos-file').click()">📄 Subir planos (PDF)</button>
-          <button class="btn-reload" onclick="reqOpenOC()" style="margin-left:6px;border-color:var(--red);color:var(--red)">Generar Orden de Compra</button></span>
+          <button class="btn-reload" onclick="reqOpenOC()" style="margin-left:6px;border-color:var(--red);color:var(--red)">Generar Orden de Compra</button>
+          <button class="btn-reload" onclick="reqOpenOP()" style="margin-left:6px;border-color:#1d4ed8;color:#1d4ed8">Generar Orden de Producción</button></span>
         </div>
 
         <div class="tw">
