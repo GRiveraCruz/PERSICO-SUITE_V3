@@ -10079,19 +10079,26 @@ function pcRenderJobs(jobDetails, savedRows) {
           <thead><tr style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
             <th style="text-align:left;padding:4px 6px">Mano de obra</th><th style="text-align:right;padding:4px 6px;width:110px">Horas</th>
             <th style="text-align:right;padding:4px 6px;width:130px">Costo promedio USD/h</th><th style="text-align:right;padding:4px 6px;width:130px">Importe</th>
-            <th style="text-align:right;padding:4px 8px;width:150px;background:#dcfce7;color:#15803d" title="Horas registradas en Work Hours para este Job hasta ${esc(String(pcHorasFecha).replace('T',' '))}">Horas consumidas</th></tr></thead>
+            <th style="text-align:right;padding:4px 8px;width:150px;background:#dcfce7;color:#15803d" title="Horas registradas en Work Hours para este Job hasta ${esc(String(pcHorasFecha).replace('T',' '))}">Horas consumidas</th>
+            <th style="text-align:right;padding:4px 8px;width:130px;background:#dcfce7;color:#15803d" title="Horas consumidas × tarifa de cada trabajador (Hourly Rate), igual que el Job Report">Costo real</th></tr></thead>
           <tbody>${PC_MO.map(([k,n,perfil])=>{ const c = saved['mo_costo_'+k] ?? pcCostosPerfil[perfil] ?? ''; return `<tr style="border-top:1px solid var(--border)">
             <td style="padding:4px 6px">${n} <span style="font-size:10px;color:var(--muted)">· ${perfil}</span></td>
             <td style="padding:3px 6px"><input class="pc-blue-field" data-field="mo_horas_${k}" type="number" min="0" step="0.5" value="${saved['mo_horas_'+k] ?? ''}" placeholder="0" oninput="pcCalc(${idx})" style="${estInp}"></td>
             <td style="padding:3px 6px"><input class="pc-blue-field" data-field="mo_costo_${k}" type="number" min="0" step="0.01" value="${c}" placeholder="${pcCostosPerfil[perfil]==null?'sin dato':'0.00'}" oninput="pcCalc(${idx})" style="${estInp}" title="Promedio vigente: ${pcCostosPerfil[perfil]!=null?'$'+pcCostosPerfil[perfil]:'sin dato'}"></td>
             <td id="pc-mo-${k}-${idx}" style="text-align:right;padding:4px 6px;font-family:'DM Mono',monospace">—</td>
-            <td id="pc-hc-${k}-${idx}" data-hc="${(pcHorasCons[j.job_number]?.lineas||{})[k]||0}" style="text-align:right;padding:4px 8px;background:rgba(220,252,231,.55);font-family:'DM Mono',monospace;font-weight:700">—</td></tr>`;}).join('')}
+            <td id="pc-hc-${k}-${idx}" data-hc="${(pcHorasCons[j.job_number]?.lineas||{})[k]||0}" style="text-align:right;padding:4px 8px;background:rgba(220,252,231,.55);font-family:'DM Mono',monospace;font-weight:700">—</td>
+            <td id="pc-cr-${k}-${idx}" data-cr="${(pcHorasCons[j.job_number]?.costo||{})[k]||0}" style="text-align:right;padding:4px 8px;background:rgba(220,252,231,.55);font-family:'DM Mono',monospace;font-weight:700">—</td></tr>`;}).join('')}
           ${(()=>{ const o=pcHorasCons[j.job_number]?.otras||{}; const t=Object.values(o).reduce((a,b)=>a+b,0);
+            const hc=pcHorasCons[j.job_number]||{}, sinT=hc.horas_sin_tarifa||0;
             return t ? `<tr style="border-top:1px solid var(--border)"><td style="padding:4px 6px;color:var(--muted)" title="${esc(Object.entries(o).map(([d,h])=>d+': '+h+' h').join(' · '))}">Otras horas (trabajador sin tarifa o sin perfil)</td><td></td><td></td><td></td>
-              <td style="text-align:right;padding:4px 8px;background:rgba(220,252,231,.55);font-family:'DM Mono',monospace;color:var(--muted)">${t.toLocaleString('en-US',{maximumFractionDigits:2})}</td></tr>` : ''; })()}
+              <td style="text-align:right;padding:4px 8px;background:rgba(220,252,231,.55);font-family:'DM Mono',monospace;color:var(--muted)">${t.toLocaleString('en-US',{maximumFractionDigits:2})}</td>
+              <td style="text-align:right;padding:4px 8px;background:rgba(220,252,231,.55);font-family:'DM Mono',monospace;color:var(--muted)" title="${sinT?sinT+' h de trabajadores sin tarifa: su costo no se puede calcular':''}">$${(hc.otras_costo||0).toLocaleString('en-US',{minimumFractionDigits:2})}${sinT?' <span style="color:var(--amber)">⚠</span>':''}</td></tr>` : ''; })()}
+          ${(()=>{ const hc=pcHorasCons[j.job_number]; return hc ? `<tr style="border-top:2px solid var(--border);font-weight:700"><td style="padding:5px 6px" colspan="4">Total consumido</td>
+              <td style="text-align:right;padding:5px 8px;background:#dcfce7;font-family:'DM Mono',monospace">${(hc.total||0).toLocaleString('en-US',{maximumFractionDigits:2})} h</td>
+              <td style="text-align:right;padding:5px 8px;background:#dcfce7;font-family:'DM Mono',monospace;color:#15803d">$${(hc.costo_total||0).toLocaleString('en-US',{minimumFractionDigits:2})}</td></tr>` : ''; })()}
           ${(()=>{ const ant = saved.est_mo_anterior ?? ((saved.mo_horas_diseno_mecanico==null) ? ((+saved.est_ing_mecanica||0)+(+saved.est_ing_electrica||0)+(+saved.est_ensamble||0)) : 0);
             return ant ? `<tr style="border-top:1px solid var(--border)"><td style="padding:4px 6px;color:var(--amber)" title="Montos de mano de obra capturados antes de este formato (sin horas). Cuando captures las horas, ponlo en 0.">Mano de obra (monto anterior, sin horas)</td><td></td><td></td>
-              <td style="padding:3px 6px"><input class="pc-blue-field" data-field="est_mo_anterior" type="number" min="0" step="0.01" value="${ant}" oninput="pcCalc(${idx})" style="${estInp}"></td><td></td></tr>` : ''; })()}
+              <td style="padding:3px 6px"><input class="pc-blue-field" data-field="est_mo_anterior" type="number" min="0" step="0.01" value="${ant}" oninput="pcCalc(${idx})" style="${estInp}"></td><td></td><td></td></tr>` : ''; })()}
           </tbody>
         </table>
         <div style="display:flex;justify-content:flex-end;gap:28px;margin-top:10px">
@@ -10157,7 +10164,10 @@ function pcCalc(idx) {
     const pct = est ? Math.round(cons/est*100) : null;
     hc.innerHTML = (cons ? cons.toLocaleString('en-US',{maximumFractionDigits:2}) : '0')
       + (pct!=null ? ` <span style="font-size:10px;font-weight:600;color:${pct>100?'var(--red)':(pct>=85?'var(--amber)':'#15803d')}">${pct}%</span>` : (cons?' <span style="font-size:10px;color:var(--red)" title="Hay horas consumidas sin horas estimadas">sin est.</span>':''));
-    hc.title = est ? `${cons} de ${est} h estimadas` : ''; });
+    hc.title = est ? `${cons} de ${est} h estimadas` : '';
+    const cr=document.getElementById(`pc-cr-${k}-${idx}`); if(cr){ const real=parseFloat(cr.dataset.cr)||0, imp=_est.lineas[k]||0;
+      cr.innerHTML = fmt(real) + (imp ? ` <span style="font-size:10px;font-weight:600;color:${real>imp?'var(--red)':(real>=imp*0.85?'var(--amber)':'#15803d')}">${Math.round(real/imp*100)}%</span>` : '');
+      cr.title = imp ? `${fmt(real)} de ${fmt(imp)} estimados` : ''; } });
   const sm=document.getElementById(`pc-summat-${idx}`), so=document.getElementById(`pc-summo-${idx}`);
   if(sm) sm.textContent = fmt(_est.mat); if(so) so.textContent = fmt(_est.mo);
   if(deltaEl) {

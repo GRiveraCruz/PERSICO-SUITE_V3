@@ -1377,30 +1377,54 @@ def api_projconfig_horas_consumidas():
                 print(f"[DB] horas consumidas: no se pudieron leer los años de work_hours: {e}")
         years = sorted(years)
         # departamento de cada trabajador (el del año más reciente en que aparece)
-        depto_emp = {}
+        depto_emp, tarifa_anio, tarifa_ult = {}, {}, {}
         for y in years:
             for r in load_rates(y):
-                if r.get("employee"): depto_emp[normalize_name(r["employee"])] = _norm_depto(r.get("department"))
+                if not r.get("employee"): continue
+                e = normalize_name(r["employee"])
+                depto_emp[e] = _norm_depto(r.get("department"))
+                try:
+                    t = float(r.get("rate") or 0)
+                    if t > 0: tarifa_anio.setdefault(y, {})[e] = t; tarifa_ult[e] = t
+                except (TypeError, ValueError): pass
+        def tarifa(rec, y, e):
+            """Igual que el Job Report: cost_per_hour del registro si existe; si no, la
+            tarifa del trabajador en ese año; si no, su tarifa más reciente."""
+            try:
+                cph = float(rec.get("cost_per_hour") or 0)
+                if cph > 0: return cph
+            except (TypeError, ValueError): pass
+            return tarifa_anio.get(y, {}).get(e) or tarifa_ult.get(e) or 0.0
         depto_perfil = {_norm_depto(d): perfil for perfil, deptos in PERFILES_COSTO for d in deptos}
         perfil_linea = {perfil: k for k, _n, perfil in LINEAS_MO}
         out = {}
         for jn in jobs:
             job_main = "-".join(jn.split("-")[:2]) if "-" in jn else jn
-            acc = {k: 0.0 for k, _n, _p in LINEAS_MO}; otras = {}
+            acc = {k: 0.0 for k, _n, _p in LINEAS_MO}; costo = {k: 0.0 for k, _n, _p in LINEAS_MO}
+            otras, otras_costo, horas_sin_tarifa = {}, 0.0, 0.0
             for y in years:
                 for r in wh_load_matching(y, job_main):
                     try: h = float(r.get("hours") or 0)
                     except (TypeError, ValueError): continue
                     if h <= 0: continue
-                    dep = depto_emp.get(normalize_name(r.get("employee", "")), "")
+                    e = normalize_name(r.get("employee", ""))
+                    dep = depto_emp.get(e, "")
+                    t = tarifa(r, y, e)
+                    if not t: horas_sin_tarifa += h
                     k = perfil_linea.get(depto_perfil.get(dep, ""))
-                    if k: acc[k] += h
+                    c_reg = round(h * t, 2)        # redondeo por registro, igual que el Job Report
+                    if k: acc[k] += h; costo[k] += c_reg
                     else:
                         clave = dep or "SIN TARIFA"
                         otras[clave] = otras.get(clave, 0.0) + h
+                        otras_costo += c_reg
             out[jn] = {"lineas": {k: round(v, 2) for k, v in acc.items()},
+                       "costo": {k: round(v, 2) for k, v in costo.items()},
                        "otras": {k: round(v, 2) for k, v in sorted(otras.items())},
-                       "total": round(sum(acc.values()) + sum(otras.values()), 2)}
+                       "otras_costo": round(otras_costo, 2),
+                       "horas_sin_tarifa": round(horas_sin_tarifa, 2),
+                       "total": round(sum(acc.values()) + sum(otras.values()), 2),
+                       "costo_total": round(sum(costo.values()) + otras_costo, 2)}
         return jsonify({"jobs": out, "calculado": datetime.datetime.now().isoformat(timespec="minutes"),
                         "lineas": [{"k": k, "nombre": n, "perfil": p} for k, n, p in LINEAS_MO]})
     except Exception as e:

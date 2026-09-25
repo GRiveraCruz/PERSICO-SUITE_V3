@@ -137,3 +137,29 @@ de departamento.
 - **Porcentajes con horas estimadas:** Diseño mecánico 1,000 → 109 % en rojo; PLC 800 →
   72 %; Ensamble 900 → 79 %.
 - Chromium sin errores de JavaScript.
+
+---
+# rev46 — Columna "Costo real" en la mano de obra de Configurar Proyecto
+
+- **Columna nueva "Costo real"** (verde, junto a Horas consumidas): costo de las horas
+  registradas de cada línea. Se calcula igual que el Job Report:
+  - Cada registro de Work Hours × `cost_per_hour` del registro, si lo trae.
+  - Si no, × la tarifa del trabajador en Hourly Rate para el año del registro.
+  - Si no hay tarifa de ese año, × su tarifa más reciente.
+  - Redondeo a centavos por registro.
+- **Avance del gasto:** junto al costo aparece el % contra el **Importe estimado** de la
+  línea (horas × costo promedio). Verde por debajo de 85 %, ámbar de 85 a 100 %, rojo
+  arriba de 100 %.
+- **Renglón "Otras horas":** muestra también su costo. Si hay horas de trabajadores sin
+  tarifa, aparece ⚠: esas horas no se pueden costear.
+- **Renglón "Total consumido":** horas y costo real totales del Job.
+- **API:** `/api/projconfig/horas-consumidas` agrega `costo` por línea, `otras_costo`,
+  `horas_sin_tarifa` y `costo_total`.
+
+**Probado (Job 652-50):**
+- **Total:** costo real $32,272.82, **idéntico** al "amount_wh" del Job Report. Antes de
+  igualar el redondeo por registro había una diferencia de $0.29.
+- **Por línea:** Diseño mecánico $10,620.40 de $8,630.00 estimados (123 %, rojo); PLC
+  $5,058.78 (76 %); Ensamble $7,284.40 (91 %, ámbar).
+- **Horas sin tarifa:** 1,743.6 h, marcadas con ⚠.
+- Chromium sin errores de JavaScript.
