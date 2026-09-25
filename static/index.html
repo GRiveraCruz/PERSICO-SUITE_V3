@@ -427,6 +427,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <button onclick="switchMenu('pt','ng-proyectos')">PT Numbers</button>
         <button onclick="switchMenu('sv','ng-proyectos')">SV Numbers</button>
         <button onclick="switchMenu('projconfig','ng-proyectos')">Configurar Proyecto</button>
+        <button onclick="switchMenu('costos-perfil','ng-proyectos')">Costo por Perfil (USD/h)</button>
       </div>
     </div>
     <!-- COMPRAS -->
@@ -3208,6 +3209,23 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       <button class="btn btn-d" id="btn-ta-del" onclick="taDelete()" style="display:none">Eliminar</button>
       <button class="btn btn-s" onclick="closeMo('mo-ta')">Cerrar</button>
       <button class="btn btn-p" onclick="taSave()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<div class="module" id="mod-costos-perfil">
+  <div class="main-content" style="overflow-y:auto">
+    <div class="bar-top"><h1>💲 Costo promedio por hora por perfil (USD)</h1>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <label style="font-size:11px;color:var(--muted)">Año <select id="cp-year" onchange="loadCostosPerfil()" style="padding:5px"></select></label>
+        <button class="btn-reload" onclick="loadCostosPerfil()">Recargar</button>
+      </div></div>
+    <div style="padding:16px 24px;max-width:1000px">
+      <div class="tw"><table>
+        <thead><tr><th>Perfil</th><th style="text-align:right">Costo promedio USD/h</th><th style="text-align:right">Mínimo</th><th style="text-align:right">Máximo</th><th style="text-align:center">Personas</th><th>Departamento (Hourly Rate)</th></tr></thead>
+        <tbody id="cp-tb"><tr><td colspan="6"><div class="es">Cargando…</div></td></tr></tbody>
+      </table></div>
+      <div id="cp-nota" style="font-size:11px;color:var(--muted);margin-top:8px"></div>
     </div>
   </div>
 </div>

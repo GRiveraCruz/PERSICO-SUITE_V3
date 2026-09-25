@@ -123,6 +123,7 @@ function switchMenu(mod, groupId) {
   if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
   if(mod==='ops-op') { setTimeout(loadOPs,50); }
   if(mod==='manuf-stock') { setTimeout(loadManufStock,50); }
+  if(mod==='costos-perfil') { setTimeout(loadCostosPerfil,50); }
   if(mod==='consig-reassign') { setTimeout(loadCsgReassign,50); }
 }
 
@@ -5514,6 +5515,7 @@ const MODULE_LABELS = {
   'stock':'Stock', 'recovery':'Recuperaciones', 'reassign':'Reasignaciones',
   'consignacion':'Consignación', 'consig-reassign':'Reasignaciones Consignación',
   'manuf-stock':'Piezas de Manufactura',
+  'costos-perfil':'Costo por Perfil (USD/h)',
   'ingreso':'Ingreso de Material (⚡ Solo Control Total)', 'apartados':'Apartados', 'salida':'Salida de Material',
   // Servicio
   'viaticos':'Viáticos', 'gastos-viaje':'Gastos de Viaje', 'envios':'Envíos de Mensajería',
@@ -5541,7 +5543,7 @@ const LEVEL_LABELS = {
 };
 
 const MODULE_GROUPS = [
-  { label: '📋 Proyectos',             mods: ['jobs','pt','sv','rates','quotes'] },
+  { label: '📋 Proyectos',             mods: ['jobs','pt','sv','rates','quotes','costos-perfil'] },
   { label: '🤝 Ventas',               mods: ['cpo'] },
   { label: '⚡ Catálogos',            mods: ['cat-electrico','cat-mecanico','cat-servicios'] },
   { label: '🏭 Proveedores',          mods: ['proveedores'] },
@@ -5741,6 +5743,7 @@ function applyPermsToDom(d) {
     'stock':         ["switchMenu('stock'"],
     'consignacion':  ["switchMenu('consignacion'"],
     'manuf-stock':   ["switchMenu('manuf-stock'"],
+    'costos-perfil': ["switchMenu('costos-perfil'"],
     'consig-reassign':["switchMenu('consig-reassign'"],
     'ingreso':       ["switchMenu('ingreso'"],
     'apartados':     ["switchMenu('apartados'"],
@@ -7594,6 +7597,27 @@ async function reqCrearOP(){
     await reqRenderTab(); opAbrir(d.folio);
   }catch(e){ toast('Error: '+e,'er'); }
   finally{ btn.disabled=false; btn.textContent='Crear Orden de Producción'; }
+}
+
+// ══ Proyectos ▸ Costo por Perfil (USD/h) ══
+async function loadCostosPerfil(){
+  const sel=document.getElementById('cp-year'); const y=sel?.value||'';
+  try{
+    const d = await apiCall('GET','/costos-perfil'+(y?`?year=${y}`:''));
+    const tb=document.getElementById('cp-tb'); if(!tb) return;
+    if(d.error){ tb.innerHTML=`<tr><td colspan="6"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
+    if(sel && !sel.options.length){ sel.innerHTML=(d.available_years||[d.year]).slice().sort((a,b)=>b-a).map(a=>`<option ${a==d.year?'selected':''}>${a}</option>`).join(''); }
+    const $ = v => v==null ? '<span style="color:var(--muted)">—</span>' : '$'+Number(v).toFixed(2);
+    tb.innerHTML = d.perfiles.map(f=>`<tr>
+      <td style="font-weight:700">${esc(f.perfil)}</td>
+      <td style="text-align:right;font-size:15px;font-weight:800;color:${f.promedio==null?'var(--muted)':'var(--green)'}">${f.promedio==null?'<span style="font-size:11px;font-weight:400">sin datos</span>':$(f.promedio)}</td>
+      <td style="text-align:right">${$(f.minimo)}</td><td style="text-align:right">${$(f.maximo)}</td>
+      <td style="text-align:center">${f.personas}${f.personas===1?' <span title="Con una sola persona, el promedio es su tarifa" style="color:var(--amber)">⚠</span>':''}</td>
+      <td style="font-size:11px;color:var(--muted)">${esc(f.departamento)}</td></tr>`).join('');
+    document.getElementById('cp-nota').innerHTML = `Calculado de las tarifas por hora (USD) registradas en <b>Recursos Humanos ▸ Hourly Rate</b> para ${d.year}, agrupadas por departamento.`
+      + (d.promedio_general!=null?` Promedio de los perfiles con datos: <b>$${d.promedio_general.toFixed(2)}/h</b>.`:'')
+      + ` Los perfiles sin datos no tienen trabajadores con ese departamento en el año.`;
+  }catch(e){ toast('Error: '+e,'er'); }
 }
 
 // ══ Almacenes ▸ Piezas de Manufactura ══
@@ -9921,6 +9945,7 @@ async function pcSelectPTSV(item) {
   });
 
   pcJobRows = jobDetails;
+  await pcCargarCostos();              // costo promedio por perfil para la mano de obra
   pcRenderJobs(jobDetails, savedRows);
   document.getElementById('pc-empty').style.display='none';
   document.getElementById('pc-table-wrap').style.display='';
@@ -9940,6 +9965,37 @@ async function pcSelectPTSV(item) {
   pcSwitchTab('presupuesto');
 
   await pcLoadSavedList();
+}
+
+// Mano de obra del board de configuración: horas × costo promedio del perfil (USD/h)
+const PC_MO = [
+  ['diseno_mecanico','Diseño mecánico','Diseñador mecánico'],
+  ['soldadura','Soldadura','Soldador'],
+  ['manufactura','Manufactura','Operador de CNC'],
+  ['pintura','Pintura','Pintor'],
+  ['diseno_electrico','Diseño eléctrico','Diseñador eléctrico'],
+  ['plc','Programación de PLC','Programador de PLC'],
+  ['ensamble','Ensamble (electromecánico)','Mecánico de ensamble'],
+];
+const PC_MAT = [['est_material_mecanico','Material mecánico'],['est_material_electrico','Material eléctrico'],['est_major_items','Major items'],['est_servicios_externos','Servicios externos']];
+let pcCostosPerfil = {};   // {perfil: promedio USD/h}
+async function pcCargarCostos(){
+  try{ const d = await apiCall('GET','/costos-perfil');
+       pcCostosPerfil = Object.fromEntries((d.perfiles||[]).filter(p=>p.promedio!=null).map(p=>[p.perfil,p.promedio])); }
+  catch(e){ pcCostosPerfil = {}; }
+}
+// Suma de estimados de una tarjeta: materiales + (horas × costo) de cada línea + monto anterior sin horas
+function pcEstimados(row){
+  const f = field => parseFloat(row?.querySelector(`[data-field="${field}"]`)?.value)||0;
+  const mat = PC_MAT.reduce((a,[k])=>a+f(k),0);
+  const lineas = Object.fromEntries(PC_MO.map(([k])=>[k, f('mo_horas_'+k)*f('mo_costo_'+k)]));
+  const mo = Object.values(lineas).reduce((a,b)=>a+b,0) + f('est_mo_anterior');
+  return {mat, mo, lineas, total: mat+mo, anterior: f('est_mo_anterior')};
+}
+function pcActualizarCostos(idx){
+  const row=document.querySelector(`#pc-row-${idx}`); if(!row) return;
+  PC_MO.forEach(([k,,perfil])=>{ const inp=row.querySelector(`[data-field="mo_costo_${k}"]`); if(inp && pcCostosPerfil[perfil]!=null) inp.value=pcCostosPerfil[perfil]; });
+  pcCalc(idx); toast('Costos promedio actualizados con la tabla de perfiles','ok');
 }
 
 function pcRenderJobs(jobDetails, savedRows) {
@@ -10005,17 +10061,28 @@ function pcRenderJobs(jobDetails, savedRows) {
       </div>
 
       <div style="border-top:1px dashed var(--border);padding-top:12px">
-        <div style="${lbl};margin-bottom:8px">Estimados por Área</div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Ing. Mecánica</div><input class="pc-blue-field" data-field="est_ing_mecanica" type="number" min="0" step="0.01" value="${est.ing_mecanica}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>
-          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Ing. Eléctrica</div><input class="pc-blue-field" data-field="est_ing_electrica" type="number" min="0" step="0.01" value="${est.ing_electrica}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>
-          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Major Items</div><input class="pc-blue-field" data-field="est_major_items" type="number" min="0" step="0.01" value="${est.major_items}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>
-          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Material Mecánico</div><input class="pc-blue-field" data-field="est_material_mecanico" type="number" min="0" step="0.01" value="${est.material_mecanico}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>
-          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Material Eléctrico</div><input class="pc-blue-field" data-field="est_material_electrico" type="number" min="0" step="0.01" value="${est.material_electrico}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>
-          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Servicios Externos</div><input class="pc-blue-field" data-field="est_servicios_externos" type="number" min="0" step="0.01" value="${est.servicios_externos}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>
-          <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">Ensamble</div><input class="pc-blue-field" data-field="est_ensamble" type="number" min="0" step="0.01" value="${est.ensamble}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>
+        <div style="display:flex;align-items:center;margin-bottom:8px"><div style="${lbl};margin:0">Estimados</div>
+          <button type="button" class="btn-reload" onclick="pcActualizarCostos(${idx})" title="Toma el costo promedio vigente de Proyectos ▸ Costo por Perfil" style="margin-left:auto;font-size:10px;padding:3px 10px">↻ Actualizar costos promedio</button></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
+          ${PC_MAT.map(([k,n])=>`<div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">${n}</div><input class="pc-blue-field" data-field="${k}" type="number" min="0" step="0.01" value="${saved[k] ?? (k==='est_material_mecanico'?(saved.est_materiales??''):'')}" placeholder="$0.00" oninput="pcCalc(${idx})" style="${estInp}"></div>`).join('')}
         </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+            <th style="text-align:left;padding:4px 6px">Mano de obra</th><th style="text-align:right;padding:4px 6px;width:110px">Horas</th>
+            <th style="text-align:right;padding:4px 6px;width:130px">Costo promedio USD/h</th><th style="text-align:right;padding:4px 6px;width:130px">Importe</th></tr></thead>
+          <tbody>${PC_MO.map(([k,n,perfil])=>{ const c = saved['mo_costo_'+k] ?? pcCostosPerfil[perfil] ?? ''; return `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:4px 6px">${n} <span style="font-size:10px;color:var(--muted)">· ${perfil}</span></td>
+            <td style="padding:3px 6px"><input class="pc-blue-field" data-field="mo_horas_${k}" type="number" min="0" step="0.5" value="${saved['mo_horas_'+k] ?? ''}" placeholder="0" oninput="pcCalc(${idx})" style="${estInp}"></td>
+            <td style="padding:3px 6px"><input class="pc-blue-field" data-field="mo_costo_${k}" type="number" min="0" step="0.01" value="${c}" placeholder="${pcCostosPerfil[perfil]==null?'sin dato':'0.00'}" oninput="pcCalc(${idx})" style="${estInp}" title="Promedio vigente: ${pcCostosPerfil[perfil]!=null?'$'+pcCostosPerfil[perfil]:'sin dato'}"></td>
+            <td id="pc-mo-${k}-${idx}" style="text-align:right;padding:4px 6px;font-family:'DM Mono',monospace">—</td></tr>`;}).join('')}
+          ${(()=>{ const ant = saved.est_mo_anterior ?? ((saved.mo_horas_diseno_mecanico==null) ? ((+saved.est_ing_mecanica||0)+(+saved.est_ing_electrica||0)+(+saved.est_ensamble||0)) : 0);
+            return ant ? `<tr style="border-top:1px solid var(--border)"><td style="padding:4px 6px;color:var(--amber)" title="Montos de mano de obra capturados antes de este formato (sin horas). Cuando captures las horas, ponlo en 0.">Mano de obra (monto anterior, sin horas)</td><td></td><td></td>
+              <td style="padding:3px 6px"><input class="pc-blue-field" data-field="est_mo_anterior" type="number" min="0" step="0.01" value="${ant}" oninput="pcCalc(${idx})" style="${estInp}"></td></tr>` : ''; })()}
+          </tbody>
+        </table>
         <div style="display:flex;justify-content:flex-end;gap:28px;margin-top:10px">
+          <div style="text-align:right"><div style="font-size:9px;color:var(--muted);text-transform:uppercase">Materiales</div><div id="pc-summat-${idx}" style="font-family:'DM Mono',monospace;font-size:12px">—</div></div>
+          <div style="text-align:right"><div style="font-size:9px;color:var(--muted);text-transform:uppercase">Mano de obra</div><div id="pc-summo-${idx}" style="font-family:'DM Mono',monospace;font-size:12px">—</div></div>
           <div style="text-align:right"><div style="font-size:9px;color:var(--muted);text-transform:uppercase">Suma</div>
             <div id="pc-suma-${idx}" style="font-family:'DM Mono',monospace;font-weight:700;font-size:13px">—</div></div>
           <div style="text-align:right"><div style="font-size:9px;color:var(--muted);text-transform:uppercase">Delta vs Internal Target</div>
@@ -10054,7 +10121,8 @@ function pcCalc(idx) {
   const revenue   = parseFloat(pcJobRows[idx]?.revenue)||0;
   const markupPct = f('markup_pct');
   const ahorroPct = f('ahorro_pct');
-  const estSum    = f('est_ing_mecanica') + f('est_ing_electrica') + f('est_major_items') + f('est_material_mecanico') + f('est_material_electrico') + f('est_servicios_externos') + f('est_ensamble');
+  const _est = pcEstimados(row);
+  const estSum    = _est.total;
   const fmt = v => '$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2});
 
   const montoMarkup = revenue - (revenue / (1 + markupPct/100));
@@ -10069,6 +10137,9 @@ function pcCalc(idx) {
   const sumaEl = document.getElementById(`pc-suma-${idx}`);
   const deltaEl = document.getElementById(`pc-delta-${idx}`);
   if(sumaEl) sumaEl.textContent = fmt(estSum);
+  PC_MO.forEach(([k])=>{ const el=document.getElementById(`pc-mo-${k}-${idx}`); if(el) el.textContent = _est.lineas[k] ? fmt(_est.lineas[k]) : '—'; });
+  const sm=document.getElementById(`pc-summat-${idx}`), so=document.getElementById(`pc-summo-${idx}`);
+  if(sm) sm.textContent = fmt(_est.mat); if(so) so.textContent = fmt(_est.mo);
   if(deltaEl) {
     deltaEl.textContent = fmt(delta);
     deltaEl.style.color = estSum===0 ? 'var(--muted)' : deltaMatch ? 'var(--green)' : (delta<0 ? 'var(--red)' : 'var(--amber)');
@@ -10089,7 +10160,7 @@ function pcUpdateTotals() {
     const montoMarkup = revenue - (revenue / (1 + markupPct/100));
     const presOperativo = revenue - montoMarkup;
     const presDisponible = presOperativo - (presOperativo * ahorroPct / 100);
-    const estSum = f('est_ing_mecanica') + f('est_ing_electrica') + f('est_major_items') + f('est_material_mecanico') + f('est_material_electrico') + f('est_servicios_externos') + f('est_ensamble');
+    const estSum = pcEstimados(row).total;
     totRev += revenue; totA += presOperativo; totB += presDisponible; totSuma += estSum;
   });
   const fmt = v => '$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2});
@@ -10105,38 +10176,16 @@ function pcRenderResumenAreas() {
   const tb = document.getElementById('pc-resumen-areas-tb');
   if(!tb) return;
   const fmt = v => '$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2});
-  const cols = ['est_material_mecanico','est_material_electrico','est_major_items','est_servicios_externos','est_ing_mecanica','est_ing_electrica','est_ensamble'];
-  const totals = {est_material_mecanico:0, est_material_electrico:0, est_major_items:0, est_servicios_externos:0, est_ing_mecanica:0, est_ing_electrica:0, est_ensamble:0};
-
-  const rowsHtml = pcJobRows.map((j,idx) => {
-    const row = document.querySelector(`#pc-row-${idx}`);
+  const cols = [...PC_MAT.map(([k,n])=>[k,n]), ...PC_MO.map(([k,n])=>['mo_'+k,n])];
+  const tot = Object.fromEntries(cols.map(([k])=>[k,0]));
+  const rows = pcJobRows.map((j,idx)=>{ const row=document.querySelector(`#pc-row-${idx}`); const E=pcEstimados(row);
     const f = field => parseFloat(row?.querySelector(`[data-field="${field}"]`)?.value)||0;
-    const vals = {};
-    cols.forEach(c => { vals[c] = f(c); totals[c] += vals[c]; });
-    return `<tr>
-      <td style="font-weight:600">${esc(j.job_number)}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(vals.est_material_mecanico)}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(vals.est_material_electrico)}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(vals.est_major_items)}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(vals.est_servicios_externos)}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(vals.est_ing_mecanica)}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(vals.est_ing_electrica)}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(vals.est_ensamble)}</td>
-    </tr>`;
-  }).join('');
-
-  const totalRow = `<tr style="background:rgba(0,0,0,.055);font-weight:700">
-    <td>Presupuesto Proyecto</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(totals.est_material_mecanico)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(totals.est_material_electrico)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(totals.est_major_items)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(totals.est_servicios_externos)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(totals.est_ing_mecanica)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(totals.est_ing_electrica)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(totals.est_ensamble)}</td>
-  </tr>`;
-
-  tb.innerHTML = rowsHtml + totalRow;
+    const v = Object.fromEntries(cols.map(([k])=>[k, k.startsWith('mo_') ? E.lineas[k.slice(3)] : f(k)]));
+    cols.forEach(([k])=>tot[k]+=v[k]);
+    return `<tr><td style="font-weight:600">${esc(j.job_number)}</td>${cols.map(([k])=>`<td style="text-align:right;font-family:'DM Mono',monospace">${fmt(v[k])}</td>`).join('')}</tr>`; }).join('');
+  const thead = tb.closest('table')?.querySelector('thead');
+  if(thead) thead.innerHTML = `<tr><th>Job</th>${cols.map(([,n])=>`<th style="text-align:right">${n}</th>`).join('')}</tr>`;
+  tb.innerHTML = rows + `<tr style="background:rgba(0,0,0,.055);font-weight:700"><td>Presupuesto Proyecto</td>${cols.map(([k])=>`<td style="text-align:right;font-family:'DM Mono',monospace;color:var(--gold)">${fmt(tot[k])}</td>`).join('')}</tr>`;
 }
 
 async function pcSave() {
@@ -10152,18 +10201,24 @@ async function pcSave() {
     const montoMarkup = revenue - (revenue / (1 + markupPct/100));
     const presOperativo  = revenue - montoMarkup;
     const presDisponible = presOperativo - (presOperativo * ahorroPct / 100);
-    const estIngMec  = fn('est_ing_mecanica');
-    const estIngElec = fn('est_ing_electrica');
+    const E          = pcEstimados(row);
+    const L          = E.lineas;
     const estMajor   = fn('est_major_items');
     const estMatMec  = fn('est_material_mecanico');
     const estMatElec = fn('est_material_electrico');
     const estServExt = fn('est_servicios_externos');
-    const estEns     = fn('est_ensamble');
-    const sumaEst    = estIngMec + estIngElec + estMajor + estMatMec + estMatElec + estServExt + estEns;
+    // Campos anteriores, derivados de las líneas de mano de obra (los usan reportes existentes)
+    const r2 = v => Math.round(v*100)/100;
+    const estIngMec  = r2(L.diseno_mecanico);
+    const estIngElec = r2(L.diseno_electrico + L.plc);
+    const estEns     = r2(L.ensamble + L.soldadura + L.manufactura + L.pintura + E.anterior);
+    const sumaEst    = r2(E.total);
     // TARGET DE COMPRAS = Major Items + Material Eléctrico + Material Mecánico + Servicios Externos
-    // TARGET MANO DE OBRA = Ing. Mecánica + Ing. Eléctrica + Ensamble
+    // TARGET MANO DE OBRA = Σ (horas × costo promedio) de las 7 líneas + monto anterior sin horas
     const targetCompras = estMajor + estMatElec + estMatMec + estServExt;
-    const targetMO       = estIngMec + estIngElec + estEns;
+    const targetMO       = r2(E.mo);
+    const mo = {};
+    PC_MO.forEach(([k])=>{ mo['mo_horas_'+k]=fn('mo_horas_'+k); mo['mo_costo_'+k]=fn('mo_costo_'+k); mo['est_mo_'+k]=Math.round(L[k]*100)/100; });
     return {
       job_number:             j.job_number,
       customer:               j.customer||'',
@@ -10184,6 +10239,8 @@ async function pcSave() {
       est_material_electrico: estMatElec,
       est_servicios_externos: estServExt,
       est_ensamble:           estEns,
+      ...mo,
+      est_mo_anterior:        E.anterior,
       suma_estimados:         sumaEst,
       delta_vs_disponible:    presDisponible - sumaEst,
       // Campos heredados — se conservan para que Job Cost Report siga funcionando

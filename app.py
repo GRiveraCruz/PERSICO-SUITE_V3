@@ -1305,6 +1305,43 @@ def api_import_jobs_excel():
 # ══════════════════════════════════════════════════════════════════
 #  ROUTES — HOURLY RATE  (/api/rates/*)
 # ══════════════════════════════════════════════════════════════════
+# Perfiles de trabajo → departamento en Hourly Rate (tarifas en USD/h por trabajador)
+PERFILES_COSTO = (
+    ("Pintor",               "MANUFACTURING - PAINT"),
+    ("Soldador",             "MANUFACTURING - WELD"),
+    ("Mecánico de ensamble", "ASSEMBLY"),
+    ("Diseñador mecánico",   "MECHANIC ENG"),
+    ("Diseñador eléctrico",  "ELECTRIC ENG - DESIGN"),
+    ("Programador de PLC",   "ELECTRIC ENG - PLC"),
+    ("Operador de CNC",      "MANUFACTURING - CNC"),
+)
+
+@app.route("/api/costos-perfil", methods=["GET"])
+def api_costos_perfil():
+    """Costo promedio por hora (USD) por perfil de trabajo, calculado de las tarifas de
+    Hourly Rate del año. Solo promedios: no expone la tarifa de cada persona."""
+    # también lo consulta Configurar Proyecto (costo promedio de cada línea de mano de obra)
+    if not (can("view", "costos-perfil") or can("view", "projconfig")): return jsonify({"error": "Sin permiso"}), 403
+    try:
+        year = int(request.args.get("year", CURRENT_YEAR))
+        norm = lambda v: " ".join(str(v or "").upper().split())
+        por_depto = {}
+        for r in load_rates(year):
+            try: rate = float(r.get("rate") or 0)
+            except (TypeError, ValueError): continue
+            if rate > 0: por_depto.setdefault(norm(r.get("department")), []).append(rate)
+        filas = []
+        for perfil, depto in PERFILES_COSTO:
+            v = por_depto.get(norm(depto), [])
+            filas.append({"perfil": perfil, "departamento": depto, "personas": len(v),
+                          "promedio": round(sum(v) / len(v), 2) if v else None,
+                          "minimo": round(min(v), 2) if v else None, "maximo": round(max(v), 2) if v else None})
+        con = [f["promedio"] for f in filas if f["promedio"] is not None]
+        return jsonify({"year": year, "perfiles": filas, "available_years": available_years(),
+                        "promedio_general": round(sum(con) / len(con), 2) if con else None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/rates", methods=["GET"])
 def api_get_rates():
     try:
@@ -7591,7 +7628,7 @@ ADMIN_USER  = _os.environ.get("ADMIN_USER", "guillermo")
 
 MODULES = [
     # Proyectos
-    "jobs", "pt", "sv", "rates", "quotes",
+    "jobs", "pt", "sv", "rates", "quotes", "costos-perfil",
     # Ventas
     "cpo",
     # Compras — Catálogos
@@ -8071,6 +8108,7 @@ PROFILES = {
 # Si algún perfil debe verlos distinto, basta con agregar la llave explícita
 # en PROFILES arriba: setdefault no la pisa.
 for _prof in PROFILES.values():
+    _prof.setdefault("costos-perfil", _prof.get("rates", LEVEL_NONE))   # mismas tarifas → mismo acceso
     _prof.setdefault("manuf-stock", _prof.get("apartados", LEVEL_NONE))
     _prof.setdefault("consignacion", _prof.get("stock", LEVEL_NONE))
     _prof.setdefault("consig-reassign", _prof.get("reassign", LEVEL_NONE))
