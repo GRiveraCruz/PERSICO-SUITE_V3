@@ -152,3 +152,35 @@ Debajo de cada pieza en el modal de la orden hay una fila con:
   - Sin errores de JavaScript.
 - **Regresión:** suites de órdenes de producción, orden de compra desde requisición y
   planos; todas OK.
+
+---
+# rev42 — Normal y Mirror en las órdenes de compra de manufactura
+
+- **Modal "Generar Orden de Compra" (pestaña Manufactura):** dos cantidades por pieza,
+  **Normal** y **Mirror (espejo)**. Cada una propone lo pendiente de su variante
+  (requerido − ya comprado).
+- **Dos renglones por pieza:** cada pieza genera un renglón **NORMAL** y otro **MIRROR**
+  en la orden (se omite el que quede en 0). Ambos tienen su propia cantidad y precio.
+  - La descripción dice "… · NORMAL" o "… · MIRROR (espejo)", y lo mismo la nota.
+  - Así aparece en el formulario, en el listado y en el PDF que se manda al proveedor.
+  - Cada renglón guarda `variante` = Normal / Mirror.
+- **Requisición:** registra lo comprado por variante (`comprado_normal`,
+  `comprado_mirror`). Al eliminar o cancelar la orden se revierte por variante.
+- **Recepción (Ingreso por OC):** cada renglón entra al Almacén de Piezas de Manufactura
+  **exactamente** en su variante. Recibir del renglón MIRROR suma Mirror; ya no se reparte
+  "Normal primero". Las órdenes anteriores sin variante conservan el reparto de rev41.
+
+## Cómo se probó
+- **PostgreSQL:**
+  - 3 Normal + 2 Mirror → orden con 2 renglones; requisición comprado 3 / 2 → Comprado.
+  - Recibir 1 del renglón MIRROR → Mirror 1, Normal 0; recibir 3 NORMAL → Normal 3.
+  - Eliminar la orden → comprado por variante vuelve a 0.
+  - Compra parcial de 1 Normal → pendiente 2 Normal + 2 Mirror.
+  - El PDF de la orden muestra NORMAL y MIRROR.
+- **Chromium:**
+  - El modal muestra columnas Normal / Mirror; la orden queda con los dos renglones
+    descritos.
+  - Recibir 2 del renglón Mirror desde Ingreso por OC → almacén Normal 0 / Mirror 2.
+  - Sin errores de JavaScript.
+- **Regresión:** suites de piezas de manufactura, orden de compra desde requisición y
+  planos; todas OK.

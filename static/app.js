@@ -7888,12 +7888,13 @@ function reqOpenOCManuf(){
   const otras = reqItems.filter(it=>it.fabricacion!=='Externa' && it.status==='Solicitado').length;
   document.getElementById('req-oc-list').innerHTML = filas.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
     <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase"><th style="width:28px"><input type="checkbox" id="req-oc-todos" checked onchange="reqOCMarcarVisibles(this.checked)"></th>
-      <th style="text-align:left">ID pieza</th><th>Rev.</th><th style="text-align:left">Tipo</th><th style="text-align:left">Material</th><th style="text-align:left">Acabado</th><th style="text-align:right">Cantidad</th></tr></thead><tbody>${
+      <th style="text-align:left">ID pieza</th><th>Rev.</th><th style="text-align:left">Tipo</th><th style="text-align:left">Material</th><th style="text-align:left">Acabado</th><th style="text-align:right">Normal</th><th style="text-align:right">Mirror (espejo)</th></tr></thead><tbody>${
     filas.map(it=>{ const p=reqPendiente(it); return `<tr id="req-oc-row-${esc(it.id)}" class="req-oc-row" data-search="${esc([it.part_number,it.description,it.material,it.acabado].join(' ').toLowerCase())}" style="border-bottom:1px solid var(--border)">
       <td><input type="checkbox" class="req-oc-chk" data-id="${esc(it.id)}" checked onchange="reqOCInvalidar()"></td>
       <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number)}</td><td style="text-align:center"><b>${esc(it.rev_plano||'')}</b></td>
       <td>${esc(it.description||'')}</td><td>${esc(it.material||'')}</td><td>${esc(it.acabado||'')}</td>
-      <td style="text-align:right"><input type="number" class="req-oc-qty" data-id="${esc(it.id)}" min="1" value="${p}" style="width:70px;font-size:11px;padding:3px" onchange="reqOCInvalidar()"></td></tr>`;}).join('')}</tbody></table>`
+      ${[['qn','qty_normal','comprado_normal'],['qm','qty_mirror','comprado_mirror']].map(([c,k,kc])=>{ const v=Math.max(0,(+(it[k] ?? (k==='qty_normal'?it.quantity:0))||0)-(+it[kc]||0));
+        return `<td style="text-align:right"><input type="number" class="req-oc-${c}" data-id="${esc(it.id)}" min="0" value="${v}" style="width:64px;font-size:11px;padding:3px" onchange="reqOCInvalidar()"></td>`;}).join('')}</tr>`;}).join('')}</tbody></table>`
     : `<div style="padding:24px;text-align:center;color:var(--muted)">No hay piezas con Fabricación <b>Externa</b> en estatus Solicitado.${otras?`<br><span style="font-size:11px">${otras} pieza(s) Solicitada(s) sin Fabricación Externa: cámbiala en la tabla para poder comprarlas.</span>`:''}</div>`;
   document.getElementById('mo-req-oc').classList.add('on');
   reqOCInvalidar();
@@ -7925,6 +7926,10 @@ function reqOCCuenta(){
     todos.checked = v.length>0 && v.every(c=>c.checked); }
 }
 function reqOCSeleccion(){
+  if(reqCurrentTipo==='manufactura') return [...document.querySelectorAll('.req-oc-chk:checked:not(:disabled)')].map(c=>{
+    const it = reqItems.find(x=>String(x.id)===c.dataset.id), sel = k=>document.querySelector(`.req-oc-${k}[data-id="${CSS.escape(c.dataset.id)}"]`);
+    const qn = Math.max(0, parseFloat(sel('qn')?.value)||0), qm = Math.max(0, parseFloat(sel('qm')?.value)||0);
+    return it && qn+qm>0 ? {it, qn, qm, q:qn+qm} : null; }).filter(Boolean);
   return [...document.querySelectorAll('.req-oc-chk:checked:not(:disabled)')].map(c=>{
     const it = reqItems.find(x=>String(x.id)===c.dataset.id);
     const inp = document.querySelector(`.req-oc-qty[data-id="${CSS.escape(c.dataset.id)}"]`);
@@ -7968,11 +7973,13 @@ async function reqContinuarOC(){
   if(js && ![...js.options].some(o=>o.value===job)) js.insertAdjacentHTML('beforeend', `<option value="${esc(job)}">${esc(job)}</option>`);
   if(js) js.value = job;
   gpoJobTypeChange();
-  gpoItems = sel.map(({it,q},i)=> tipo==='manufactura'
-    ? ({line:i+1, cat_type:'', cat_code:'', brand:'', part_number:it.part_number,
-        description:[it.description, it.material, it.acabado].filter(Boolean).join(' · ') + (it.rev_plano?` · Plano rev ${it.rev_plano}`:''),
-        label_code:'', quantity:q, unit_price:0, total:0, job, notes:`Fabricación externa según plano ${it.part_number} rev ${it.rev_plano||''}`, req_item_id:it.id})
-    : ({line:i+1, cat_type:REQ_OC_CAT[tipo]||'', cat_code:'', brand:(it.brand||'').toUpperCase(),
+  gpoItems = tipo==='manufactura'
+    ? sel.flatMap(({it,qn,qm})=>[['Normal',qn,'NORMAL'],['Mirror',qm,'MIRROR (espejo)']].filter(([,q])=>q>0).map(([variante,q,etq])=>({
+        cat_type:'', cat_code:'', brand:'', part_number:it.part_number, variante,
+        description:[it.description, it.material, it.acabado].filter(Boolean).join(' · ') + ` · ${etq}` + (it.rev_plano?` · Plano rev ${it.rev_plano}`:''),
+        label_code:'', quantity:q, unit_price:0, total:0, job,
+        notes:`Fabricación externa según plano ${it.part_number} rev ${it.rev_plano||''} — ${etq}`, req_item_id:it.id}))).map((x,i)=>({line:i+1, ...x}))
+    : sel.map(({it,q},i)=>({line:i+1, cat_type:REQ_OC_CAT[tipo]||'', cat_code:'', brand:(it.brand||'').toUpperCase(),
     part_number:it.part_number, description:it.description||'', label_code:'', quantity:q, unit_price:0, total:0,
     job, notes:'', req_item_id:it.id}));
   gpoRenderItems();
@@ -10632,6 +10639,7 @@ async function ipoProcesar() {
       unit_cost:          parseFloat(it.unit_price||0),
       job:                it.job||'',
       notes:              '',
+      variante:           it.variante||'',
     };
   }).filter(it=>it.quantity_delivered>0);
   if(!items.length){ toast('Ingresa al menos una cantidad > 0','er'); return; }

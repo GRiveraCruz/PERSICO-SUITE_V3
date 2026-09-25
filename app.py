@@ -10775,9 +10775,13 @@ def _req_registrar_compra(po_number, po_items):
             if not row: continue
             d = row.data
             d["cantidad_comprada"] = float(d.get("cantidad_comprada") or 0) + float(it["quantity"])
+            var = str(it.get("variante") or "")
+            if var in ("Normal", "Mirror"):
+                k = "comprado_normal" if var == "Normal" else "comprado_mirror"
+                d[k] = float(d.get(k) or 0) + float(it["quantity"])
             if d.get("tipo") == "manufactura" and d["cantidad_comprada"] > float(d.get("quantity") or 0):
                 d["quantity"] = d["cantidad_comprada"]     # el plano no trae cantidad: manda lo que se ordenó
-            d.setdefault("compras", []).append({"po_number": po_number, "cantidad": it["quantity"], "unit_price": it.get("unit_price"),
+            d.setdefault("compras", []).append({"po_number": po_number, "cantidad": it["quantity"], "variante": var, "unit_price": it.get("unit_price"),
                                                 "fecha": ahora, "usuario": session.get("user", "")})
             _req_aplicar_estatus(d, row)
             row.data = d; _orm_flag_modified(row, "data"); n += 1
@@ -10799,6 +10803,10 @@ def _req_revert_po(po_number):
             regs = d.get("compras") or []
             quitar = sum(float(r.get("cantidad") or 0) for r in regs if str(r.get("po_number", "")).upper() == num)
             if not quitar: continue
+            for r in regs:
+                if str(r.get("po_number", "")).upper() == num and r.get("variante") in ("Normal", "Mirror"):
+                    k = "comprado_normal" if r["variante"] == "Normal" else "comprado_mirror"
+                    d[k] = max(0.0, float(d.get(k) or 0) - float(r.get("cantidad") or 0))
             d["compras"] = [r for r in regs if str(r.get("po_number", "")).upper() != num]
             d["cantidad_comprada"] = max(0.0, float(d.get("cantidad_comprada") or 0) - quitar)
             _req_aplicar_estatus(d, row)
@@ -11852,6 +11860,7 @@ def api_create_gpo():
                     "job":         item_job,
                     "notes":       str(it.get("notes","")).strip(),
                     "req_item_id": str(it.get("req_item_id") or ""),
+                    "variante":    str(it.get("variante") or ""),      # Normal / Mirror (piezas de manufactura)
                 })
             subtotal     = round(sum(i["total"] for i in po_items), 2)
             iva_amt      = round(subtotal * iva_pct / 100, 2)
@@ -12940,6 +12949,7 @@ def api_create_ingreso():
                     "total":             round(qty_del * uc, 2),
                     "job":               job_val,
                     "notes":             str(it.get("notes","")).strip(),
+                    "variante":          str(it.get("variante") or ""),
                 })
             if not ing_items:
                 return jsonify({"error": "Ningún item con cantidad > 0"}), 400
@@ -12964,6 +12974,8 @@ def api_create_ingreso():
             if tipo == "gpo" and po_num and _orm and _orm.DB_ENABLED:
                 g = next((x for x in gpo_load() if x.get("po_number", "").upper() == po_num), None)
                 ligados = {str(i.get("part_number", "")).upper(): i.get("req_item_id") for i in (g or {}).get("items", []) if i.get("req_item_id")}
+                variantes = {(str(i.get("part_number", "")).upper(), i.get("variante") or ""): i.get("req_item_id")
+                             for i in (g or {}).get("items", []) if i.get("req_item_id")}
                 if ligados:
                     s_m = _orm.get_session()
                     try:
@@ -12974,8 +12986,12 @@ def api_create_ingreso():
                             if rr is None or rr.data.get("tipo") != "manufactura": continue
                             d = rr.data
                             q = float(it["quantity_delivered"])
-                            falta_n = max(0.0, float(d.get("qty_normal", d.get("quantity", 1)) or 0) - float(d.get("recibido_normal") or 0))
-                            n = min(q, falta_n); m = q - n
+                            var = it.get("variante") or ""
+                            if var == "Normal":   n, m = q, 0.0            # renglón NORMAL de la orden
+                            elif var == "Mirror": n, m = 0.0, q            # renglón MIRROR de la orden
+                            else:                                          # órdenes anteriores sin variante
+                                falta_n = max(0.0, float(d.get("qty_normal", d.get("quantity", 1)) or 0) - float(d.get("recibido_normal") or 0))
+                                n = min(q, falta_n); m = q - n
                             revs = d.get("revisiones") or []
                             _mstock_mov(s_m, d.get("job") or it["job"],
                                         {"part_id": d.get("part_number"), "tipo": d.get("description"), "material": d.get("material"),
