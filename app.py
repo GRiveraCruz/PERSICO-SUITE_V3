@@ -10053,8 +10053,7 @@ def _req_revert_order(order_number, jobs, order_items=None):
                 continue
             d["reasignaciones"] = [r for r in regs if r.get("order_number") != order_number]
             d["cantidad_reasignada"] = max(0.0, float(d.get("cantidad_reasignada") or 0) - quitar)
-            if d.get("status") == "Reasignado" and float(d.get("quantity") or 0) - d["cantidad_reasignada"] > 0:
-                d["status"] = "Solicitado"; row.status = "Solicitado"
+            _req_aplicar_estatus(d, row)
             row.data = d
             _orm_flag_modified(row, "data")
             n += 1
@@ -10374,7 +10373,7 @@ def api_upload_prov_file(clave):
 #  Construido directo sobre PostgreSQL (módulo nuevo).
 # ══════════════════════════════════════════════════════════════════
 REQ_TIPOS = ("electrico", "mecanico", "componentes_mayores", "manufactura")
-REQ_STATUS = ("Solicitado", "Comprado", "Cancelado", "Reasignado", "Homologado")
+REQ_STATUS = ("Solicitado", "Comprado", "Cancelado", "Reasignado", "Homologado", "Reas. Parcial")
 
 def _req_gen_item_id():
     return "BOM-" + datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
@@ -10504,8 +10503,7 @@ def api_requisiciones_upload():
                     d["quantity"] = nueva
                     d.pop("revision", None)
                     d.setdefault("cambios_cantidad", []).append({"de": actual, "a": nueva, "fecha": ahora, "usuario": user, "origen": "carga de requisición"})
-                    if d.get("status") == "Reasignado" and nueva - float(d.get("cantidad_reasignada") or 0) > 0:
-                        d["status"] = "Solicitado"; row.status = "Solicitado"
+                    _req_aplicar_estatus(d, row)
                     res["actualizados"].append({"part_number": d.get("part_number"), "de": actual, "a": nueva})
                 else:
                     # Baja la cantidad, o el renglón ya está Comprado/Cancelado: no se toca,
@@ -10534,11 +10532,31 @@ def api_requisiciones_update(item_id):
             if not row:
                 return jsonify({"error": "Renglón no encontrado"}), 404
             nuevo_status = data.get("status")
-            if nuevo_status:
+            if nuevo_status and nuevo_status != row.data.get("status"):
                 if nuevo_status not in REQ_STATUS:
                     return jsonify({"error": f"Estatus inválido. Debe ser uno de: {', '.join(REQ_STATUS)}"}), 400
-                row.data["status"] = nuevo_status
-                row.status = nuevo_status
+                if _req_cubierto(row.data):
+                    return jsonify({"error": f"Este material ya está {row.data.get('status')} al 100% "
+                                             f"(reasignado {float(row.data.get('cantidad_reasignada') or 0):g}, "
+                                             f"comprado {float(row.data.get('cantidad_comprada') or 0):g}); su estatus no se puede modificar. "
+                                             "Para cambiarlo, elimina o cancela la orden correspondiente."}), 400
+                if nuevo_status == "Reas. Parcial":
+                    return jsonify({"error": "\"Reas. Parcial\" lo asigna el sistema al reasignar solo una parte desde Stock."}), 400
+                reas_parcial = float(row.data.get("cantidad_reasignada") or 0) > 0
+                if reas_parcial and nuevo_status in ("Solicitado", "Homologado"):
+                    # con reasignación parcial el estatus visible sigue siendo "Reas. Parcial";
+                    # lo elegido queda como estatus base para cuando se revierta la reasignación
+                    row.data["status_base"] = nuevo_status
+                else:
+                    row.data["status"] = nuevo_status
+                    row.status = nuevo_status
+                    if nuevo_status in ("Solicitado", "Homologado"):
+                        row.data["status_base"] = nuevo_status
+                    if nuevo_status in ("Comprado", "Reasignado"):      # marcado a mano
+                        row.data["comprador"] = session.get("user", "")
+                        row.data["comprador_fecha"] = datetime.datetime.now().isoformat()
+                    else:
+                        row.data.pop("comprador", None); row.data.pop("comprador_fecha", None)
             for campo in ("brand", "part_number", "description", "quantity"):
                 if campo in data:
                     row.data[campo] = data[campo]
@@ -10552,8 +10570,7 @@ def api_requisiciones_update(item_id):
                         "de": row.data.get("quantity"), "a": rev["cantidad_nueva"], "fecha": datetime.datetime.now().isoformat(),
                         "usuario": session.get("user", ""), "origen": "revisión aceptada"})
                     row.data["quantity"] = rev["cantidad_nueva"]
-                    if row.data.get("status") == "Reasignado" and float(rev["cantidad_nueva"]) - float(row.data.get("cantidad_reasignada") or 0) > 0:
-                        row.data["status"] = "Solicitado"; row.status = "Solicitado"
+                    _req_aplicar_estatus(row.data, row)
                 row.data.pop("revision", None)
             row.data["updated_by"] = session.get("user", ""); row.data["updated_at"] = datetime.datetime.now().isoformat()
             _orm_flag_modified(row, "data")
@@ -10573,6 +10590,11 @@ def api_requisiciones_delete(item_id):
     try:
         s = _orm.get_session()
         try:
+            row = s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.item_id == item_id).one_or_none()
+            if row is not None and (float(row.data.get("cantidad_reasignada") or 0) > 0 or float(row.data.get("cantidad_comprada") or 0) > 0):
+                # Borrarlo dejaría órdenes RA / PO apuntando a un renglón inexistente
+                return jsonify({"error": "Este renglón tiene reasignaciones u órdenes de compra registradas; no se puede eliminar. "
+                                         "Elimina o cancela primero esas órdenes."}), 400
             deleted = s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.item_id == item_id).delete()
             s.commit()
         finally:
@@ -10583,7 +10605,48 @@ def api_requisiciones_delete(item_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-REQ_ESTATUS_REASIGNABLES = ("Solicitado", "Homologado")   # Comprado/Cancelado/Reasignado no se reasignan
+REQ_ESTATUS_REASIGNABLES = ("Solicitado", "Homologado", "Reas. Parcial")   # Comprado/Cancelado/Reasignado no se reasignan
+REQ_ESTATUS_AUTO = ("Comprado", "Reasignado", "Reas. Parcial")   # los pone el sistema según cantidades
+
+def _req_cubierto(d):
+    """¿Reasignado + comprado cubre el 100% de lo pedido? (cantidades registradas por el sistema)"""
+    q = float(d.get("quantity") or 0)
+    return q > 0 and float(d.get("cantidad_reasignada") or 0) + float(d.get("cantidad_comprada") or 0) >= q
+
+def _req_aplicar_estatus(d, row=None):
+    """Recalcula el estatus de un renglón a partir de sus cantidades (Cancelado no se toca):
+      - cubierto al 100%        → "Comprado" (si hubo compra) o "Reasignado" (todo salió de Stock)
+      - reasignado en parte     → "Reas. Parcial"
+      - sin reasignar           → su estatus base (Solicitado / Homologado)
+    El estatus base se guarda en status_base al pasar a un estatus automático."""
+    st = d.get("status") or "Solicitado"
+    if st == "Cancelado":
+        return st
+    if st not in REQ_ESTATUS_AUTO:
+        d["status_base"] = st
+    base = d.get("status_base") or "Solicitado"
+    reas = float(d.get("cantidad_reasignada") or 0); comp = float(d.get("cantidad_comprada") or 0)
+    if _req_cubierto(d):
+        nuevo = "Comprado" if comp > 0 else "Reasignado"
+    elif reas > 0:
+        nuevo = "Reas. Parcial"
+    else:
+        nuevo = base if st in REQ_ESTATUS_AUTO else st
+    if nuevo != st:
+        if nuevo in REQ_ESTATUS_AUTO:
+            # Comprador = autor del último movimiento (reasignación o compra) que sigue vigente;
+            # así, al revertir una orden queda quien realmente reasignó/compró, no quien la eliminó.
+            hist = sorted((d.get("reasignaciones") or []) + (d.get("compras") or []), key=lambda h: str(h.get("fecha") or ""))
+            from flask import has_request_context
+            actor = session.get("user", "") if has_request_context() else ""
+            d["comprador"] = (hist[-1].get("usuario") if hist else "") or actor
+            d["comprador_fecha"] = (hist[-1].get("fecha") if hist else "") or datetime.datetime.now().isoformat()
+        elif st in REQ_ESTATUS_AUTO:
+            d.pop("comprador", None); d.pop("comprador_fecha", None)   # se revirtió
+    d["status"] = nuevo
+    if row is not None:
+        row.status = nuevo
+    return nuevo
 
 def _req_con_pendiente(item):
     """Copia del renglón con cantidad_reasignada y cantidad_pendiente (= pedida − reasignada).
@@ -10595,6 +10658,10 @@ def _req_con_pendiente(item):
     it["cantidad_reasignada"] = reas
     it["cantidad_comprada"] = comp
     it["cantidad_pendiente"] = max(0.0, qty - reas - comp)
+    if not it.get("comprador") and it.get("status") in REQ_ESTATUS_AUTO:
+        hist = sorted((it.get("reasignaciones") or []) + (it.get("compras") or []), key=lambda h: str(h.get("fecha") or ""))
+        if hist and hist[-1].get("usuario"):
+            it["comprador"] = hist[-1]["usuario"]; it["comprador_fecha"] = hist[-1].get("fecha")
     return it
 
 def _req_match_index(records):
@@ -10658,8 +10725,7 @@ def _req_registrar_compra(po_number, po_items):
             d["cantidad_comprada"] = float(d.get("cantidad_comprada") or 0) + float(it["quantity"])
             d.setdefault("compras", []).append({"po_number": po_number, "cantidad": it["quantity"], "unit_price": it.get("unit_price"),
                                                 "fecha": ahora, "usuario": session.get("user", "")})
-            if _req_con_pendiente(d)["cantidad_pendiente"] <= 0:
-                d["status"] = "Comprado"; row.status = "Comprado"
+            _req_aplicar_estatus(d, row)
             row.data = d; _orm_flag_modified(row, "data"); n += 1
         s.commit()
         return n
@@ -10681,8 +10747,7 @@ def _req_revert_po(po_number):
             if not quitar: continue
             d["compras"] = [r for r in regs if str(r.get("po_number", "")).upper() != num]
             d["cantidad_comprada"] = max(0.0, float(d.get("cantidad_comprada") or 0) - quitar)
-            if d.get("status") == "Comprado" and _req_con_pendiente(d)["cantidad_pendiente"] > 0:
-                d["status"] = "Solicitado"; row.status = "Solicitado"
+            _req_aplicar_estatus(d, row)
             row.data = d; _orm_flag_modified(row, "data"); n += 1
         s.commit()
         return n
@@ -10773,9 +10838,8 @@ def api_requisiciones_reasignar_stock():
                     d["cantidad_reasignada"] = float(d.get("cantidad_reasignada") or 0) + res["asignado"]
                     d.setdefault("reasignaciones", []).append({"order_number": body["order_number"], "cantidad": res["asignado"],
                                                                "fecha": ahora, "usuario": session.get("user", "")})
-                    pend = max(0.0, float(d.get("quantity") or 0) - d["cantidad_reasignada"])
-                    if pend <= 0:
-                        d["status"] = "Reasignado"; row.status = "Reasignado"
+                    _req_aplicar_estatus(d, row)
+                    pend = _req_con_pendiente(d)["cantidad_pendiente"]
                     row.data = d
                     _orm_flag_modified(row, "data")
                     res["pendiente"] = pend

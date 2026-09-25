@@ -7416,7 +7416,7 @@ let reqCurrentJob = null;
 let reqCurrentTipo = 'electrico';
 let reqItems = [];
 const REQ_TIPO_LABELS = {electrico:'⚡ Eléctrico', mecanico:'⚙ Mecánico', componentes_mayores:'🧩 Componentes Mayores', manufactura:'🏭 Manufactura'};
-const REQ_STATUS_OPCIONES = ['Solicitado','Comprado','Cancelado','Reasignado','Homologado'];
+const REQ_STATUS_OPCIONES = ['Solicitado','Reas. Parcial','Comprado','Cancelado','Reasignado','Homologado'];
 // Color por estatus: [texto, fondo]
 const REQ_STATUS_COLOR = {
   'Solicitado': ['#a16207','#fef3c7'],
@@ -7424,8 +7424,12 @@ const REQ_STATUS_COLOR = {
   'Cancelado':  ['#6b7280','#e5e7eb'],
   'Reasignado': ['#6d28d9','#ede9fe'],
   'Homologado': ['#1d4ed8','#dbeafe'],
+  'Reas. Parcial': ['#0e7490','#cffafe'],
 };
-const REQ_REASIGNABLES = ['Solicitado','Homologado'];
+const REQ_REASIGNABLES = ['Solicitado','Homologado','Reas. Parcial'];
+// Comprado/reasignado al 100% (cantidades registradas): el estatus queda bloqueado
+const reqCubierto = it => { const q=parseFloat(it.quantity)||0; return q>0 && (parseFloat(it.cantidad_reasignada)||0)+(parseFloat(it.cantidad_comprada)||0) >= q; };
+const reqQuienFecha = (u,f) => u ? `${esc(u)}${f?`<div style="font-size:9px;color:var(--muted)">${esc(String(f).slice(0,10))}</div>`:''}` : '<span style="color:var(--muted)">—</span>';
 const reqPendiente = it => it.cantidad_pendiente ?? Math.max(0,(parseFloat(it.quantity)||0)-(parseFloat(it.cantidad_reasignada)||0)-(parseFloat(it.cantidad_comprada)||0));
 
 async function reqInitSelectors(){
@@ -7539,23 +7543,24 @@ function reqRenderTable(){
           <button onclick="reqRevision('${esc(it.id)}','descartar')" class="btn-reload" style="font-size:10px;padding:2px 6px">Descartar</button></div></div>`:''}
       </td>
       <td>
-        <select onchange="reqUpdateStatus('${it.id}',this.value)" style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg}">
-          ${REQ_STATUS_OPCIONES.map(s=>`<option value="${s}" ${it.status===s?'selected':''}>${s}</option>`).join('')}
-        </select>
+        <select onchange="reqUpdateStatus('${it.id}',this.value)" ${reqCubierto(it)?`disabled title="${esc(it.status)} al 100%: no se puede cambiar. Para modificarlo, elimina o cancela la orden correspondiente."`:''}
+          style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg};${reqCubierto(it)?'cursor:not-allowed;opacity:.9':''}">
+          ${REQ_STATUS_OPCIONES.map(s=>`<option value="${s}" ${it.status===s?'selected':''} ${s==='Reas. Parcial'&&it.status!==s?'disabled':''}>${s}</option>`).join('')}
+        </select>${reqCubierto(it)?' <span title="Bloqueado: cubierto al 100%" style="font-size:11px">🔒</span>':''}
       </td>
+      <td style="font-size:11px">${reqQuienFecha(it.created_by, it.created_at)}</td>
+      <td style="font-size:11px">${['Comprado','Reasignado','Reas. Parcial'].includes(it.status) ? reqQuienFecha(it.comprador, it.comprador_fecha) : '<span style="color:var(--muted)">—</span>'}</td>
       <td id="req-stock-${esc(it.part_number)}" style="font-size:11px;color:var(--muted)">—</td>
-      <td><button class="fi-del" onclick="reqDeleteItem('${it.id}')">Eliminar</button></td>
+      <td>${(reas>0||comp>0) ? '<span title="Tiene reasignaciones u órdenes de compra: no se puede eliminar" style="font-size:11px;color:var(--muted)">—</span>' : `<button class="fi-del" onclick="reqDeleteItem('${it.id}')">Eliminar</button>`}</td>
     </tr>`;}).join('');
 }
 
 async function reqUpdateStatus(itemId, status){
   try{
     const r = await apiCall('PUT','/requisiciones/'+itemId,{status});
-    if(r.error){ toast(r.error,'er'); return; }
+    if(r.error){ toast(r.error,'er',7000); reqRenderTable(); return; }
     toast('Estatus actualizado ✓','ok');
-    const it = reqItems.find(x=>x.id===itemId);
-    if(it) it.status = status;
-    reqRenderTable();      // refresca el color del estatus
+    await reqRenderTab();  // el servidor puede ajustar estatus visible / comprador (Reas. Parcial, bloqueo)
   }catch(e){ toast('Error: '+e,'er'); }
 }
 
