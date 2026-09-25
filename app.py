@@ -7213,7 +7213,9 @@ def api_dashboard_purchasing():
                     fr = min(1.0, reas / q) if q > 0 else 0.0
                     fr_reas.append(fr)
                     comp = float(r.get("cantidad_comprada") or 0)
-                    if comp: fr_ord.append(min(1.0 - fr, comp / q) if q > 0 else 0.0)
+                    if tipo == "manufactura":
+                        fr_ord.append(1.0 if r.get("status") in ("Comprado", "Orden interna", "Fabricado") else 0.0)
+                    elif comp: fr_ord.append(min(1.0 - fr, comp / q) if q > 0 else 0.0)
                     else:    fr_ord.append((1.0 - fr) if r.get("status") == "Comprado" else 0.0)   # marcado a mano
                 # última actualización: alta, edición, reasignaciones y cambios de cantidad por carga
                 fechas = [str(r.get(k) or "") for r in rows for k in ("updated_at", "created_at") if r.get(k)]
@@ -10532,6 +10534,25 @@ def api_requisiciones_update(item_id):
             if not row:
                 return jsonify({"error": "Renglón no encontrado"}), 404
             nuevo_status = data.get("status")
+            es_manuf = (row.tipo or row.data.get("tipo")) == "manufactura"
+            if es_manuf:
+                # BOM de Manufactura: sus propios estatus y la Fabricación (con quién la cambió)
+                if nuevo_status and nuevo_status != row.data.get("status"):
+                    if nuevo_status not in REQ_STATUS_MANUF:
+                        return jsonify({"error": f"Estatus inválido. Debe ser uno de: {', '.join(REQ_STATUS_MANUF)}"}), 400
+                    row.data["status"] = nuevo_status; row.status = nuevo_status
+                    row.data["status_por"] = session.get("user", ""); row.data["status_fecha"] = datetime.datetime.now().isoformat()
+                if "fabricacion" in data:
+                    fab = str(data.get("fabricacion") or "")
+                    if fab and fab not in REQ_FABRICACION:
+                        return jsonify({"error": f"Fabricación inválida. Debe ser: {', '.join(REQ_FABRICACION)}"}), 400
+                    if fab != row.data.get("fabricacion", ""):
+                        row.data["fabricacion"] = fab
+                        row.data["fabricacion_por"] = session.get("user", "")
+                        row.data["fabricacion_fecha"] = datetime.datetime.now().isoformat()
+                for campo in ("material", "acabado"):
+                    if campo in data: row.data[campo] = str(data[campo]).strip()
+                nuevo_status = None           # ya se procesó arriba
             if nuevo_status and nuevo_status != row.data.get("status"):
                 if nuevo_status not in REQ_STATUS:
                     return jsonify({"error": f"Estatus inválido. Debe ser uno de: {', '.join(REQ_STATUS)}"}), 400
@@ -10595,6 +10616,10 @@ def api_requisiciones_delete(item_id):
                 # Borrarlo dejaría órdenes RA / PO apuntando a un renglón inexistente
                 return jsonify({"error": "Este renglón tiene reasignaciones u órdenes de compra registradas; no se puede eliminar. "
                                          "Elimina o cancela primero esas órdenes."}), 400
+            if row is not None and (row.tipo or row.data.get("tipo")) == "manufactura":
+                ids = [r.get("archivo_id") for r in (row.data.get("revisiones") or []) if r.get("archivo_id")]
+                if ids:
+                    s.query(_orm.PlanoPDF).filter(_orm.PlanoPDF.id.in_(ids)).delete(synchronize_session=False)
             deleted = s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.item_id == item_id).delete()
             s.commit()
         finally:
@@ -10751,6 +10776,127 @@ def _req_revert_po(po_number):
             row.data = d; _orm_flag_modified(row, "data"); n += 1
         s.commit()
         return n
+    finally:
+        s.close()
+
+# ══════════════════════════════════════════════════════════════════
+#  BOM DE MANUFACTURA — planos PDF
+# ══════════════════════════════════════════════════════════════════
+REQ_STATUS_MANUF = ("Solicitado", "Comprado", "Orden interna", "Fabricado")
+REQ_FABRICACION  = ("Interna", "Externa", "Mixta")
+PLANO_MAX_BYTES  = 25 * 1024 * 1024
+
+def _rev_letra(n):
+    """1→A, 2→B … 26→Z, 27→AA."""
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+def _plano_id(filename):
+    """ID de la pieza = nombre del PDF sin extensión. Se quita un sufijo de revisión
+    del nombre ("_revA", "-rev B", " REV.C") para que un plano revisado quede como nueva
+    revisión de la misma pieza y no como pieza distinta."""
+    base = re.sub(r"\.pdf$", "", _os.path.basename(str(filename or "")).strip(), flags=re.I)
+    base = re.sub(r"[\s_\-]+rev\.?\s*[A-Za-z0-9]{1,3}$", "", base, flags=re.I)
+    return base.strip().upper()
+
+def _extraer_cajetin(data):
+    """Material, Acabado (FINISH) y Tipo (DESCRIPTION) del cajetín del plano (1ª página).
+    El texto de un PDF no sale en orden de lectura, así que cada valor se ubica por
+    posición: la primera línea que queda justo debajo de su etiqueta, dentro de su celda
+    (MATERIAL termina donde empieza FINISH; FINISH donde empieza WEIGHT)."""
+    import pdfplumber
+    out = {"tipo": "", "material": "", "acabado": ""}
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        ws = pdf.pages[0].extract_words()
+    def etiqueta(t):
+        c = [w for w in ws if w["text"].endswith(":") and w["text"].upper().rstrip(":") == t]
+        return max(c, key=lambda w: w["top"]) if c else None
+    L = {k: etiqueta(k) for k in ("DESCRIPTION", "MATERIAL", "FINISH", "WEIGHT")}
+    def debajo(lab, x_fin, alto=30):
+        if not lab: return ""
+        got = [w for w in ws if lab["bottom"] - 1 < w["top"] < lab["bottom"] + alto
+               and w["x0"] >= lab["x0"] - 4 and w["x1"] <= x_fin and not w["text"].endswith(":")]
+        if not got: return ""
+        t0 = min(w["top"] for w in got)
+        return " ".join(w["text"] for w in sorted([w for w in got if abs(w["top"] - t0) < 3], key=lambda w: w["x0"])).strip()
+    M, F, W, D = L["MATERIAL"], L["FINISH"], L["WEIGHT"], L["DESCRIPTION"]
+    if M: out["material"] = debajo(M, (F["x0"] - 2) if F else M["x0"] + 120)
+    if F: out["acabado"]  = debajo(F, (W["x0"] - 2) if W else F["x0"] + 120)
+    if D: out["tipo"]     = debajo(D, (D["x0"] + (W["x0"] - D["x0"]) * 0.75) if W else D["x0"] + 200)
+    return out
+
+@app.route("/api/requisiciones/planos", methods=["POST"])
+def api_requisiciones_planos_upload():
+    """Sube uno o varios planos PDF al BOM de Manufactura de un Job. Por archivo:
+    ID = nombre del PDF; revisión A la primera vez y B, C… si ya existía esa pieza;
+    material / acabado / tipo desde el cajetín. El PDF queda guardado en la base."""
+    if not can("create", "compras-requisicion"): return jsonify({"error": "Sin permiso"}), 403
+    if not (_orm and _orm.DB_ENABLED):
+        return jsonify({"error": "Este módulo requiere la base de datos — contacta a soporte."}), 400
+    job = (request.form.get("job") or "").strip()
+    files = request.files.getlist("files")
+    if not job: return jsonify({"error": "Falta seleccionar el Job"}), 400
+    if not files: return jsonify({"error": "No se recibieron archivos"}), 400
+    user, ahora = session.get("user", ""), datetime.datetime.now().isoformat()
+    res = []
+    s = _orm.get_session()
+    try:
+        filas = {}
+        for r in s.query(_orm.RequisicionCompra).filter(_orm.RequisicionCompra.job == job, _orm.RequisicionCompra.tipo == "manufactura").all():
+            filas.setdefault(_plano_id(r.data.get("part_number")), r)
+        for f in files:
+            nombre = _os.path.basename(f.filename or "")
+            data = f.read()
+            if not nombre.lower().endswith(".pdf") or not data.startswith(b"%PDF"):
+                res.append({"archivo": nombre, "error": "No es un PDF"}); continue
+            if len(data) > PLANO_MAX_BYTES:
+                res.append({"archivo": nombre, "error": "Supera 25 MB"}); continue
+            pid = _plano_id(nombre)
+            try:
+                caj = _extraer_cajetin(data); aviso = [k for k in ("tipo", "material", "acabado") if not caj[k]]
+            except Exception as e:
+                caj = {"tipo": "", "material": "", "acabado": ""}; aviso = [f"no se pudo leer el cajetín ({e})"]
+            row = filas.get(pid)
+            n_rev = len((row.data.get("revisiones") or [])) + 1 if row else 1
+            rev = _rev_letra(n_rev)
+            plano = _orm.PlanoPDF(job=job, part_id=pid, revision=rev, filename=nombre, size=len(data), content=data, uploaded_by=user)
+            s.add(plano); s.flush()
+            entrada = {"revision": rev, "archivo_id": plano.id, "filename": nombre, "fecha": ahora, "usuario": user, **caj}
+            if row is None:
+                item = {"id": _req_gen_item_id(), "job": job, "tipo": "manufactura", "part_number": pid,
+                        "description": caj["tipo"], "material": caj["material"], "acabado": caj["acabado"],
+                        "brand": "", "quantity": 1, "status": "Solicitado", "fabricacion": "",
+                        "rev_plano": rev, "revisiones": [entrada], "created_by": user, "created_at": ahora}
+                row = _orm.RequisicionCompra(data=item, item_id=item["id"], job=job, tipo="manufactura", status="Solicitado")
+                s.add(row); filas[pid] = row
+            else:
+                d = row.data
+                d.setdefault("revisiones", []).append(entrada)
+                d["rev_plano"] = rev   # (no "revision": ese campo es el aviso de cantidad por revisar)
+                for campo, v in (("description", caj["tipo"]), ("material", caj["material"]), ("acabado", caj["acabado"])):
+                    if v: d[campo] = v                     # lo que traiga el plano nuevo manda
+                d["updated_at"] = ahora
+                row.data = d; _orm_flag_modified(row, "data")
+            res.append({"archivo": nombre, "id": pid, "revision": rev, "nuevo": n_rev == 1, **caj, "sin_dato": aviso})
+        s.commit()
+    finally:
+        s.close()
+    return jsonify({"ok": True, "resultados": res})
+
+@app.route("/api/requisiciones/planos/<int:plano_id>", methods=["GET"])
+def api_requisiciones_plano_pdf(plano_id):
+    if not can("view", "compras-requisicion"): return jsonify({"error": "Sin permiso"}), 403
+    if not (_orm and _orm.DB_ENABLED): return jsonify({"error": "Requiere base de datos"}), 400
+    s = _orm.get_session()
+    try:
+        p = s.query(_orm.PlanoPDF).filter(_orm.PlanoPDF.id == plano_id).one_or_none()
+        if not p: return jsonify({"error": "Plano no encontrado"}), 404
+        nombre = f"{p.part_id}_rev{p.revision}.pdf"
+        return Response(bytes(p.content), mimetype="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="{nombre}"'})
     finally:
         s.close()
 

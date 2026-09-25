@@ -120,6 +120,7 @@ function switchMenu(mod, groupId) {
   if(mod==='personal-perfiles') { setTimeout(loadPerfiles,100); }
   if(mod==='personal-listado') { setTimeout(loadPersonal,100); }
   if(mod==='consignacion') { setTimeout(loadCsg,50); }
+  if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
   if(mod==='consig-reassign') { setTimeout(loadCsgReassign,50); }
 }
 
@@ -3274,7 +3275,7 @@ function clExportPDF(){
 // ════════════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
-    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc'];
+    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos'];
     const open=mods.find(m=>document.getElementById(m).classList.contains('on'));
     if(open)closeMo(open); else if(_currentPanel)closePanel();
   }
@@ -3959,7 +3960,7 @@ function ivpExportCSV(){ window.open('/api/ivp/export/'+ivpActiveYear,'_blank');
 // ════════════════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
-    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc'];
+    const mods=['mo-jnew','mo-jimp','mo-rnew','mo-rimp','mo-rcopy','mo-qnew','mo-qimp','mo-pt-new','mo-pt-confirm','mo-sv-new','mo-stk-imp','mo-stk-ing','mo-reassign','mo-prov-new','mo-prov-imp','mo-cat-new','mo-cat-imp','mo-cpo-new','mo-cpo-imp','mo-po-imp','mo-wh-imp','mo-ivp-imp','mo-fx-imp','mo-refuse','mo-award','mo-tnew','mo-timp','mo-vac-add','mo-asis-link','mo-pm-new','mo-sal-unlock','mo-ctrl-export','mo-sal-import-excel','mo-sal-export-excel','mo-isr-import','mo-np-periodo','mo-np-generar','mo-np-recibo','mo-cpc-new','mo-os','mo-ta','mo-cap-os-detalle','mo-req-upload','mo-req-stock','mo-csg-imp','mo-csg-ing','mo-csg-reassign','mo-req-oc','mo-req-planos'];
     const open=mods.find(m=>document.getElementById(m).classList.contains('on'));
     if(open)closeMo(open); else if(_currentPanel)closePanel();
   }
@@ -7496,6 +7497,10 @@ async function reqLoadJob(){
 
 function reqSetTipo(tipo){
   reqCurrentTipo = tipo;
+  // Manufactura trabaja con planos PDF: sus propios botones
+  const m = tipo==='manufactura';
+  document.getElementById('req-btns-compra').style.display = m ? 'none' : '';
+  document.getElementById('req-btns-manuf').style.display  = m ? '' : 'none';
   document.querySelectorAll('#req-job-content .cl-toggle button').forEach(b=>b.classList.remove('on'));
   event.target.classList.add('on');
   reqRenderTab();
@@ -7509,13 +7514,83 @@ async function reqRenderTab(){
     const d = await fetch(`/api/requisiciones/${encodeURIComponent(reqCurrentJob)}?tipo=${reqCurrentTipo}`).then(r=>r.json());
     if(d.error){ toast(d.error,'er'); tb.innerHTML=`<tr><td colspan="7"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
     reqItems = d.items || [];
-    const porRevisar = reqItems.filter(i=>i.revision).length;
+    const porRevisar = reqCurrentTipo==='manufactura' ? 0 : reqItems.filter(i=>i.revision && typeof i.revision==='object').length;
     document.getElementById('req-tab-count').textContent = `${REQ_TIPO_LABELS[reqCurrentTipo]} — ${reqItems.length} renglón(es)${porRevisar?` · ⚠ ${porRevisar} por revisar`:''}`;
     reqRenderTable();
   }catch(e){ toast('Error al cargar el BOM: '+e,'er'); }
 }
 
+// ══ BOM de Manufactura (planos PDF) ══
+const REQ_MANUF_STATUS = ['Solicitado','Comprado','Orden interna','Fabricado'];
+const REQ_MANUF_COLOR  = {'Solicitado':['#a16207','#fef3c7'],'Comprado':['#15803d','#dcfce7'],'Orden interna':['#1d4ed8','#dbeafe'],'Fabricado':['#0f766e','#ccfbf1']};
+const REQ_FABRICACION  = ['Interna','Externa','Mixta'];
+let REQ_THEAD_COMPRA = null;   // encabezado original (compras); se guarda en el primer render
+async function reqSubirPlanos(files){
+  if(!files || !files.length) return;
+  if(!reqCurrentJob){ toast('Selecciona un Job','er'); return; }
+  const fd = new FormData(); fd.append('job', reqCurrentJob);
+  [...files].forEach(f=>fd.append('files', f));
+  toast(`Subiendo ${files.length} plano(s)…`,'ok',2500);
+  try{
+    const r = await fetch('/api/requisiciones/planos',{method:'POST',body:fd});
+    const d = (r.headers.get('content-type')||'').includes('json') ? await r.json() : {error:`Error ${r.status} del servidor`};
+    document.getElementById('req-planos-file').value='';
+    if(d.error){ toast(d.error,'er'); return; }
+    const res = d.resultados||[];
+    document.getElementById('req-planos-result').innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="font-size:10px;color:var(--muted);text-transform:uppercase"><th style="text-align:left">Archivo</th><th style="text-align:left">ID pieza</th><th>Rev.</th><th style="text-align:left">Tipo</th><th style="text-align:left">Material</th><th style="text-align:left">Acabado</th></tr></thead><tbody>${
+      res.map(x=>x.error ? `<tr style="border-bottom:1px solid var(--border)"><td>${esc(x.archivo)}</td><td colspan="5" style="color:var(--red)">⚠ ${esc(x.error)}</td></tr>`
+        : `<tr style="border-bottom:1px solid var(--border)"><td style="font-size:11px;color:var(--muted)">${esc(x.archivo)}</td><td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(x.id)}</td>
+           <td style="text-align:center"><b>${esc(x.revision)}</b>${x.nuevo?'':' <span style="font-size:9px;color:#6d28d9">nueva rev.</span>'}</td>
+           ${['tipo','material','acabado'].map(k=>`<td>${x[k]?esc(x[k]):'<span style="color:var(--amber)">no encontrado</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table>
+      ${res.some(x=>(x.sin_dato||[]).length)?'<div style="font-size:11px;color:var(--amber);margin-top:8px">Los datos no encontrados en el cajetín se pueden capturar en la tabla (clic sobre el campo).</div>':''}`;
+    document.getElementById('mo-req-planos').classList.add('on');
+    await reqRenderTab();
+  }catch(e){ toast('Error: '+e.message,'er'); }
+}
+async function reqManufSet(itemId, campo, valor){
+  try{
+    const r = await apiCall('PUT','/requisiciones/'+itemId,{[campo]:valor});
+    if(r.error){ toast(r.error,'er'); }
+    await reqRenderTab();
+  }catch(e){ toast('Error: '+e,'er'); }
+}
+function reqManufEditar(itemId, campo, actual){
+  const v = prompt(`${campo==='material'?'Material':'Acabado'}:`, actual||''); if(v===null) return;
+  reqManufSet(itemId, campo, v.trim());
+}
+function reqRenderManuf(){
+  const tb = document.getElementById('req-tb');
+  document.getElementById('req-thead').innerHTML = `<tr><th>ID pieza</th><th style="text-align:center">Rev.</th><th>Tipo</th><th>Material</th><th>Acabado</th>
+    <th>Fabricación</th><th>Estatus</th><th>Solicitante</th><th>Cambió Fabricación</th><th></th></tr>`;
+  const leg = document.getElementById('req-legend'); if(leg) leg.innerHTML = REQ_MANUF_STATUS.map(st=>`<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;color:${REQ_MANUF_COLOR[st][0]};background:${REQ_MANUF_COLOR[st][1]}">${st}</span>`).join('');
+  if(!reqItems.length){ tb.innerHTML = '<tr><td colspan="10"><div class="es">Sin planos. Usa "📄 Subir planos (PDF)" para agregar las piezas.</div></td></tr>'; return; }
+  const who = (u,f) => u ? `${esc(u)}<div style="font-size:9px;color:var(--muted)">${esc(String(f||'').slice(0,10))}</div>` : '<span style="color:var(--muted)">—</span>';
+  const edit = (it,campo) => `<span onclick="reqManufEditar('${esc(it.id)}','${campo}','${esc((it[campo]||'').replace(/'/g,''))}')" title="Clic para editar" style="cursor:pointer;${it[campo]?'':'color:var(--amber)'}">${it[campo]?esc(it[campo]):'capturar'}</span>`;
+  tb.innerHTML = reqItems.map(it=>{
+    const [fg,bg] = REQ_MANUF_COLOR[it.status] || ['var(--text)','transparent'];
+    const revs = it.revisiones||[], ult = revs[revs.length-1];
+    const hist = revs.slice(0,-1).reverse().map(r=>`<a href="/api/requisiciones/planos/${r.archivo_id}" target="_blank" title="${esc(r.filename)} · ${esc(String(r.fecha||'').slice(0,10))} · ${esc(r.usuario||'')}" style="font-size:10px;color:var(--muted);margin-left:4px">${esc(r.revision)}</a>`).join('');
+    return `<tr style="box-shadow:inset 4px 0 0 ${fg}">
+      <td style="font-family:'DM Mono',monospace;color:var(--gold)">${ult?`<a href="/api/requisiciones/planos/${ult.archivo_id}" target="_blank" title="Abrir plano (rev ${esc(ult.revision)})" style="color:var(--gold);text-decoration:none">📄 ${esc(it.part_number)}</a>`:esc(it.part_number)}</td>
+      <td style="text-align:center"><b>${esc(it.rev_plano||'—')}</b>${hist?`<div>${hist}</div>`:''}</td>
+      <td>${esc(it.description||'—')}</td>
+      <td>${edit(it,'material')}</td>
+      <td>${edit(it,'acabado')}</td>
+      <td><select onchange="reqManufSet('${esc(it.id)}','fabricacion',this.value)" style="font-size:11px;padding:4px 6px">
+        <option value="" ${!it.fabricacion?'selected':''}>—</option>${REQ_FABRICACION.map(f=>`<option ${it.fabricacion===f?'selected':''}>${f}</option>`).join('')}</select></td>
+      <td><select onchange="reqManufSet('${esc(it.id)}','status',this.value)" style="font-size:11px;font-weight:600;padding:4px 6px;border:1px solid ${fg};border-radius:4px;background:${bg};color:${fg}">
+        ${REQ_MANUF_STATUS.map(s=>`<option ${it.status===s?'selected':''}>${s}</option>`).join('')}</select></td>
+      <td style="font-size:11px">${who(it.created_by, it.created_at)}</td>
+      <td style="font-size:11px">${who(it.fabricacion_por, it.fabricacion_fecha)}</td>
+      <td><button class="fi-del" onclick="reqDeleteItem('${esc(it.id)}')">Eliminar</button></td></tr>`;}).join('');
+}
+
 function reqRenderTable(){
+  const th = document.getElementById('req-thead');
+  if(th && REQ_THEAD_COMPRA===null && th.innerHTML.includes('No. Parte')) REQ_THEAD_COMPRA = th.innerHTML;
+  if(reqCurrentTipo==='manufactura'){ reqRenderManuf(); return; }
+  if(th && REQ_THEAD_COMPRA && !th.innerHTML.includes('No. Parte')) th.innerHTML = REQ_THEAD_COMPRA;
   const tb = document.getElementById('req-tb');
   if(!reqItems.length){
     tb.innerHTML = '<tr><td colspan="7"><div class="es"><span class="ei">📋</span><br>Sin renglones subidos para este BOM todavía.</div></td></tr>';
@@ -7526,6 +7601,7 @@ function reqRenderTable(){
     document.getElementById('req-tab-count').insertAdjacentHTML('afterend', `<span id="req-legend" style="margin-left:14px;display:inline-flex;gap:6px;flex-wrap:wrap;vertical-align:middle">${
       REQ_STATUS_OPCIONES.map(st=>`<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;color:${REQ_STATUS_COLOR[st][0]};background:${REQ_STATUS_COLOR[st][1]}">${st}</span>`).join('')}</span>`);
   }
+  document.getElementById('req-legend').innerHTML = REQ_STATUS_OPCIONES.map(st=>`<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;color:${REQ_STATUS_COLOR[st][0]};background:${REQ_STATUS_COLOR[st][1]}">${st}</span>`).join('');
   tb.innerHTML = reqItems.map(it=>{
     const [fg,bg] = REQ_STATUS_COLOR[it.status] || ['var(--text)','transparent'];
     const reas = parseFloat(it.cantidad_reasignada)||0, comp = parseFloat(it.cantidad_comprada)||0, pend = reqPendiente(it);
@@ -10185,7 +10261,7 @@ async function imProcesar() {
     if(d.error){toast(d.error,'er');return;}
     closeMo('mo-ing-manual');
     toast(`✓ Ingreso procesado — ${d.apartados_created} item(s) en Apartados`,'ok',5000);
-    await loadIngreso();
+    await Promise.all([loadIngreso(), loadApartados()]);
   } catch(e){toast('Error: '+e.message,'er');}
   finally{btn.disabled=false;btn.textContent='✅ Procesar Ingreso';}
 }
@@ -10327,7 +10403,7 @@ async function ipoProcesar() {
     if(d.error){toast(d.error,'er');return;}
     closeMo('mo-ing-po');
     toast(`✓ Ingreso procesado — ${d.apartados_created} item(s) en Apartados`,'ok',5000);
-    await loadIngreso();
+    await Promise.all([loadIngreso(), loadApartados()]);
   } catch(e){toast('Error: '+e.message,'er');}
   finally{btn.disabled=false;btn.textContent='✅ Procesar Ingreso';}
 }
@@ -10338,7 +10414,7 @@ async function deleteIngreso(id) {
     const d = await fetch(`/api/ingreso/${id}`,{method:'DELETE'}).then(r=>r.json());
     if(d.error){toast(d.error,'er');return;}
     toast('Ingreso eliminado','ok');
-    await loadIngreso();
+    await Promise.all([loadIngreso(), loadApartados()]);
   } catch(e){toast('Error: '+e.message,'er');}
 }
 
@@ -13350,7 +13426,7 @@ async function saeProcesar() {
     if(d.error){ toast(d.error,'er'); return; }
     closeMo('mo-ing-sae');
     toast(`✓ Ingreso SAE ${d.record?.id||''} procesado — ${ingItems.length} item(s) en Apartados`, 'ok', 5000);
-    await loadIngreso();
+    await Promise.all([loadIngreso(), loadApartados()]);
   } catch(e){ toast('Error: '+e.message,'er'); }
   finally{ btn.disabled=false; btn.textContent='✅ Procesar Ingreso'; }
 }

@@ -17,6 +17,7 @@ documentado y consultable de forma consistente con el resto.
 import os
 import datetime
 from sqlalchemy import (
+    LargeBinary,
     create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Index
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -405,6 +406,22 @@ class PTNumber(Base, JSONBMixin):
 class SVNumber(Base, JSONBMixin):
     __tablename__ = "sv_numbers"
     sv_number = Column(String, unique=True, nullable=False, index=True)
+
+
+class PlanoPDF(Base):
+    """Planos PDF del BOM de Manufactura (Requisición de Compra). Se guardan en la base
+    de datos —no en el volumen— para que no se pierdan en un redeploy. Cada subida del
+    mismo ID de pieza en un Job es una revisión nueva (A, B, C…)."""
+    __tablename__ = "requisicion_planos"
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    job         = Column(String, index=True)
+    part_id     = Column(String, index=True)
+    revision    = Column(String)
+    filename    = Column(String)
+    size        = Column(Integer)
+    content     = Column(LargeBinary)
+    uploaded_by = Column(String)
+    created_at  = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 # ══════════════════════════════════════════════════════════════════
