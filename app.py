@@ -1306,15 +1306,31 @@ def api_import_jobs_excel():
 #  ROUTES — HOURLY RATE  (/api/rates/*)
 # ══════════════════════════════════════════════════════════════════
 # Perfiles de trabajo → departamento en Hourly Rate (tarifas en USD/h por trabajador)
+# Cada perfil acepta uno o varios nombres de departamento (el primero es el que se muestra).
 PERFILES_COSTO = (
-    ("Pintor",               "MANUFACTURING - PAINT"),
-    ("Soldador",             "MANUFACTURING - WELD"),
-    ("Mecánico de ensamble", "ASSEMBLY"),
-    ("Diseñador mecánico",   "MECHANIC ENG"),
-    ("Diseñador eléctrico",  "ELECTRIC ENG - DESIGN"),
-    ("Programador de PLC",   "ELECTRIC ENG - PLC"),
-    ("Operador de CNC",      "MANUFACTURING - CNC"),
+    ("Pintor",                  ("MANUFACTURING - PAINT",)),
+    ("Soldador",                ("MANUFACTURING - WELD",)),
+    ("Mecánico de ensamble",    ("ASSEMBLY",)),
+    ("Diseñador mecánico",      ("MECHANIC ENG",)),
+    ("Diseñador eléctrico",     ("ELECTRIC ENG - DESIGN",)),
+    ("Programador de PLC",      ("ELECTRIC ENG - PLC",)),
+    ("Operador de CNC",         ("MANUFACTURING - CNC",)),
+    ("Programador de robots",   ("ELECTRIC ENG - ROBOTICS", "ELECTRIC ENG - ROBOTS", "ROBOTICS", "ROBOTS")),
+    ("Ingeniero de simulación", ("MECHANIC ENG - SIMULATION", "SIMULATION", "SIMULACION", "SIMULACIÓN")),
 )
+# Líneas de mano de obra del board de Configurar Proyecto → perfil
+LINEAS_MO = (
+    ("diseno_mecanico", "Diseño mecánico", "Diseñador mecánico"),
+    ("soldadura", "Soldadura", "Soldador"),
+    ("manufactura", "Manufactura", "Operador de CNC"),
+    ("pintura", "Pintura", "Pintor"),
+    ("diseno_electrico", "Diseño eléctrico", "Diseñador eléctrico"),
+    ("plc", "Programación de PLC", "Programador de PLC"),
+    ("robots", "Programación de robots", "Programador de robots"),
+    ("simulacion", "Simulación", "Ingeniero de simulación"),
+    ("ensamble", "Ensamble (electromecánico)", "Mecánico de ensamble"),
+)
+def _norm_depto(v): return " ".join(str(v or "").upper().split())
 
 @app.route("/api/costos-perfil", methods=["GET"])
 def api_costos_perfil():
@@ -1331,14 +1347,62 @@ def api_costos_perfil():
             except (TypeError, ValueError): continue
             if rate > 0: por_depto.setdefault(norm(r.get("department")), []).append(rate)
         filas = []
-        for perfil, depto in PERFILES_COSTO:
-            v = por_depto.get(norm(depto), [])
-            filas.append({"perfil": perfil, "departamento": depto, "personas": len(v),
+        for perfil, deptos in PERFILES_COSTO:
+            v = [x for dp in deptos for x in por_depto.get(norm(dp), [])]
+            filas.append({"perfil": perfil, "departamento": deptos[0], "departamentos": list(deptos), "personas": len(v),
                           "promedio": round(sum(v) / len(v), 2) if v else None,
                           "minimo": round(min(v), 2) if v else None, "maximo": round(max(v), 2) if v else None})
         con = [f["promedio"] for f in filas if f["promedio"] is not None]
         return jsonify({"year": year, "perfiles": filas, "available_years": available_years(),
                         "promedio_general": round(sum(con) / len(con), 2) if con else None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/projconfig/horas-consumidas", methods=["GET"])
+def api_projconfig_horas_consumidas():
+    """Horas consumidas hasta hoy por Job y por línea de mano de obra. Toma Work Hours
+    (todos los años con registros; mismo criterio de coincidencia de Job que el Job
+    Report) y clasifica cada hora por el departamento del trabajador en Hourly Rate."""
+    if not (can("view", "projconfig") or can("view", "report")): return jsonify({"error": "Sin permiso"}), 403
+    try:
+        jobs = [j.strip().upper() for j in (request.args.get("jobs") or "").split(",") if j.strip()]
+        if not jobs: return jsonify({"error": "Indica los Jobs"}), 400
+        years = set(available_years()) | set(wh_available_years()) | {CURRENT_YEAR}
+        if _orm and _orm.DB_ENABLED:
+            try:
+                s_y = _orm.get_session()
+                try: years |= {int(y[0]) for y in s_y.query(_orm.WorkHour.year).distinct().all() if y[0]}
+                finally: s_y.close()
+            except Exception as e:
+                print(f"[DB] horas consumidas: no se pudieron leer los años de work_hours: {e}")
+        years = sorted(years)
+        # departamento de cada trabajador (el del año más reciente en que aparece)
+        depto_emp = {}
+        for y in years:
+            for r in load_rates(y):
+                if r.get("employee"): depto_emp[normalize_name(r["employee"])] = _norm_depto(r.get("department"))
+        depto_perfil = {_norm_depto(d): perfil for perfil, deptos in PERFILES_COSTO for d in deptos}
+        perfil_linea = {perfil: k for k, _n, perfil in LINEAS_MO}
+        out = {}
+        for jn in jobs:
+            job_main = "-".join(jn.split("-")[:2]) if "-" in jn else jn
+            acc = {k: 0.0 for k, _n, _p in LINEAS_MO}; otras = {}
+            for y in years:
+                for r in wh_load_matching(y, job_main):
+                    try: h = float(r.get("hours") or 0)
+                    except (TypeError, ValueError): continue
+                    if h <= 0: continue
+                    dep = depto_emp.get(normalize_name(r.get("employee", "")), "")
+                    k = perfil_linea.get(depto_perfil.get(dep, ""))
+                    if k: acc[k] += h
+                    else:
+                        clave = dep or "SIN TARIFA"
+                        otras[clave] = otras.get(clave, 0.0) + h
+            out[jn] = {"lineas": {k: round(v, 2) for k, v in acc.items()},
+                       "otras": {k: round(v, 2) for k, v in sorted(otras.items())},
+                       "total": round(sum(acc.values()) + sum(otras.values()), 2)}
+        return jsonify({"jobs": out, "calculado": datetime.datetime.now().isoformat(timespec="minutes"),
+                        "lineas": [{"k": k, "nombre": n, "perfil": p} for k, n, p in LINEAS_MO]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -93,3 +93,47 @@ Con el ejemplo del board (Revenue 40,800, Markup 50 %, Ahorro 30 %) se obtiene: 
 - **Guardado:** horas y costo por línea, `target_compras` 10,000, `target_mo` 1,035.80 y
   campos derivados. Al recargar se conservan.
 - Sin errores de JavaScript.
+
+---
+# rev45 — Nuevas líneas de mano de obra y columna "Horas consumidas"
+
+## Líneas nuevas en Configurar Proyecto (9 en total, en el orden del board)
+Diseño mecánico · Soldadura · Manufactura · Pintura · Diseño eléctrico · Programación de
+PLC · **Programación de robots** · **Simulación** · Ensamble (electromecánico).
+
+**Perfiles nuevos en "Costo por Perfil":**
+
+| Perfil | Departamentos aceptados en Hourly Rate |
+|---|---|
+| Programador de robots | ELECTRIC ENG - ROBOTICS / ELECTRIC ENG - ROBOTS / ROBOTICS / ROBOTS |
+| Ingeniero de simulación | MECHANIC ENG - SIMULATION / SIMULATION / SIMULACION |
+
+Hoy ningún trabajador tiene esos departamentos, así que aparecen "sin datos" y su costo
+promedio se captura a mano en el Job. En cuanto se registren trabajadores con alguno de
+esos departamentos, el promedio se calcula solo. Cada perfil ahora acepta varios nombres
+de departamento.
+
+**Campos derivados para reportes:** Robots suma a `est_ing_electrica` y Simulación a
+`est_ing_mecanica`. Target M.O. incluye las 9 líneas.
+
+## Columna "Horas consumidas" (verde)
+- **Qué muestra:** las horas registradas en **Work Hours** para ese Job hasta el momento
+  de abrir la configuración. Toma todos los años con registros y el mismo criterio de
+  coincidencia de Job que el Job Report.
+- **Clasificación por línea:** cada hora se asigna según el **departamento del trabajador
+  en Hourly Rate**: departamento → perfil → línea.
+- **Avance contra lo estimado:** junto a las horas aparece el %. En verde por debajo de
+  85 %, en ámbar de 85 a 100 %, en rojo arriba de 100 %. Si hay horas consumidas en una
+  línea sin horas estimadas, dice "sin est.".
+- **"Otras horas":** renglón aparte con las horas de trabajadores sin tarifa o cuyo
+  departamento no corresponde a ningún perfil. El tooltip muestra el desglose.
+- **API:** `GET /api/projconfig/horas-consumidas?jobs=652-50,665-00`.
+
+## Cómo se probó (Job 652-50 de data_seed)
+- **Total:** 5,278.6 horas, igual al total del Job Report.
+- **Por línea:** Diseño mecánico 1,089 · Soldadura 137 · Manufactura 153 · Pintura 250 ·
+  Diseño eléctrico 616 · PLC 575 · Ensamble 715.
+- **Otras horas:** 1,743.6, de trabajadores sin tarifa.
+- **Porcentajes con horas estimadas:** Diseño mecánico 1,000 → 109 % en rojo; PLC 800 →
+  72 %; Ensamble 900 → 79 %.
+- Chromium sin errores de JavaScript.
