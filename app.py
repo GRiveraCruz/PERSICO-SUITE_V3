@@ -1358,6 +1358,62 @@ def api_costos_perfil():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _wh_clasificador(jobs):
+    """Prepara la clasificación de Work Hours por línea de mano de obra (perfil del
+    departamento del trabajador en Hourly Rate). Regresa una función registros(jn) que
+    produce, para cada registro del Job en todos los años con datos:
+        (fecha 'YYYY-MM-DD', línea o None, departamento, horas, costo del registro, tiene_tarifa)
+    La usan Horas consumidas (Configurar Proyecto) y el Dashboard del proyecto."""
+    years = set(available_years()) | set(wh_available_years()) | {CURRENT_YEAR}
+    if _orm and _orm.DB_ENABLED:
+        try:
+            s_y = _orm.get_session()
+            try: years |= {int(y[0]) for y in s_y.query(_orm.WorkHour.year).distinct().all() if y[0]}
+            finally: s_y.close()
+        except Exception as e:
+            print(f"[DB] horas consumidas: no se pudieron leer los años de work_hours: {e}")
+    years = sorted(years)
+    # departamento de cada trabajador (el del año más reciente en que aparece)
+    depto_emp, tarifa_anio, tarifa_ult = {}, {}, {}
+    for y in years:
+        for r in load_rates(y):
+            if not r.get("employee"): continue
+            e = normalize_name(r["employee"])
+            depto_emp[e] = _norm_depto(r.get("department"))
+            try:
+                t = float(r.get("rate") or 0)
+                if t > 0: tarifa_anio.setdefault(y, {})[e] = t; tarifa_ult[e] = t
+            except (TypeError, ValueError): pass
+    def tarifa(rec, y, e):
+        """Igual que el Job Report: cost_per_hour del registro si existe; si no, la
+        tarifa del trabajador en ese año; si no, su tarifa más reciente."""
+        try:
+            cph = float(rec.get("cost_per_hour") or 0)
+            if cph > 0: return cph
+        except (TypeError, ValueError): pass
+        return tarifa_anio.get(y, {}).get(e) or tarifa_ult.get(e) or 0.0
+    depto_perfil = {_norm_depto(d): perfil for perfil, deptos in PERFILES_COSTO for d in deptos}
+    perfil_linea = {perfil: k for k, _n, perfil in LINEAS_MO}
+    wh_anio = {}
+    def wh_de(y, job_main):
+        # con varios Jobs se lee cada año una sola vez y se filtra en memoria
+        if len(jobs) <= 3: return wh_load_matching(y, job_main)
+        if y not in wh_anio: wh_anio[y] = wh_load(y)
+        return [r for r in wh_anio[y] if job_main.upper() in (r.get("work_code") or "").upper()]
+    def registros(jn):
+        job_main = "-".join(jn.split("-")[:2]) if "-" in jn else jn
+        for y in years:
+            for r in wh_de(y, job_main):
+                try: h = float(r.get("hours") or 0)
+                except (TypeError, ValueError): continue
+                if h <= 0: continue
+                e = normalize_name(r.get("employee", ""))
+                dep = depto_emp.get(e, "")
+                t = tarifa(r, y, e)
+                k = perfil_linea.get(depto_perfil.get(dep, ""))
+                yield (str(r.get("date_worked") or "")[:10], k, dep, h, round(h * t, 2), bool(t))
+    return registros
+
 @app.route("/api/projconfig/horas-consumidas", methods=["GET"])
 def api_projconfig_horas_consumidas():
     """Horas consumidas hasta hoy por Job y por línea de mano de obra. Toma Work Hours
@@ -1368,63 +1424,18 @@ def api_projconfig_horas_consumidas():
         jobs = [j.strip().upper() for j in (request.args.get("jobs") or "").split(",") if j.strip()]
         if not jobs: return jsonify({"error": "Indica los Jobs"}), 400
         if len(jobs) > 60: return jsonify({"error": "Máximo 60 Jobs por consulta"}), 400
-        years = set(available_years()) | set(wh_available_years()) | {CURRENT_YEAR}
-        if _orm and _orm.DB_ENABLED:
-            try:
-                s_y = _orm.get_session()
-                try: years |= {int(y[0]) for y in s_y.query(_orm.WorkHour.year).distinct().all() if y[0]}
-                finally: s_y.close()
-            except Exception as e:
-                print(f"[DB] horas consumidas: no se pudieron leer los años de work_hours: {e}")
-        years = sorted(years)
-        # departamento de cada trabajador (el del año más reciente en que aparece)
-        depto_emp, tarifa_anio, tarifa_ult = {}, {}, {}
-        for y in years:
-            for r in load_rates(y):
-                if not r.get("employee"): continue
-                e = normalize_name(r["employee"])
-                depto_emp[e] = _norm_depto(r.get("department"))
-                try:
-                    t = float(r.get("rate") or 0)
-                    if t > 0: tarifa_anio.setdefault(y, {})[e] = t; tarifa_ult[e] = t
-                except (TypeError, ValueError): pass
-        def tarifa(rec, y, e):
-            """Igual que el Job Report: cost_per_hour del registro si existe; si no, la
-            tarifa del trabajador en ese año; si no, su tarifa más reciente."""
-            try:
-                cph = float(rec.get("cost_per_hour") or 0)
-                if cph > 0: return cph
-            except (TypeError, ValueError): pass
-            return tarifa_anio.get(y, {}).get(e) or tarifa_ult.get(e) or 0.0
-        depto_perfil = {_norm_depto(d): perfil for perfil, deptos in PERFILES_COSTO for d in deptos}
-        perfil_linea = {perfil: k for k, _n, perfil in LINEAS_MO}
+        registros = _wh_clasificador(jobs)
         out = {}
-        wh_anio = {}
-        def wh_de(y, job_main):
-            # con varios Jobs se lee cada año una sola vez y se filtra en memoria
-            if len(jobs) <= 3: return wh_load_matching(y, job_main)
-            if y not in wh_anio: wh_anio[y] = wh_load(y)
-            return [r for r in wh_anio[y] if job_main.upper() in (r.get("work_code") or "").upper()]
         for jn in jobs:
-            job_main = "-".join(jn.split("-")[:2]) if "-" in jn else jn
             acc = {k: 0.0 for k, _n, _p in LINEAS_MO}; costo = {k: 0.0 for k, _n, _p in LINEAS_MO}
             otras, otras_costo, horas_sin_tarifa = {}, 0.0, 0.0
-            for y in years:
-                for r in wh_de(y, job_main):
-                    try: h = float(r.get("hours") or 0)
-                    except (TypeError, ValueError): continue
-                    if h <= 0: continue
-                    e = normalize_name(r.get("employee", ""))
-                    dep = depto_emp.get(e, "")
-                    t = tarifa(r, y, e)
-                    if not t: horas_sin_tarifa += h
-                    k = perfil_linea.get(depto_perfil.get(dep, ""))
-                    c_reg = round(h * t, 2)        # redondeo por registro, igual que el Job Report
-                    if k: acc[k] += h; costo[k] += c_reg
-                    else:
-                        clave = dep or "SIN TARIFA"
-                        otras[clave] = otras.get(clave, 0.0) + h
-                        otras_costo += c_reg
+            for _f, k, dep, h, c_reg, con_tarifa in registros(jn):
+                if not con_tarifa: horas_sin_tarifa += h
+                if k: acc[k] += h; costo[k] += c_reg      # redondeo por registro, igual que el Job Report
+                else:
+                    clave = dep or "SIN TARIFA"
+                    otras[clave] = otras.get(clave, 0.0) + h
+                    otras_costo += c_reg
             out[jn] = {"lineas": {k: round(v, 2) for k, v in acc.items()},
                        "costo": {k: round(v, 2) for k, v in costo.items()},
                        "otras": {k: round(v, 2) for k, v in sorted(otras.items())},
@@ -7208,11 +7219,12 @@ def _ro_pools_factory():
         return cache[y]
     return pools
 
-def _ro_job(jn, y, pres, pools):
+def _ro_job(jn, y, pres, pools, detalle=None):
     """Resultado operativo de un Job — misma fórmula que la pestaña Operativo del Job Report:
     base (presupuesto disponible de Configurar Proyecto, o revenue)
     − mano de obra − compras − servicios − reasignaciones + recuperaciones."""
     d = _build_report_data(jn, y, y, y, **pools(y))
+    if detalle is not None: detalle["d"] = d
     base = float(pres) if pres not in (None, "") else float(d.get("revenue") or 0)
     ro = (base - d["amount_wh"] - d["purchasing_total"] - (d.get("svc_total") or 0)
           - (d.get("reassign_total") or 0) + (d.get("recovery_total") or 0))
@@ -13054,6 +13066,38 @@ def api_projconfig_lop_export():
     resp.headers["Content-Disposition"] = f"attachment; filename={fname}"
     return resp
 
+def _gasto_fechado(jn, y, d, pools):
+    """Descompone el costo de un Job (el mismo del resultado operativo) en movimientos con
+    fecha, para graficar el gasto acumulado contra el Internal Target. Usa exactamente los
+    registros que suma _build_report_data (Work Hours y compras del año del Job, servicios,
+    reasignaciones y recuperaciones) y solo les agrega su fecha.
+    Regresa [(fecha 'YYYY-MM-DD' o '', rubro, monto)] con rubro en mo|compras|servicios|reasignaciones|recuperaciones."""
+    P = pools(y)
+    job_main = "-".join(jn.split("-")[:2]) if "-" in jn else jn
+    ev = []
+    # Mano de obra: misma tarifa y redondeo por registro que _build_report_data
+    rate_map = {normalize_name(r["employee"]): float(r["rate"]) for r in load_rates(y) if r.get("employee")}
+    for r in P["wh_pool"]:
+        if job_main.upper() not in (r.get("work_code") or "").upper(): continue
+        hrs = float(r.get("hours", 0))
+        rate = float(r["cost_per_hour"]) if r.get("cost_per_hour") is not None else rate_map.get(normalize_name(str(r.get("employee", "")).strip()), 0.0)
+        ev.append((str(r.get("date_worked") or "")[:10], "mo", round(hrs * rate, 2)))
+    # Compras: fecha de recepción; si no la tiene, fecha del documento
+    fdoc = {r.get("clave"): r.get("fecha_doc") for r in P["po_pool"]}
+    for it in d.get("po_items") or []:
+        ev.append((str(it.get("fecha_recepcion") or fdoc.get(it.get("clave")) or "")[:10], "compras", float(it.get("subtotal_usd") or 0)))
+    for k in ("svc_viaticos_items", "svc_gastos_items", "svc_envios_items"):
+        for it in d.get(k) or []:
+            ev.append((str(it.get("fecha") or it.get("created_at") or "")[:10], "servicios", float(it.get("valor_usd") or 0)))
+    f_orden = {o.get("order_number"): (o.get("created_at") or o.get("fecha") or "") for o in (P.get("ra_pool") or [])}
+    for it in d.get("reassign_items") or []:
+        f = it.get("created_at") or it.get("fecha") or f_orden.get(it.get("order_number")) or ""
+        ev.append((str(f)[:10], "reasignaciones", float(it.get("total_cost") or 0)))
+    for it in d.get("recovery_items") or []:
+        # total_value es negativo; en el resultado operativo se suma, aquí se registra como abono
+        ev.append((str(it.get("created_at") or it.get("fecha") or "")[:10], "recuperaciones", float(it.get("total_value") or 0)))
+    return ev
+
 @app.route("/api/projconfig/dashboard", methods=["POST"])
 def api_projconfig_dashboard():
     """Datos del servidor para el Dashboard del proyecto (Configurar Proyecto → Dashboard):
@@ -13072,7 +13116,7 @@ def api_projconfig_dashboard():
             for jc in cfg.get("jobs") or []:
                 cfg_by_job.setdefault((jc.get("job_number") or "").strip().upper(), jc)
         pools = _ro_pools_factory()
-        out = []
+        out, gasto = [], {}
         for p in pedidos:
             jn = str(p["job_number"]).strip()
             j = todos.get(jn.upper(), {})
@@ -13085,11 +13129,29 @@ def api_projconfig_dashboard():
             if pres in (None, ""): origen = "revenue"
             try:
                 y = int(_year_of(j) or CURRENT_YEAR)
-                row.update(_ro_job(jn, y, pres, pools), base_origen=origen)
+                det = {}
+                row.update(_ro_job(jn, y, pres, pools, detalle=det), base_origen=origen)
+                # rev54: gasto con fecha (mismos registros del resultado operativo)
+                for f, rubro, monto in _gasto_fechado(jn, y, det["d"], pools):
+                    g = gasto.setdefault(f or "", {})
+                    g[rubro] = g.get(rubro, 0.0) + monto
             except Exception as e:
                 row["error"] = str(e)
             out.append(row)
+        # rev54: horas por semana y por línea (mismo criterio que "Horas consumidas")
+        registros = _wh_clasificador([p["job_number"] for p in pedidos])
+        horas_sem, horas_sin_fecha = {}, 0.0
+        for p in pedidos:
+            for f, k, _dep, h, _c, _t in registros(str(p["job_number"]).strip().upper()):
+                try: dt = datetime.date.fromisoformat(f)
+                except ValueError: horas_sin_fecha += h; continue
+                sem = (dt - datetime.timedelta(days=dt.weekday())).isoformat()   # lunes de la semana
+                b = horas_sem.setdefault(sem, {})
+                b[k or "otras"] = round(b.get(k or "otras", 0.0) + h, 2)
         return jsonify({"ptsv": data.get("ptsv", ""), "jobs": out,
+                        "gasto": {f: {k: round(v, 2) for k, v in r.items()} for f, r in sorted(gasto.items())},
+                        "horas_semana": dict(sorted(horas_sem.items())), "horas_sin_fecha": round(horas_sin_fecha, 2),
+                        "lineas": [{"k": k, "nombre": n} for k, n, _p in LINEAS_MO],
                         "calculado": datetime.datetime.now().isoformat(timespec="minutes")})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
