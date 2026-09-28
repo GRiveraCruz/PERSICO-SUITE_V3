@@ -4009,6 +4009,25 @@ let rptCurrentJob = null, rptData = null;
 function rptFmtMoney(n){ return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function rptFmtHrs(n){   return n==null?'—':Number(n).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1})+'h'; }
 
+// rev55: Periodo del reporte — "vida" (todos los años del Job) o "anio" (años elegidos)
+function rptModoUI(pre){
+  const vida = (document.getElementById(pre+'-modo')?.value||'vida')==='vida';
+  const a = document.getElementById(pre+'-anios'), n = document.getElementById(pre+'-modo-nota');
+  if(a) a.style.display = vida ? 'none' : '';
+  if(n) n.style.display = vida ? '' : 'none';
+}
+function rptQS(){
+  const modo = document.getElementById('rpt-modo')?.value || 'vida';
+  if(modo==='vida') return 'modo=vida';
+  const v = id => document.getElementById(id)?.value || new Date().getFullYear();
+  return `modo=anio&rate_year=${v('rpt-rate-year')}&wh_year=${v('rpt-wh-year')}&po_year=${v('rpt-po-year')}`;
+}
+// Texto del periodo de un resultado de /api/report/data
+function rptPeriodoTxt(d){
+  if(d.modo==='vida' && (d.anios||[]).length) return d.anios.length===1 ? `${d.anios[0]}` : `${d.anios[0]}–${d.anios[d.anios.length-1]}`;
+  return `${d.wh_year}`;
+}
+
 function rptInit(){
   // Populate year dropdowns from already-loaded data
   const curY = new Date().getFullYear();
@@ -4088,7 +4107,7 @@ async function rptGenerate(){
   const poY   = document.getElementById('rpt-po-year').value;
 
   try{
-    const resp = await fetch(`/api/report/data?job=${encodeURIComponent(jn)}&rate_year=${rateY}&wh_year=${whY}&po_year=${poY}`);
+    const resp = await fetch(`/api/report/data?job=${encodeURIComponent(jn)}&${rptQS()}`);
     const d    = await resp.json();
     if(d.error){ toast(d.error,'er'); return; }
 
@@ -4575,7 +4594,7 @@ function rptRender(d){
         <td class="rpt-td" style="text-align:right;font-family:'DM Mono',monospace;color:var(--green)">${rptFmtMoney(w.amount)}</td>
       </tr>`).join('');
   } else {
-    wtb.innerHTML = `<tr><td colspan="4" style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Sin horas registradas para este Job en el año ${d.wh_year}</td></tr>`;
+    wtb.innerHTML = `<tr><td colspan="4" style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Sin horas registradas para este Job en ${d.modo==='vida'?'los años':'el año'} ${rptPeriodoTxt(d)}</td></tr>`;
   }
   document.getElementById('rpt-workers-foot').innerHTML = d.workers.length ? `
     <tr class="rpt-foot">
@@ -4762,12 +4781,19 @@ function rptRender(d){
 
   // ── Warnings ──────────────────────────────────────────────────
   const warns = [];
+  const vida = d.modo==='vida';
+  if(vida){
+    const pa = (d.por_anio||[]).filter(x=>x.horas||x.compras);
+    warns.push(`ℹ Vida del Job: ${rptPeriodoTxt(d)}${pa.length>1?' — '+pa.map(x=>`${x.anio}: ${rptFmtHrs(x.horas)}, M.O. ${rptFmtMoney(x.mano_obra)}, compras ${rptFmtMoney(x.compras)}`).join(' · '):''}.`);
+    const fb = Object.entries(d.rate_years||{}).filter(([a,r])=>String(a)!==String(r));
+    if(fb.length) warns.push(`ℹ ${fb.map(([a,r])=>`Horas de ${a} valuadas con Hourly Rates ${r}`).join(' · ')} (ese año aún no tiene Hourly Rates cargado).`);
+  }
   if(d.workers.length > 0 && d.workers.some(w=>w.rate===0))
-    warns.push(`⚠ Algunos empleados no tienen tarifa en Hourly Rates ${d.rate_year}. Su monto aparece como $0.`);
+    warns.push(`⚠ Algunos empleados no tienen tarifa en Hourly Rates ${vida?'(en alguno de los años del Job)':d.rate_year}. Su monto aparece como $0.`);
   if(d.wh_matches === 0)
-    warns.push(`ℹ No se encontraron registros de Work Hours para "${rptCurrentJob}" en el año ${d.wh_year}.`);
+    warns.push(`ℹ No se encontraron registros de Work Hours para "${rptCurrentJob}" en ${vida?'los años':'el año'} ${rptPeriodoTxt(d)}.`);
   if(d.po_matches === 0)
-    warns.push(`ℹ No se encontraron Purchase Orders con destino "${rptCurrentJob}" en el año ${d.po_year}.`);
+    warns.push(`ℹ No se encontraron Purchase Orders con destino "${rptCurrentJob}" en ${vida?'los años':'el año'} ${vida?rptPeriodoTxt(d):d.po_year}.`);
   if(d.revenue === 0)
     warns.push(`ℹ El Job no tiene Revenue registrado. El Gross Margin no se puede calcular correctamente.`);
 
@@ -4782,10 +4808,7 @@ function rptRender(d){
 
 function rptExportXLSX(){
   if(!rptCurrentJob){ toast('Genera el reporte primero','er'); return; }
-  const rateY = document.getElementById('rpt-rate-year').value;
-  const whY   = document.getElementById('rpt-wh-year').value;
-  const poY   = document.getElementById('rpt-po-year').value;
-  window.open(`/api/report/export-excel?job=${encodeURIComponent(rptCurrentJob)}&rate_year=${rateY}&wh_year=${whY}&po_year=${poY}`, '_blank');
+  window.open(`/api/report/export-excel?job=${encodeURIComponent(rptCurrentJob)}&${rptQS()}`, '_blank');
 }
 
 // ════════════════════════════════════════════════════════
@@ -5204,6 +5227,7 @@ async function mrptGenerate(){
     wh_year:   parseInt(document.getElementById('mrpt-wh-year').value),
     po_year:   parseInt(document.getElementById('mrpt-po-year').value),
     cpo_year:  parseInt(document.getElementById('mrpt-cpo-year').value),
+    modo:      document.getElementById('mrpt-modo')?.value || 'vida',
   };
   document.getElementById('mrpt-status').textContent='Generando…';
   document.getElementById('mrpt-dot').style.background='var(--amber)';
@@ -12610,14 +12634,14 @@ function pcRenderDashboard(){
       ${vencidos?`<div style="margin-top:8px;font-size:11px;color:var(--red);text-align:center">⚠ ${vencidos} punto(s) abierto(s) con fecha compromiso vencida</div>`:''}</div>
   </div>
 
+  <div style="${PC_DASH_CARD};margin-bottom:16px">${lbl('Timing del proyecto')}${timingCard}</div>
+
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
     <div style="${PC_DASH_CARD};flex:1 1 460px">${lbl('Horas por línea de mano de obra · consumidas / planeadas')}${barrasLineas}</div>
     <div style="${PC_DASH_CARD};flex:1 1 360px">${lbl('Resultado operativo · desglose')}<div id="pc-dash-ro-det" style="font-size:12px;color:var(--muted)">Calculando…</div></div>
   </div>
 
   <div id="pc-dash-hist">${pcDashHistoricoHTML(local, null)}</div>
-
-  <div style="${PC_DASH_CARD};margin-bottom:16px">${lbl('Timing del proyecto')}${timingCard}</div>
   <div style="${PC_DASH_CARD};margin-bottom:16px">${lbl('Resumen del control de cambios')}${cambiosCard}</div>`;
 
   pcDashRenderJobs(local, null);
@@ -12826,6 +12850,7 @@ function pcDashHistoricoHTML(local, d){
     if(!sems.length) horas = vacio('Sin horas registradas en Work Hours para estos Jobs.');
     else {
       const modo = window._pcDashHorasModo || 'semana';
+      const vista = window._pcDashHorasVista || 'tendencia';
       const nombres = Object.fromEntries((d.lineas||[]).map(l=>[l.k,l.nombre])); nombres.otras = 'Otras (sin tarifa o sin perfil)';
       let xs, bucket;
       if(modo==='mes'){
@@ -12844,11 +12869,17 @@ function pcDashHistoricoHTML(local, d){
       const tot = xs.map((_,i)=>series.reduce((a,s)=>a+s.values[i],0));
       const iPico = tot.indexOf(Math.max(...tot));
       const lblX = modo==='mes' ? (t=>t.toLocaleDateString('es-MX',{month:'short',year:'2-digit'})) : undefined;
-      horas = `<div style="display:flex;justify-content:flex-end;margin:-26px 0 6px">
-          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">${[['semana','Semanas'],['mes','Meses']].map(([k,t])=>`<button type="button" onclick="window._pcDashHorasModo='${k}';pcDashRepintarHist()" style="border:none;padding:3px 10px;font-size:10px;cursor:pointer;background:${modo===k?'var(--red)':'transparent'};color:${modo===k?'#fff':'var(--muted2)'}">${t}</button>`).join('')}</div></div>`
-        + pcDashChart({xs, series, stack:true, yFmt:v=>_pcH(v), marcas: marcasDe(xs), xLabel: lblX,
+      const toggle = (opts, cur, varName) => `<div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">${opts.map(([k,t])=>`<button type="button" onclick="window.${varName}='${k}';pcDashRepintarHist()" style="border:none;padding:3px 10px;font-size:10px;cursor:pointer;background:${cur===k?'var(--red)':'transparent'};color:${cur===k?'#fff':'var(--muted2)'}">${t}</button>`).join('')}</div>`;
+      // Tendencia: una línea por área más la línea del total (para ver los picos)
+      const serieTotal = {k:'total', name:'Total', color:'#111827', width:2.8, values: tot, area:true};
+      const seriesVista = vista==='tendencia' ? [...series.map(s=>({...s, width:1.8})), serieTotal] : series;
+      horas = `<div style="display:flex;justify-content:flex-end;gap:8px;margin:-26px 0 6px">
+          ${toggle([['tendencia','Tendencia'],['barras','Barras']], vista, '_pcDashHorasVista')}
+          ${toggle([['semana','Semanas'],['mes','Meses']], modo, '_pcDashHorasModo')}</div>`
+        + pcDashChart({xs, series: seriesVista, stack: vista==='barras', yFmt:v=>_pcH(v), marcas: marcasDe(xs), xLabel: lblX,
             tip:(i,t)=>`${modo==='mes'?t.toLocaleDateString('es-MX',{month:'long',year:'numeric'}):'Semana del '+_pcFD(t)} · ${_pcH(tot[i])} h\n`+series.filter(s=>s.values[i]).map(s=>`${s.name}: ${_pcH(s.values[i])} h`).join('\n')})
-        + _pcLeyenda(series.map(s=>({label:`${esc(s.name)} · ${_pcH(s.values.reduce((a,b)=>a+b,0))} h`, color:s.color})));
+        + _pcLeyenda([...(vista==='tendencia'?[{label:`Total · ${_pcH(tot.reduce((a,b)=>a+b,0))} h`, color:'#111827', linea:1}]:[]),
+            ...series.map(s=>({label:`${esc(s.name)} · ${_pcH(s.values.reduce((a,b)=>a+b,0))} h`, color:s.color, linea: vista==='tendencia'?1:0}))]);
       horasNota = tot[iPico] ? `Pico: <b>${modo==='mes'?xs[iPico].toLocaleDateString('es-MX',{month:'long',year:'numeric'}):'semana del '+_pcFD(xs[iPico])}</b> con ${_pcH(tot[iPico])} h (promedio ${_pcH(tot.reduce((a,b)=>a+b,0)/Math.max(1,tot.filter(v=>v>0).length))} h por ${modo==='mes'?'mes':'semana'} con registros).${d.horas_sin_fecha?` ${_pcH(d.horas_sin_fecha)} h sin fecha no se grafican.`:''}` : '';
     }
   }
@@ -12886,7 +12917,7 @@ function pcDashHistoricoHTML(local, d){
       const vsLineal = lineal && iHoy>=0 ? gHoy - lineal[iHoy] : null;
       presNota = `Ejercido <b>${_pcM(gHoy)}</b> de ${_pcM(target)} (${target?Math.round(gHoy/target*100):'—'}%) · ${dif>=0?`disponible ${_pcM(dif)}`:`<span style="color:var(--red)">sobre el target por ${_pcM(-dif)}</span>`}`
         + (vsLineal!=null?` · ${vsLineal>0?`<span style="color:#b45309">${_pcM(vsLineal)} arriba</span>`:`${_pcM(-vsLineal)} abajo`} de la referencia lineal a hoy`:'')
-        + `. Mismos registros del resultado operativo (Work Hours y compras del año de cada Job, servicios, reasignaciones y recuperaciones); compras con fecha de recepción.`
+        + `. Mismos registros del resultado operativo (Work Hours y compras de todos los años de cada Job, servicios, reasignaciones y recuperaciones); compras con fecha de recepción.`
         + (sinF?` ${_pcM(neto(sinF))} sin fecha se suman en la semana actual.`:'');
     }
   }
@@ -12899,7 +12930,7 @@ function pcDashHistoricoHTML(local, d){
     <div style="${card};flex:2 1 340px">${lbl('Indicadores de desempeño')}${desempeno}</div>
   </div>
   <div style="${card};margin-bottom:16px">${lbl('Lista de puntos abiertos · registrados vs abiertos vs cerrados')}${lop}${nota(lopNota)}</div>
-  <div style="${card};margin-bottom:16px">${lbl('Horas por área · picos de trabajo')}${horas}${nota(horasNota)}</div>
+  <div style="${card};margin-bottom:16px">${lbl('Horas por área · tendencia y picos de trabajo')}${horas}${nota(horasNota)}</div>
   <div style="${card};margin-bottom:16px">${lbl('Presupuesto · Internal Target vs gasto ejercido (acumulado)')}${pres}${nota(presNota)}</div>`;
 }
 
@@ -13045,9 +13076,6 @@ function pcDashReportePDF(){
       <td class="m" style="${r.fecha_compromiso && r.fecha_compromiso<hoy?'color:#c8102e;font-weight:700':''}">${fd(r.fecha_compromiso)}</td></tr>`).join('')}</tbody></table>`:''}
 
   <div class="salto"></div>
-  <div class="hist">${pcDashHistoricoHTML(local, _pcDash.data)}</div>
-
-  <div class="salto"></div>
   <h2>Timing del proyecto</h2>
   ${gantt?`<div style="display:flex;gap:24px;margin-bottom:8px;font-size:10px">
       <div>Actividades <b>${tim.length}</b></div><div>Cumplidas <b style="color:#1f7a45">${nCumpl}</b></div><div>Con retraso <b style="color:${nRet?'#c8102e':'#1a1a1a'}">${nRet}</b></div>
@@ -13055,6 +13083,9 @@ function pcDashReportePDF(){
     ${gantt}
     <div style="font-size:8.5px;color:#777;margin-top:4px">Verde = cumplida · ámbar = en curso · rojo = vencida · ★ milestone de facturación · ◆ fecha real de finalización.</div>`
     : vacio('Sin Timing configurado.')}
+
+  <div class="salto"></div>
+  <div class="hist">${pcDashHistoricoHTML(local, _pcDash.data)}</div>
 
   <h2>Control de cambios</h2>
   ${cambios.length?`<div style="display:flex;gap:18px;margin-bottom:6px;font-size:10px">
@@ -14135,10 +14166,7 @@ function round2(v){ return Math.round(v*100)/100; }
 // ════════════════════════════════════════════════════════
 function rptExecPDF() {
   if(!rptCurrentJob) { toast('Genera el reporte primero','er'); return; }
-  const rateY = document.getElementById('rpt-rate-year')?.value || new Date().getFullYear();
-  const whY   = document.getElementById('rpt-wh-year')?.value  || new Date().getFullYear();
-  const poY   = document.getElementById('rpt-po-year')?.value  || new Date().getFullYear();
-  const url = `/api/report/executive-pdf?job=${encodeURIComponent(rptCurrentJob)}&rate_year=${rateY}&wh_year=${whY}&po_year=${poY}`;
+  const url = `/api/report/executive-pdf?job=${encodeURIComponent(rptCurrentJob)}&${rptQS()}`;
   window.open(url, '_blank');
 }
 
