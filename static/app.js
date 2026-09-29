@@ -10014,17 +10014,17 @@ let _pcPersonalRowSeq = 0;
 
 function pcSwitchTab(tab, opts={}) {
   pcCurrentTab = tab;
-  const tabs = {presupuesto:'pc-tab-presupuesto', dashboard:'pc-tab-dashboard', timing:'pc-tab-timing', abiertos:'pc-tab-abiertos', cambios:'pc-tab-cambios', personal:'pc-tab-personal'};
+  const tabs = {presupuesto:'pc-tab-presupuesto', dashboard:'pc-tab-dashboard', timing:'pc-tab-timing', abiertos:'pc-tab-abiertos', cambios:'pc-tab-cambios', documentos:'pc-tab-documentos'};
   Object.entries(tabs).forEach(([k,id])=>{
     const el = document.getElementById(id); if(!el) return;
     el.style.background = k===tab ? 'var(--red)' : 'rgba(0,0,0,.055)';
     el.style.color      = k===tab ? '#fff' : 'var(--muted)';
   });
-  ['presupuesto','dashboard','timing','abiertos','cambios','personal'].forEach(k=>{
+  ['presupuesto','dashboard','timing','abiertos','cambios','documentos'].forEach(k=>{
     const el = document.getElementById(`pc-content-${k}`); if(el) el.style.display = (k===tab)?'':'none';
   });
   if(tab==='timing') pcUpdateTimingCalcs();
-  if(tab==='personal') pcRefreshPersonalTab();
+  if(tab==='documentos') pcDocsCargar();
   if(tab==='dashboard' && !opts.sinRender) pcRenderDashboard();
 }
 
@@ -10120,6 +10120,7 @@ async function pcSelectPTSV(item) {
 
   // Plan de Personal — se renderiza al entrar a su pestaña (depende del rango de Timing)
   pcPersonalSaved = existingConfig?.plan_personal || [];
+  _pcDocs = null; const _dg = document.getElementById('pc-docs-grid'); if(_dg) _dg.innerHTML = '';
 
   pcSwitchTab('dashboard', {sinRender:true});
 
@@ -10453,7 +10454,9 @@ async function pcSave() {
   const timingData = pcGetTimingData();
   const puntosData  = pcGetPuntosData();
   const cambiosData = pcGetCambiosData();
-  const planPersonalData = pcGetPlanPersonalData();
+  // rev57: la pestaña Plan de Personal se reemplazó por Documentación. El plan ya
+  // capturado se conserva tal cual (se reenvía lo que se cargó) para no borrarlo al guardar.
+  const planPersonalData = pcPersonalSaved || [];
 
   const btn = document.getElementById('btn-pc-save');
   btn.disabled=true; btn.textContent='Guardando…';
@@ -12518,6 +12521,94 @@ function pcGetCambiosData() {
     quien_autoriza:  tr.querySelector('[data-field="quien_autoriza"]')?.value||'',
     estatus:         tr.querySelector('[data-field="estatus"]')?.value||'EN ESPERA',
   })).filter(r=>r.descripcion);
+}
+
+// ════════════════════════════════════════════════════════
+//  CONFIGURAR PROYECTO — DOCUMENTACIÓN (rev57)
+//  Un recuadro (drop) por tipo de documento. Cada subida = versión nueva; el servidor
+//  borra la versión anterior y solo conserva la última. Los documentos se suben al
+//  momento (no esperan a "Guardar Configuración").
+// ════════════════════════════════════════════════════════
+let _pcDocs = null;              // respuesta de /api/projconfig/documentos
+const PC_DOC_ICON = {aprobacion_diseno:'✅', diagrama_electrico:'⚡', diagrama_neumatico:'💨', modelo_3d:'🧊'};
+const _pcTam = b => b>=1048576 ? (b/1048576).toFixed(1)+' MB' : b>=1024 ? Math.round(b/1024)+' KB' : b+' B';
+const _pcFechaHora = v => { if(!v) return ''; const d=new Date(v); return isNaN(d)? v : d.toLocaleString('es-MX',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
+
+async function pcDocsCargar(){
+  const grid = document.getElementById('pc-docs-grid');
+  if(!grid) return;
+  if(!pcCurrentPTSV){ grid.innerHTML = '<div style="color:var(--muted);font-size:12px">Selecciona un PT o SV.</div>'; return; }
+  const ptsv = pcCurrentPTSV;
+  if(!_pcDocs) grid.innerHTML = '<div style="color:var(--muted);font-size:12px">Cargando documentos…</div>';
+  try{
+    const r = await fetch('/api/projconfig/documentos?ptsv='+encodeURIComponent(ptsv));
+    const d = await r.json();
+    if(ptsv!==pcCurrentPTSV) return;
+    if(!r.ok || d.error) throw new Error(d.error||`HTTP ${r.status}`);
+    _pcDocs = d; pcDocsRender();
+  }catch(e){ grid.innerHTML = `<div style="color:var(--red);font-size:12px">No se pudieron cargar los documentos: ${esc(e.message)}</div>`; }
+}
+
+function pcDocsRender(){
+  const grid = document.getElementById('pc-docs-grid'); if(!grid || !_pcDocs) return;
+  grid.innerHTML = _pcDocs.tipos.map(t=>{
+    const doc = _pcDocs.docs[t.k];
+    const url = `/api/projconfig/documentos/archivo?ptsv=${encodeURIComponent(pcCurrentPTSV)}&tipo=${t.k}`;
+    const hist = (doc?.historial||[]).slice().reverse();
+    return `<div class="pc-doc-card" data-tipo="${t.k}" style="background:#fff;border-radius:14px;box-shadow:0 4px 18px rgba(0,0,0,.08);padding:16px 18px;display:flex;flex-direction:column;gap:12px;min-width:0">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:22px">${PC_DOC_ICON[t.k]||'📄'}</span>
+        <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.8px">${esc(t.nombre)}</div>
+          <div style="font-size:10px;color:var(--muted)">${doc?`Versión vigente`:'Sin documento'}</div></div>
+        <span title="Número de versiones subidas" style="font-family:'DM Mono',monospace;font-weight:700;font-size:13px;padding:3px 10px;border-radius:12px;background:${doc?'#1f3864':'rgba(0,0,0,.06)'};color:${doc?'#fff':'var(--muted)'}">v${doc?doc.version:0}</span>
+      </div>
+      ${doc?`<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:12px">
+          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(doc.filename)}">${esc(doc.filename)}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">${_pcTam(doc.size)} · ${esc(_pcFechaHora(doc.fecha))}${doc.usuario?' · '+esc(doc.usuario):''}</div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            ${/\.(pdf|png|jpe?g)$/i.test(doc.filename)?`<a href="${url}" target="_blank" rel="noopener" class="btn-reload" style="font-size:11px;padding:4px 10px;text-decoration:none">Ver</a>`:''}
+            <a href="${url}&descargar=1" class="btn-reload" style="font-size:11px;padding:4px 10px;text-decoration:none">Descargar</a>
+          </div></div>`:''}
+      <label class="pc-doc-drop" data-tipo="${t.k}"
+        ondragover="event.preventDefault();this.style.borderColor='var(--red)';this.style.background='rgba(200,16,46,.04)'"
+        ondragleave="this.style.borderColor='';this.style.background=''"
+        ondrop="event.preventDefault();this.style.borderColor='';this.style.background='';pcDocSubir('${t.k}', event.dataTransfer.files)"
+        style="display:block;border:2px dashed var(--border2);border-radius:10px;padding:18px 12px;text-align:center;cursor:pointer;font-size:12px;color:var(--muted2);transition:border-color .15s,background .15s">
+        <input type="file" style="display:none" onchange="pcDocSubir('${t.k}', this.files);this.value=''">
+        <div class="pc-doc-drop-txt">${doc?'Arrastra aquí la nueva versión o haz clic':'Arrastra aquí el archivo o haz clic'}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">${doc?`Se guardará como v${doc.version+1} y se borrará la v${doc.version}`:'Se guardará como v1'} · máx. ${_pcDocs.max_mb} MB</div>
+      </label>
+      ${hist.length?`<details style="font-size:11px;color:var(--muted2)"><summary style="cursor:pointer">Historial de versiones (${hist.length})</summary>
+        <div style="margin-top:6px">${hist.map(h=>`<div style="display:flex;gap:8px;padding:4px 0;border-top:1px solid var(--border)">
+          <b style="font-family:'DM Mono',monospace;min-width:30px">v${h.version}</b>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(h.filename)}">${esc(h.filename)}</span>
+          <span style="white-space:nowrap">${esc(_pcFechaHora(h.fecha))}</span></div>`).join('')}
+          <div style="font-size:10px;color:var(--muted);margin-top:4px">Solo la versión vigente tiene archivo; de las anteriores queda este registro.</div></div></details>`:''}
+    </div>`;
+  }).join('');
+}
+
+async function pcDocSubir(tipo, files){
+  if(!pcCurrentPTSV || !files || !files.length) return;
+  if(files.length>1){ toast('Sube un solo archivo por documento','er'); return; }
+  const f = files[0], t = _pcDocs?.tipos.find(x=>x.k===tipo), doc = _pcDocs?.docs[tipo];
+  if(_pcDocs && f.size > _pcDocs.max_mb*1048576){ toast(`${f.name} supera ${_pcDocs.max_mb} MB`,'er'); return; }
+  if(doc && !confirm(`${t?.nombre||tipo}\n\nSe subirá "${f.name}" como versión ${doc.version+1}.\nLa versión ${doc.version} ("${doc.filename}") se borrará y ya no estará disponible.\n\n¿Continuar?`)) return;
+  const drop = document.querySelector(`.pc-doc-drop[data-tipo="${tipo}"]`);
+  const txt = drop?.querySelector('.pc-doc-drop-txt');
+  if(drop){ drop.style.pointerEvents='none'; drop.style.opacity='.6'; }
+  if(txt) txt.textContent = `Subiendo ${f.name}…`;
+  try{
+    const fd = new FormData(); fd.append('ptsv', pcCurrentPTSV); fd.append('tipo', tipo); fd.append('file', f);
+    const r = await fetch('/api/projconfig/documentos',{method:'POST', body:fd});
+    const d = await r.json().catch(()=>({error:`Respuesta inválida del servidor (HTTP ${r.status})`}));
+    if(!r.ok || d.error) throw new Error(d.error||`HTTP ${r.status}`);
+    toast(`${t?.nombre||'Documento'}: versión ${d.doc.version} guardada`,'ok');
+    await pcDocsCargar();
+  }catch(e){
+    toast('No se pudo subir: '+e.message,'er');
+    pcDocsRender();
+  }
 }
 
 // ════════════════════════════════════════════════════════

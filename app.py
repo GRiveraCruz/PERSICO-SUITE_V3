@@ -13276,6 +13276,154 @@ def api_projconfig_dashboard():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ══════════════════════════════════════════════════════════════════
+#  CONFIGURAR PROYECTO — DOCUMENTACIÓN (rev57)
+#  Un archivo vigente por PT/SV y tipo. Cada subida es una versión nueva (1, 2, 3…) y
+#  la versión previa se BORRA; solo queda disponible la última. Se guarda en la base de
+#  datos (tabla proyecto_documentos) para que sobreviva a los redeploys. Sin base de
+#  datos (modo local) se guarda en el volumen: DATA/proyecto_docs/<PT>/<tipo>/.
+# ══════════════════════════════════════════════════════════════════
+PROJ_DOC_TIPOS = (
+    ("aprobacion_diseno",  "Aprobación de diseño"),
+    ("diagrama_electrico", "Diagrama eléctrico"),
+    ("diagrama_neumatico", "Diagrama neumático"),
+    ("modelo_3d",          "3D de ensamble general de máquina o tool"),
+)
+PROJ_DOC_MAX_BYTES = 100 * 1024 * 1024        # 100 MB por archivo (los 3D suelen ser los más pesados)
+PROJ_DOC_DIR = _os.path.join(_DATA, "proyecto_docs")
+_projdoc_lock = Lock()
+_PROJ_DOC_INLINE = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+
+def _ptsv_key(v):
+    """PT/SV tolerante: 'PT-0067', 'pt 0067' y 'PT0067' son el mismo."""
+    return re.sub(r"[^A-Z0-9]", "", str(v or "").upper())
+
+def _doc_meta_publica(tipo, version, filename, size, fecha, usuario, historial):
+    return {"tipo": tipo, "version": version, "filename": filename, "size": size,
+            "fecha": fecha, "usuario": usuario, "historial": historial or []}
+
+def _doc_fs_dir(key, tipo):
+    return _os.path.join(PROJ_DOC_DIR, key, tipo)
+
+def _doc_fs_meta(key, tipo):
+    try:
+        with open(_os.path.join(_doc_fs_dir(key, tipo), "meta.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+@app.route("/api/projconfig/documentos", methods=["GET"])
+def api_projconfig_documentos():
+    if not can("view", "projconfig"): return jsonify({"error": "Sin permiso"}), 403
+    key = _ptsv_key(request.args.get("ptsv"))
+    if not key: return jsonify({"error": "Falta el PT/SV"}), 400
+    docs = {}
+    if _orm and _orm.DB_ENABLED:
+        s = _orm.get_session()
+        try:
+            filas = (s.query(_orm.ProyectoDocumento.tipo, _orm.ProyectoDocumento.version, _orm.ProyectoDocumento.filename,
+                             _orm.ProyectoDocumento.size, _orm.ProyectoDocumento.updated_at, _orm.ProyectoDocumento.uploaded_by,
+                             _orm.ProyectoDocumento.historial)       # sin "content": no se carga el archivo
+                     .filter(_orm.ProyectoDocumento.ptsv_key == key).all())
+            for t, v, fn, sz, fe, us, hi in filas:
+                docs[t] = _doc_meta_publica(t, v, fn, sz, fe.isoformat(timespec="minutes") if fe else "", us, hi)
+        finally:
+            s.close()
+    else:
+        for t, _n in PROJ_DOC_TIPOS:
+            m = _doc_fs_meta(key, t)
+            if m: docs[t] = _doc_meta_publica(t, m["version"], m["filename"], m["size"], m["fecha"], m["usuario"], m.get("historial"))
+    return jsonify({"ptsv_key": key, "tipos": [{"k": k, "nombre": n} for k, n in PROJ_DOC_TIPOS],
+                    "docs": docs, "max_mb": PROJ_DOC_MAX_BYTES // (1024 * 1024)})
+
+@app.route("/api/projconfig/documentos", methods=["POST"])
+def api_projconfig_documentos_subir():
+    """Sube la versión nueva de un documento. Reemplaza (borra) la versión anterior."""
+    if not can("create", "projconfig"): return jsonify({"error": "Sin permiso"}), 403
+    ptsv = (request.form.get("ptsv") or "").strip()
+    key, tipo = _ptsv_key(ptsv), (request.form.get("tipo") or "").strip()
+    f = request.files.get("file")
+    if not key: return jsonify({"error": "Falta el PT/SV"}), 400
+    if tipo not in dict(PROJ_DOC_TIPOS): return jsonify({"error": "Tipo de documento inválido"}), 400
+    if not f or not f.filename: return jsonify({"error": "No se recibió ningún archivo"}), 400
+    nombre = _os.path.basename(f.filename).replace("\\", "_").strip() or "documento"
+    data = f.read()
+    if not data: return jsonify({"error": "El archivo está vacío"}), 400
+    if len(data) > PROJ_DOC_MAX_BYTES:
+        return jsonify({"error": f"El archivo supera {PROJ_DOC_MAX_BYTES // (1024*1024)} MB"}), 400
+    user = session.get("user", "")
+    ahora = datetime.datetime.now().isoformat(timespec="minutes")
+    mime = f.mimetype or "application/octet-stream"
+    if _orm and _orm.DB_ENABLED:
+        s = _sesion_propia()
+        try:
+            _pg_lock(s, f"projdoc:{key}:{tipo}")          # dos subidas simultáneas no se pisan el número de versión
+            row = (s.query(_orm.ProyectoDocumento)
+                   .filter(_orm.ProyectoDocumento.ptsv_key == key, _orm.ProyectoDocumento.tipo == tipo).one_or_none())
+            if row is None:
+                row = _orm.ProyectoDocumento(ptsv_key=key, ptsv=ptsv, tipo=tipo, version=0, historial=[])
+                s.add(row)
+            version = (row.version or 0) + 1
+            hist = list(row.historial or [])
+            hist.append({"version": version, "filename": nombre, "size": len(data), "fecha": ahora, "usuario": user})
+            # la versión previa se borra: el contenido se reemplaza en el mismo renglón
+            row.ptsv, row.version, row.filename, row.mimetype = ptsv, version, nombre, mime
+            row.size, row.content, row.uploaded_by = len(data), data, user
+            row.updated_at = datetime.datetime.now()
+            row.historial = hist; _orm_flag_modified(row, "historial")
+            s.commit()
+        except Exception as e:
+            s.rollback()
+            return jsonify({"error": f"No se pudo guardar: {e}"}), 500
+        finally:
+            s.close()
+    else:
+        with _projdoc_lock:
+            d = _doc_fs_dir(key, tipo); _os.makedirs(d, exist_ok=True)
+            m = _doc_fs_meta(key, tipo) or {"version": 0, "historial": []}
+            version = m["version"] + 1
+            for x in _os.listdir(d):                     # borrar la versión previa
+                if x != "meta.json":
+                    try: _os.remove(_os.path.join(d, x))
+                    except OSError: pass
+            with open(_os.path.join(d, "v%d__%s" % (version, nombre)), "wb") as fh: fh.write(data)
+            hist = m.get("historial", []) + [{"version": version, "filename": nombre, "size": len(data), "fecha": ahora, "usuario": user}]
+            m.update(version=version, filename=nombre, size=len(data), fecha=ahora, usuario=user, mimetype=mime, historial=hist)
+            with open(_os.path.join(d, "meta.json"), "w", encoding="utf-8") as fh: json.dump(m, fh, ensure_ascii=False)
+    return jsonify({"ok": True, "doc": _doc_meta_publica(tipo, version, nombre, len(data), ahora, user, hist)})
+
+@app.route("/api/projconfig/documentos/archivo", methods=["GET"])
+def api_projconfig_documentos_archivo():
+    """Descarga (o abre, si es PDF/imagen) la versión vigente de un documento."""
+    if not can("view", "projconfig"): return jsonify({"error": "Sin permiso"}), 403
+    key, tipo = _ptsv_key(request.args.get("ptsv")), (request.args.get("tipo") or "").strip()
+    if not key or tipo not in dict(PROJ_DOC_TIPOS): return jsonify({"error": "Parámetros inválidos"}), 400
+    if _orm and _orm.DB_ENABLED:
+        s = _orm.get_session()
+        try:
+            row = (s.query(_orm.ProyectoDocumento)
+                   .filter(_orm.ProyectoDocumento.ptsv_key == key, _orm.ProyectoDocumento.tipo == tipo).one_or_none())
+            if not row or not row.content: return jsonify({"error": "Documento no encontrado"}), 404
+            data, nombre, version = bytes(row.content), row.filename, row.version
+        finally:
+            s.close()
+    else:
+        m = _doc_fs_meta(key, tipo)
+        ruta = _os.path.join(_doc_fs_dir(key, tipo), "v%d__%s" % (m["version"], m["filename"])) if m else ""
+        if not m or not _os.path.exists(ruta): return jsonify({"error": "Documento no encontrado"}), 404
+        with open(ruta, "rb") as fh: data = fh.read()
+        nombre, version = m["filename"], m["version"]
+    ext = _os.path.splitext(nombre)[1].lower()
+    # solo PDF e imágenes se abren en el navegador; todo lo demás se descarga (evita
+    # que un .html/.svg subido se ejecute dentro de la aplicación)
+    inline = ext in _PROJ_DOC_INLINE and request.args.get("descargar") != "1"
+    mime = _PROJ_DOC_INLINE.get(ext) if inline else "application/octet-stream"
+    from urllib.parse import quote
+    disp = "inline" if inline else "attachment"
+    return Response(data, mimetype=mime, headers={
+        "Content-Disposition": f"{disp}; filename=\"{nombre.encode('ascii', 'replace').decode()}\"; filename*=UTF-8''{quote(nombre)}",
+        "X-Content-Type-Options": "nosniff", "X-Doc-Version": str(version)})
+
 @app.route("/api/projconfig/plan-personal/import", methods=["POST"])
 def api_import_plan_personal():
     """
