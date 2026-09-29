@@ -4593,7 +4593,7 @@ def _cap_mapeo(areas):
 
 @app.route("/api/capacidad/indices", methods=["GET"])
 def api_capacidad_indices():
-    if not can("view", "ops-capacidad"): return jsonify({"error": "Sin permiso"}), 403
+    if not (can("view", "ops-capacidad") or _puede_dash_om()): return jsonify({"error": "Sin permiso"}), 403
     import datetime as _d
     try:
         hoy = _d.date.today()
@@ -7674,6 +7674,36 @@ def _ro_job(jn, y, pres, pools, detalle=None):
 
 PM_DASH_STATUS = ("OPEN", "WIP")
 
+def _dash_job_row(j, jc, pools, today):
+    """Renglón de un Job para los dashboards (PM, Operation Manager): fechas de Configurar
+    Proyecto, targets y resultado operativo (misma fórmula que el Job Report, vida del Job)."""
+    jn = j["job_number"]
+    y = int(_year_of(j) or CURRENT_YEAR)
+    row = {"job_number": jn, "customer": j.get("customer", ""), "description": j.get("description", ""),
+           "status": j.get("status", ""), "pm": j.get("pm", ""),
+           "runoff_cliente": jc.get("runoff_cliente") or "",
+           "fecha_envio": jc.get("fecha_envio") or j.get("ship_date") or "",
+           "fecha_envio_origen": "Configurar Proyecto" if jc.get("fecha_envio") else ("Job" if j.get("ship_date") else "")}
+    row["envio_vencido"] = bool(row["fecha_envio"]) and row["fecha_envio"][:10] < today
+    _num = lambda v: float(v) if v not in (None, "") else None
+    row["internal_target"] = _num(jc.get("presupuesto_disponible"))
+    row["target_compras"]  = _num(jc.get("target_compras"))
+    row["target_mo"]       = _num(jc.get("target_mo"))
+    try:
+        r_ = _ro_job(jn, y, jc.get("presupuesto_disponible"), pools)
+        r_.pop("revenue", None)
+        row.update(r_)
+    except Exception as e:
+        row["error"] = str(e)
+    return row, y
+
+def _cfg_por_job():
+    out = {}
+    for cfg in projcfg_load():
+        for jc in cfg.get("jobs") or []:
+            out.setdefault((jc.get("job_number") or "").strip().upper(), jc)
+    return out
+
 @app.route("/api/dashboard/project-manager", methods=["GET"])
 def api_dashboard_project_manager():
     """Dashboard de inicio para el perfil PROJECT MANAGER: Jobs Open/WIP cuyo
@@ -7719,25 +7749,8 @@ def api_dashboard_project_manager():
         pools = _ro_pools_factory()
         for j in sorted({x["job_number"]: x for x in jobs + year_jobs}.values(), key=lambda x: x.get("job_number", "")):
             jn = j["job_number"]
-            y = int(_year_of(j) or CURRENT_YEAR)
             jc = cfg_by_job.get(jn.strip().upper(), {})
-            row = {"job_number": jn, "customer": j.get("customer", ""), "description": j.get("description", ""),
-                   "status": j.get("status", ""), "pm": j.get("pm", ""),
-                   "runoff_cliente": jc.get("runoff_cliente") or "",
-                   "fecha_envio": jc.get("fecha_envio") or j.get("ship_date") or "",
-                   "fecha_envio_origen": "Configurar Proyecto" if jc.get("fecha_envio") else ("Job" if j.get("ship_date") else "")}
-            row["envio_vencido"] = bool(row["fecha_envio"]) and row["fecha_envio"][:10] < today
-            _num = lambda v: float(v) if v not in (None, "") else None
-            # Targets de Configurar Proyecto (mismos que muestra el Job Report)
-            row["internal_target"] = _num(jc.get("presupuesto_disponible"))
-            row["target_compras"]  = _num(jc.get("target_compras"))
-            row["target_mo"]       = _num(jc.get("target_mo"))
-            try:
-                r_ = _ro_job(jn, y, jc.get("presupuesto_disponible"), pools)
-                r_.pop("revenue", None)
-                row.update(r_)
-            except Exception as e:
-                row["error"] = str(e)
+            row, y = _dash_job_row(j, jc, pools, today)
             if j in jobs:
                 out["jobs"].append(row)
             # rev50: la gráfica de barras también recibe los Jobs Open/WIP de otros años (son la vista
@@ -7752,6 +7765,60 @@ def api_dashboard_project_manager():
                                        # sin target (revenue 0 y sin Configurar Proyecto) el margen no tiene contra qué medirse
                                        "margen": round((row["base"] - cost) / cost, 4) if cost > 0 and row["base"] > 0 else None})
         return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════
+#  DASHBOARD OPERATION MANAGER (rev64) — también se muestra en el de General
+#  Management y en el del administrador.
+# ══════════════════════════════════════════════════════════════════
+DASH_OM_ROLES = ("OPERATION MANAGER", "GENERAL MANAGEMENT")
+
+def _puede_dash_om():
+    me = session.get("user")
+    info = get_user_perms(me) if me else {}
+    return is_admin() or info.get("role") in DASH_OM_ROLES
+
+@app.route("/api/dashboard/operation-manager", methods=["GET"])
+def api_dashboard_operation_manager():
+    """Todos los Jobs Open/WIP (de cualquier PM) con Run Off interno y de cliente, fecha de
+    envío, Internal Target, costo actual y resultado operativo; y la suma de los puntos de
+    la LOP de los proyectos que tienen algún Job Open/WIP."""
+    if not _puede_dash_om(): return jsonify({"error": "Sin permiso"}), 403
+    try:
+        todos = scan_jobs()
+        activos = [j for j in todos if (j.get("status") or "").strip().upper() in PM_DASH_STATUS]
+        act_set = {j["job_number"].strip().upper() for j in activos}
+        cfg_by_job = _cfg_por_job()
+        today = datetime.date.today().isoformat()
+        pools = _ro_pools_factory()
+        filas = []
+        for j in sorted(activos, key=lambda x: x.get("job_number", "")):
+            jc = cfg_by_job.get(j["job_number"].strip().upper(), {})
+            row, _y = _dash_job_row(j, jc, pools, today)
+            row["runoff_interno"] = jc.get("runoff_interno") or ""
+            row["fecha_inicio"] = jc.get("fecha_inicio") or ""
+            if "resultado_operativo" in row:
+                row["costo_actual"] = round(row["base"] - row["resultado_operativo"], 2)
+            filas.append(row)
+        # LOP de los proyectos con algún Job Open/WIP
+        lop = {"OPEN": 0, "CLOSE": 0, "INFO": 0}
+        proyectos = []
+        for cfg in projcfg_load():
+            jobs_cfg = [str(x.get("job_number") or "").strip().upper() for x in (cfg.get("jobs") or [])]
+            if not any(jn in act_set for jn in jobs_cfg): continue
+            c = {"OPEN": 0, "CLOSE": 0, "INFO": 0}
+            for pnt in cfg.get("puntos_abiertos") or []:
+                if not (pnt.get("descripcion") or pnt.get("tool_frame") or pnt.get("responsable")): continue
+                e = str(pnt.get("estatus") or "OPEN").strip().upper()
+                c[e if e in c else "OPEN"] += 1
+            for k in lop: lop[k] += c[k]
+            proyectos.append({"ptsv": cfg.get("ptsv", ""), "jobs": [jn for jn in jobs_cfg if jn in act_set],
+                              "abiertos": c["OPEN"], "cerrados": c["CLOSE"], "info": c["INFO"]})
+        proyectos.sort(key=lambda x: (-x["abiertos"], x["ptsv"]))
+        return jsonify({"now": datetime.datetime.now().isoformat(timespec="minutes"), "jobs": filas,
+                        "lop": lop, "lop_proyectos": proyectos,
+                        "jobs_sin_config": sum(1 for r in filas if r.get("internal_target") is None)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

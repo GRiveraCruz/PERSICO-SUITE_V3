@@ -6867,6 +6867,8 @@ async function initHomeDashboard(){
     const me = await fetch('/api/me/perms').then(r=>r.json());
     if(me.role === 'GENERAL MANAGEMENT' || me.is_admin){
       await loadGMDashboard();
+    } else if(me.role === 'OPERATION MANAGER'){
+      await loadOMDashboard();
     } else if(me.role === 'PROJECT MANAGER'){
       await loadPMDashboard();
     } else if(me.role === 'PURCHASING'){
@@ -7453,9 +7455,123 @@ function renderGMDashboard(d){
     <div class="dash-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;align-items:start">
       ${salesCard}${projCard}${costCard}
     </div>
+    <div id="om-secciones" style="margin-top:26px"></div>
   `;
   const hd = document.getElementById('home-date-dash');
   if(hd) hd.textContent = new Date().toLocaleDateString('es-MX', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
+  loadOMSecciones(document.getElementById('om-secciones'), true);   // rev64: misma información del Operation Manager
+}
+
+// ════════════════════════════════════════════════════════
+//  DASHBOARD OPERATION MANAGER (rev64)
+//  · Jobs Open/WIP con Run Off, envío, Internal Target, costo actual y resultado operativo
+//  · Pastel de puntos de la LOP (proyectos con Jobs Open/WIP): abiertos vs cerrados
+//  · Capacidad y disponibilidad (mismas gráficas de Operaciones → Capacidad)
+//  También se muestra debajo del dashboard de General Management / administrador.
+// ════════════════════════════════════════════════════════
+let _omAnio = new Date().getFullYear();
+async function loadOMDashboard(){
+  const wrap = document.getElementById('home-dashboard'), dflt = document.getElementById('home-default');
+  if(!wrap) return;
+  dflt.style.display='none'; wrap.style.display='block';
+  wrap.innerHTML = `<div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div><div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)">Dashboard · Operation Manager</div>
+      <div style="font-size:22px;font-weight:700">Operaciones</div></div>
+      <div style="margin-left:auto"><button onclick="loadOMDashboard()" class="btn-reload" style="font-size:10px">Actualizar</button></div></div>
+    <div id="om-secciones"></div>`;
+  await loadOMSecciones(document.getElementById('om-secciones'), false);
+}
+
+async function loadOMSecciones(box, conTitulo){
+  if(!box) return;
+  box.innerHTML = `${conTitulo?'<div style="font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--red);margin-bottom:12px">Operaciones</div>':''}<div style="text-align:center;padding:40px;color:var(--muted)">Calculando Jobs, puntos abiertos y capacidad…</div>`;
+  const [om, cap] = await Promise.all([
+    fetch('/api/dashboard/operation-manager').then(r=>r.json()).catch(e=>({error:e.message})),
+    fetch(`/api/capacidad/indices?anio=${_omAnio}&proyectos=activos`).then(r=>r.json()).catch(e=>({error:e.message})),
+  ]);
+  const card = 'background:#fff;border-radius:14px;box-shadow:0 4px 18px rgba(0,0,0,.08);padding:18px 20px;min-width:0';
+  const lbl = t => `<div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:10px">${t}</div>`;
+  const fdate = v => v ? new Date(v.slice(0,10)+'T12:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '<span style="color:var(--muted)">—</span>';
+  const money = v => v==null ? '—' : (v<0?'-':'')+'$'+Math.abs(Number(v)).toLocaleString('en-US',{maximumFractionDigits:0});
+  let html = conTitulo ? '<div style="font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--red);margin-bottom:12px">Operaciones</div>' : '';
+
+  // ── Jobs Open / WIP
+  if(om.error){ html += `<div style="${card};color:var(--red);margin-bottom:16px">⚠ No se pudieron cargar los Jobs: ${esc(om.error)}</div>`; }
+  else {
+    const jobs = om.jobs||[];
+    const ok = jobs.filter(j=>j.resultado_operativo!=null);
+    const S = k => ok.reduce((a,j)=>a+(+j[k]||0),0);
+    const totT = S('base'), totC = S('costo_actual'), totRO = S('resultado_operativo');
+    const venc = jobs.filter(j=>j.envio_vencido).length;
+    const kpi = (l,v,c,sub) => `<div style="${card};flex:1;min-width:170px"><div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)">${l}</div><div style="font-size:26px;font-weight:800;color:${c||'var(--text)'};margin-top:4px">${v}</div>${sub?`<div style="font-size:11px;color:var(--muted)">${sub}</div>`:''}</div>`;
+    const lop = om.lop||{OPEN:0,CLOSE:0,INFO:0};
+    const pie = pcDashPie([{label:'Abiertos', value:lop.OPEN, color:'#f59e0b'}, {label:'Cerrados', value:lop.CLOSE, color:'#16a34a'}], 'Sin puntos en las LOP de los proyectos Open/WIP');
+    const topP = (om.lop_proyectos||[]).filter(p=>p.abiertos||p.cerrados).slice(0,6);
+    html += `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+        ${kpi('Jobs Open / WIP', jobs.length)}
+        ${kpi('Envío vencido', (venc?'⚠ ':'')+venc, venc?'var(--red)':'var(--green)', 'fecha de envío anterior a hoy')}
+        ${kpi('Internal Target', money(totT), null, om.jobs_sin_config?`${om.jobs_sin_config} Job(s) sin configurar: se usa su revenue`:'')}
+        ${kpi('Costo actual', money(totC))}
+        ${kpi('Resultado operativo', money(totRO), totRO<0?'var(--red)':'var(--green)', totT?`${(totRO/totT*100).toFixed(1)}% vs Internal Target`:'')}
+      </div>
+      <div style="${card};margin-bottom:16px">${lbl('Puntos abiertos · proyectos con Jobs Open/WIP · abiertos vs cerrados')}
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">
+        <div style="flex:1 1 340px">${pie}
+          ${lop.INFO?`<div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px">${lop.INFO} punto(s) informativo(s) no se grafican.</div>`:''}</div>
+        <div style="flex:1 1 360px">
+          ${topP.length?`<div style="font-size:10px;color:var(--muted);margin-bottom:4px">Proyectos con más puntos abiertos</div><table style="width:100%;font-size:11px;border-collapse:collapse"><tr><th style="text-align:left;padding:3px 6px;cursor:default">Proyecto</th><th style="text-align:right;padding:3px 6px;cursor:default">Abiertos</th><th style="text-align:right;padding:3px 6px;cursor:default">Cerrados</th></tr>
+            ${topP.map(p=>`<tr style="cursor:default"><td style="padding:3px 6px;border-top:1px solid var(--border);font-family:'DM Mono',monospace">${esc(p.ptsv)} <span style="font-size:9.5px;color:var(--muted)">${esc(p.jobs.join(', '))}</span></td><td style="padding:3px 6px;border-top:1px solid var(--border);text-align:right;font-weight:700;color:${p.abiertos?'#b45309':'var(--muted)'}">${p.abiertos}</td><td style="padding:3px 6px;border-top:1px solid var(--border);text-align:right">${p.cerrados}</td></tr>`).join('')}</table>`:''}
+        </div></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="${card};overflow-x:auto">${lbl('Jobs Open / WIP')}
+          <table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>
+            ${[['Job'],['Cliente / Descripción'],['PM'],['Estatus'],['Run Off interno'],['Run Off cliente'],['Envío'],['Internal Target','right'],['Costo actual','right'],['Resultado operativo','right']].map(t=>`<th style="padding:7px 8px;text-align:${t[1]||'left'};font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap;cursor:default">${t[0]}</th>`).join('')}
+          </tr></thead><tbody>${jobs.map(j=>{ const ro=j.resultado_operativo; return `<tr style="border-bottom:1px solid rgba(0,0,0,.05);cursor:default">
+            <td style="padding:8px;font-family:'DM Mono',monospace;color:var(--gold);font-weight:700">${esc(j.job_number)}</td>
+            <td style="padding:8px;min-width:170px;max-width:280px">${esc(j.customer||'')}<div style="font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(j.description||'')}">${esc(j.description||'')}</div></td>
+            <td style="padding:8px;font-size:11px;white-space:nowrap">${esc(String(j.pm||'').replace(/ - Persico$/i,''))}</td>
+            <td style="padding:8px"><span class="badge">${esc(j.status)}</span></td>
+            <td style="padding:8px;white-space:nowrap">${fdate(j.runoff_interno)}</td>
+            <td style="padding:8px;white-space:nowrap">${fdate(j.runoff_cliente)}</td>
+            <td style="padding:8px;white-space:nowrap;${j.envio_vencido?'color:var(--red);font-weight:700':''}" title="${esc(j.fecha_envio_origen?'Fuente: '+j.fecha_envio_origen:'')}">${j.envio_vencido?'⚠ ':''}${fdate(j.fecha_envio)}</td>
+            <td style="padding:8px;text-align:right;white-space:nowrap">${j.internal_target!=null?`<b>${money(j.internal_target)}</b>`:`<span style="color:var(--amber)" title="Sin Configurar Proyecto: se usa el revenue">Sin config.</span><div style="font-size:10px;color:var(--muted)">revenue ${money(j.base)}</div>`}</td>
+            <td style="padding:8px;text-align:right;white-space:nowrap">${money(j.costo_actual)}</td>
+            <td style="padding:8px;text-align:right;white-space:nowrap;font-weight:700;color:${ro==null?'var(--muted)':ro<0?'var(--red)':'var(--green)'}">${j.error?`<span title="${esc(j.error)}">error</span>`:money(ro)}${j.resultado_pct!=null&&Math.abs(j.resultado_pct)<1000?`<div style="font-size:10px;font-weight:400;color:var(--muted)">${j.resultado_pct}%</div>`:''}</td>
+          </tr>`;}).join('') || '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--muted)">Sin Jobs Open o WIP</td></tr>'}</tbody></table>
+          <div style="font-size:10px;color:var(--muted);margin-top:8px">Costo actual = mano de obra + compras + servicios + reasignaciones − recuperaciones (vida del Job). Resultado operativo = Internal Target (o revenue) − costo actual, igual que el Job Report.</div>
+        </div>
+      </div>`;
+  }
+
+  // ── Capacidad y disponibilidad (mismas gráficas de Operaciones → Capacidad)
+  if(cap.error){ html += `<div style="${card};color:var(--red)">⚠ No se pudo calcular la capacidad: ${esc(cap.error)}</div>`; }
+  else {
+    const A = cap.areas||[], T = k => A.reduce((a,x)=>a+(+x[k]||0),0);
+    const capF=T('cap_fecha'), reg=T('registradas'), pend=T('pendiente'), capR=T('cap_restante');
+    const util = capF ? Math.round(reg/capF*100) : null, carga = capR ? Math.round(pend/capR*100) : null;
+    const colU = p => p==null ? 'var(--muted)' : p>100 ? '#c8102e' : p>=85 ? '#b45309' : '#1f8a4c';
+    const mini = (l,v,c,sub) => `<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;flex:1;min-width:150px"><div style="font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${l}</div><div style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${c||'var(--text)'}">${v}</div><div style="font-size:10px;color:var(--muted)">${sub||''}</div></div>`;
+    html += `<div style="${card};margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)">Capacidad y disponibilidad · ${cap.anio} · ${esc((cap.areas_indices||[]).join(', '))}</div>
+        <select onchange="_omAnio=+this.value;loadOMSecciones(document.getElementById('om-secciones'), ${conTitulo})" style="font-size:11px;padding:2px 6px">${[cap.anio-1,cap.anio,cap.anio+1].map(y=>`<option ${y===cap.anio?'selected':''}>${y}</option>`).join('')}</select>
+        <a href="javascript:void(0)" onclick="switchMenu('ops-capacidad','ng-ops')" style="margin-left:auto;font-size:11px;color:var(--red)">Ver detalle en Capacidad →</a>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${mini('Capacidad disponible', _capH(T('cap_periodo'))+' h', null, `${T('trabajadores')} trabajadores · sin festivos ni vacaciones`)}
+        ${mini('Capacidad a la fecha', _capH(capF)+' h', null, `corte al ${_capFD(cap.corte)}`)}
+        ${mini('Horas planeadas', _capH(T('planeadas'))+' h', '#2569a0', 'proyectos activos')}
+        ${mini('Registradas a la fecha', _capH(reg)+' h', '#1f3864', 'en proyectos')}
+        ${mini('Utilización', util==null?'—':util+'%', colU(util), 'registradas / capacidad a la fecha')}
+        ${mini('Carga pendiente', carga==null?'—':carga+'%', colU(carga), `${_capH(pend)} h / ${_capH(capR)} h restantes`)}
+      </div>
+      ${capChartMensual(cap)}
+      ${capChartMensual(cap, 'registradas_mes', `Horas consumidas por área y mes · ${cap.anio} (hasta el ${_capFD(cap.corte)})`, 'Horas de Work Hours en códigos de Job. El mes en curso se ve más tenue porque aún no termina.', true)}
+      ${capChartPlaneadas(cap)}
+    </div>`;
+  }
+  box.innerHTML = html;
 }
 
 
