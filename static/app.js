@@ -2951,6 +2951,8 @@ function capRenderIndices(){
         <option value="todos" ${d.proyectos==='todos'?'selected':''}>Todas las configuraciones</option></select>
       <span style="font-size:10.5px;color:var(--muted)">Corte al ${_capFD(d.corte)} · Jornada: lunes a jueves ${d.jornada[0]} h, viernes ${d.jornada[4]} h, sábado y domingo 0 h (${d.horas_semana} h/semana) · <b>${_capH(d.horas_persona)} h por persona en ${d.anio}</b> (${d.dias_laborables} días laborables; ${nFest} festivo${nFest===1?'':'s'} de ley, −${hFest} h), menos sus vacaciones de ley por antigüedad (${d.horas_dia_vac} h por día)</span>
     </div>
+    <div style="font-size:10.5px;color:var(--muted2);margin:-2px 0 8px">Solo se consideran las áreas: <b>${d.areas_indices.map(esc).join(', ')}</b>.${d.trabajadores_fuera?` ${d.trabajadores_fuera} trabajador(es) de otras áreas no se cuentan.`:''}${(d.fuera.planeadas||d.fuera.registradas)?` Fuera de estas áreas: ${_capH(d.fuera.planeadas)} h planeadas y ${_capH(d.fuera.registradas)} h registradas en proyectos (líneas sin área asignada o trabajadores sin perfil en Hourly Rate).`:''}
+      ${d.areas_faltantes.length?`<div style="color:#b45309;margin-top:3px">⚠ No existe en Control de Personal → Áreas: <b>${d.areas_faltantes.map(esc).join(', ')}</b>. Créala con ese nombre para que aparezca.</div>`:''}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
       ${kpi('Capacidad disponible '+d.anio, _capH(tot.capP)+' h', `${tot.trab} trabajadores activos · −${_capH(tot.vacH)} h de vacaciones (${tot.vacD} días)`)}
       ${kpi('Capacidad a la fecha', _capH(tot.capF)+' h', `${d.dias_laborables_fecha} de ${d.dias_laborables} días laborables · ${_capH(d.horas_persona_fecha)} h por persona`)}
@@ -2973,10 +2975,12 @@ function capRenderIndices(){
           <th style="padding:7px 8px!important" title="Horas planeadas aún no consumidas / capacidad restante del año">Pendiente / cap. restante</th>
           <th style="padding:7px 8px!important">Capacidad · planeadas · registradas</th>
         </tr></thead>
-        <tbody>${filas || '<tr><td colspan="10" style="padding:14px;color:var(--muted)">No hay áreas en Control de Personal.</td></tr>'}</tbody>
+        <tbody>${filas || '<tr><td colspan="10" style="padding:14px;color:var(--muted)">No existe ninguna de las 4 áreas en Control de Personal.</td></tr>'}</tbody>
       </table>
     </div>
     ${capChartMensual(d)}
+    ${capChartMensual(d, 'registradas_mes', `Horas consumidas por área y mes · ${d.anio} (registradas en proyectos hasta el ${_capFD(d.corte)})`, 'Horas de Work Hours en códigos de Job, clasificadas por línea de mano de obra. El mes en curso se ve más tenue porque aún no termina.', true)}
+    ${capChartPlaneadas(d)}
     <div style="font-size:10.5px;color:var(--muted2);margin-bottom:8px">Las horas planeadas y registradas se toman por <b>línea de mano de obra</b> (las de Configurar Proyecto; las registradas se clasifican por el departamento del trabajador en Hourly Rate) y se suman al área asignada abajo. Utilización y carga: verde &lt; 85 %, ámbar 85–100 %, rojo &gt; 100 %.</div>
     <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;align-items:flex-start">
       <details style="flex:1 1 420px;${card}" ${d.lineas.some(l=>!l.area)?'open':''}>
@@ -2986,7 +2990,8 @@ function capRenderIndices(){
           <tbody>${d.lineas.map(l=>`<tr style="border-top:1px solid var(--border)"><td style="padding:4px 6px">${esc(l.nombre)}</td><td style="padding:4px 6px">${selArea(l)}${l.sugerida?' <span style="font-size:9.5px;color:var(--muted)" title="Sugerida por el nombre del área; guarda para fijarla">sugerida</span>':''}</td>
             <td style="padding:4px 6px;text-align:right;font-family:'DM Mono',monospace">${_capH(l.planeadas)}</td><td style="padding:4px 6px;text-align:right;font-family:'DM Mono',monospace">${_capH(l.registradas)}</td></tr>`).join('')}</tbody>
         </table>
-        ${(d.sin_linea.proyecto||d.sin_linea.otras)?`<div style="font-size:10px;color:var(--muted);margin-top:6px">${_capH(d.sin_linea.proyecto+d.sin_linea.otras)} h registradas de trabajadores sin perfil en Hourly Rate se cuentan en "Sin área asignada".</div>`:''}
+        ${(d.sin_linea.proyecto||d.sin_linea.otras)?`<div style="font-size:10px;color:var(--muted);margin-top:6px">${_capH(d.sin_linea.proyecto+d.sin_linea.otras)} h registradas de trabajadores sin perfil en Hourly Rate no se asignan a ninguna área.</div>`:''}
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">Una línea "— Sin área —" queda fuera de los índices.</div>
         ${puedeEditar?`<button class="btn-reload" onclick="capGuardarMapeo()" style="font-size:11px;padding:4px 12px;margin-top:8px">Guardar relación</button>`:''}
       </details>
       <details style="flex:1 1 260px;${card}">
@@ -3004,12 +3009,12 @@ function capRenderIndices(){
 
 // rev62: disponibilidad de cada área por mes (barras agrupadas: un grupo por mes, una barra por área)
 const CAP_AREA_COLORES = ['#1f3864','#2569a0','#e8702a','#1f8a4c','#a855f7','#c8102e','#f2b134','#38a3d8','#6b7280','#0f766e'];
-function capChartMensual(d){
-  const areas = (d.areas||[]).filter(a=>a.mensual && a.mensual.some(v=>v>0));
-  if(!areas.length) return '';
+function capChartMensual(d, campo='mensual', titulo=null, nota=null, hastaHoy=false){
+  const areas = (d.areas||[]).filter(a=>a[campo] && a[campo].some(v=>v>0));
+  if(!areas.length) return titulo ? `<div style="background:#fff;border-radius:12px;box-shadow:0 3px 14px rgba(0,0,0,.07);padding:12px 14px;margin-bottom:10px"><div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)">${titulo}</div><div style="padding:24px 0;text-align:center;color:var(--muted);font-size:12px">Sin horas en ${d.anio}.</div></div>` : '';
   const MES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
   const W=960, H=280, L=58, R=12, T=14, B=30, pw=W-L-R, ph=H-T-B;
-  const maxV = Math.max(1, ...areas.flatMap(a=>a.mensual));
+  const maxV = Math.max(1, ...areas.flatMap(a=>a[campo]));
   const mag = Math.pow(10, Math.floor(Math.log10(maxV/4)));
   const paso = [1,2,2.5,5,10].map(c=>c*mag).find(c=>maxV/c<=5) || mag*10, nDiv = Math.ceil(maxV/paso), top = paso*nDiv;
   const y = v => T + ph - v/top*ph, gw = pw/12, bw = Math.max(3, Math.min(18, (gw*0.82)/areas.length));
@@ -3021,20 +3026,55 @@ function capChartMensual(d){
     if(i===mesHoy) g += `<rect x="${x0}" y="${T}" width="${gw}" height="${ph}" fill="rgba(200,16,46,.05)"/>`;
     g += `<text x="${x0+gw/2}" y="${H-B+15}" text-anchor="middle" font-size="10.5" fill="${i===mesHoy?'#c8102e':'#666'}" font-weight="${i===mesHoy?700:400}">${m}</text>`;
     const start = x0 + (gw - bw*areas.length)/2;
-    areas.forEach((a,j)=>{ const v=a.mensual[i]||0; const col=CAP_AREA_COLORES[(d.areas.indexOf(a))%CAP_AREA_COLORES.length];
-      g += `<rect x="${start+bw*j}" y="${y(v)}" width="${bw-1}" height="${Math.max(0,y(0)-y(v))}" fill="${col}" opacity="${i<mesHoy?.55:1}"><title>${esc(a.area)} · ${MES[i]} ${d.anio}: ${_capH(v)} h disponibles (${a.trabajadores} trabajador${a.trabajadores===1?'':'es'})</title></rect>`; });
+    areas.forEach((a,j)=>{ const v=a[campo][i]||0; const col=CAP_AREA_COLORES[(d.areas.indexOf(a))%CAP_AREA_COLORES.length];
+      const op = hastaHoy ? (i===mesHoy?.65:1) : (i<mesHoy?.55:1);
+      const tt = campo==='mensual' ? `${_capH(v)} h disponibles (${a.trabajadores} trabajador${a.trabajadores===1?'':'es'})`
+                 : `${_capH(v)} h registradas en proyectos${a.mensual[i]?` · ${Math.round(v/a.mensual[i]*100)}% de su disponibilidad del mes`:''}${i===mesHoy?' (mes en curso)':''}`;
+      g += `<rect x="${start+bw*j}" y="${y(v)}" width="${bw-1}" height="${Math.max(0,y(0)-y(v))}" fill="${col}" opacity="${op}"><title>${esc(a.area)} · ${MES[i]} ${d.anio}: ${tt}</title></rect>`; });
   });
   g += `<line x1="${L}" x2="${W-R}" y1="${y(0)}" y2="${y(0)}" stroke="rgba(0,0,0,.25)"/>`;
-  const totMes = MES.map((_,i)=>areas.reduce((s,a)=>s+(a.mensual[i]||0),0));
-  const leyenda = areas.map(a=>`<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:11px;height:11px;border-radius:2px;background:${CAP_AREA_COLORES[d.areas.indexOf(a)%CAP_AREA_COLORES.length]}"></span>${esc(a.area)} · ${_capH(a.cap_periodo)} h</span>`).join('');
+  const totMes = MES.map((_,i)=>areas.reduce((s,a)=>s+(a[campo][i]||0),0));
+  const leyenda = areas.map(a=>`<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:11px;height:11px;border-radius:2px;background:${CAP_AREA_COLORES[d.areas.indexOf(a)%CAP_AREA_COLORES.length]}"></span>${esc(a.area)} · ${_capH(a[campo].reduce((x,y)=>x+y,0))} h</span>`).join('');
   return `<div style="background:#fff;border-radius:12px;box-shadow:0 3px 14px rgba(0,0,0,.07);padding:12px 14px;margin-bottom:10px">
-    <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Disponibilidad por área y mes · ${d.anio} (horas, sin festivos ni vacaciones)</div>
+    <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">${titulo || `Disponibilidad por área y mes · ${d.anio} (horas, sin festivos ni vacaciones)`}</div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="Disponibilidad por área y mes">${g}</svg>
     <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;margin-top:6px">${leyenda}</div>
     <div style="overflow-x:auto;margin-top:8px"><table style="width:100%;font-size:10.5px;border-collapse:collapse;white-space:nowrap">
       <tr><td style="color:var(--muted);padding:2px 6px">Total</td>${totMes.map((v,i)=>`<td style="text-align:right;padding:2px 6px;font-family:'DM Mono',monospace;${i===mesHoy?'color:#c8102e;font-weight:700':''}">${_capH(v)}</td>`).join('')}</tr>
       <tr><td></td>${MES.map((m,i)=>`<td style="text-align:right;padding:0 6px;color:var(--muted);${i===mesHoy?'color:#c8102e':''}">${m}</td>`).join('')}</tr></table></div>
-    <div style="font-size:10px;color:var(--muted);margin-top:4px">Los meses ya transcurridos se ven más tenues; el mes actual está resaltado.</div>
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">${nota || 'Los meses ya transcurridos se ven más tenues; el mes actual está resaltado.'}</div>
+  </div>`;
+}
+
+// rev63: horas planeadas por área (configuraciones de proyecto), con lo ya consumido en esos Jobs
+function capChartPlaneadas(d){
+  const areas = d.areas||[];
+  const W=960, filaH=46, L=170, R=150, T=8, H=T+areas.length*filaH+22, pw=W-L-R;
+  const maxV = Math.max(1, ...areas.map(a=>Math.max(a.planeadas, a.consumidas_plan)));
+  const mag = Math.pow(10, Math.floor(Math.log10(maxV/4)));
+  const paso = [1,2,2.5,5,10].map(c=>c*mag).find(c=>maxV/c<=5) || mag*10, nDiv = Math.ceil(maxV/paso), top = paso*nDiv;
+  const x = v => L + v/top*pw;
+  let g = '';
+  for(let k=0;k<=nDiv;k++){ const v=paso*k; g+=`<line x1="${x(v)}" x2="${x(v)}" y1="${T}" y2="${H-20}" stroke="rgba(0,0,0,.07)"/><text x="${x(v)}" y="${H-6}" text-anchor="middle" font-size="10" fill="#888">${_capH(v)}</text>`; }
+  areas.forEach((a,i)=>{
+    const y0 = T + i*filaH + 8, col = CAP_AREA_COLORES[i%CAP_AREA_COLORES.length];
+    const cons = Math.min(a.consumidas_plan, a.planeadas), exced = Math.max(0, a.consumidas_plan - a.planeadas);
+    const pct = a.planeadas ? Math.round(a.consumidas_plan/a.planeadas*100) : null;
+    g += `<text x="${L-10}" y="${y0+18}" text-anchor="end" font-size="12" font-weight="700" fill="#1a1a1a">${esc(a.area)}</text>`;
+    g += `<rect x="${L}" y="${y0}" width="${Math.max(0,x(a.planeadas)-L)}" height="28" rx="3" fill="${col}" opacity=".28"><title>${esc(a.area)}: ${_capH(a.planeadas)} h planeadas</title></rect>`;
+    g += `<rect x="${L}" y="${y0+7}" width="${Math.max(0,x(cons)-L)}" height="14" rx="2" fill="${col}"><title>${esc(a.area)}: ${_capH(a.consumidas_plan)} h ya consumidas en esos Jobs</title></rect>`;
+    if(exced) g += `<rect x="${x(a.planeadas)}" y="${y0+7}" width="${Math.max(0,x(a.consumidas_plan)-x(a.planeadas))}" height="14" rx="2" fill="#c8102e"><title>${_capH(exced)} h consumidas por encima de lo planeado</title></rect>`;
+    g += `<text x="${Math.max(x(a.planeadas), x(a.consumidas_plan))+8}" y="${y0+13}" font-size="12" font-weight="700" fill="#1a1a1a" font-family="DM Mono, monospace">${_capH(a.planeadas)} h</text>`;
+    g += `<text x="${Math.max(x(a.planeadas), x(a.consumidas_plan))+8}" y="${y0+27}" font-size="10" fill="${exced?'#c8102e':'#777'}">${pct!=null?`${pct}% consumido`:'sin horas planeadas'}</text>`;
+  });
+  return `<div style="background:#fff;border-radius:12px;box-shadow:0 3px 14px rgba(0,0,0,.07);padding:12px 14px;margin-bottom:10px">
+    <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Horas planeadas por área · ${d.proyectos==='activos'?'proyectos activos (Jobs Open/WIP)':'todas las configuraciones'} (${d.n_proyectos})</div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="Horas planeadas por área">${g}</svg>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;margin-top:4px;color:var(--muted2)">
+      <span style="display:inline-flex;align-items:center;gap:5px"><span style="width:14px;height:10px;border-radius:2px;background:#1f3864;opacity:.28"></span>Planeadas en Configurar Proyecto</span>
+      <span style="display:inline-flex;align-items:center;gap:5px"><span style="width:14px;height:6px;border-radius:2px;background:#1f3864"></span>Ya consumidas en esos mismos Jobs (todos los años)</span>
+      <span style="display:inline-flex;align-items:center;gap:5px"><span style="width:14px;height:6px;border-radius:2px;background:#c8102e"></span>Consumido por encima de lo planeado</span>
+    </div>
   </div>`;
 }
 

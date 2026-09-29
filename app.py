@@ -4509,6 +4509,9 @@ def _save_capacidad(data):
 #  Personal con la tabla "capacidad_mapeo" (se sugiere sola por nombre).
 # ══════════════════════════════════════════════════════════════════
 CAP_MAPEO_KEY = "__mapeo_lineas__"
+# rev63: solo estas áreas entran en los cálculos y gráficas de Capacidad (nombre comparado
+# sin acentos ni mayúsculas contra el catálogo de áreas de Control de Personal)
+CAP_AREAS_INDICES = ("INGENIERIA MECANICA", "INGENIERIA ELECTRICA", "MANUFACTURA", "ENSAMBLE")
 # rev61: jornada de la planta — lunes a jueves 10 h, viernes 8 h, sábado y domingo 0 h (48 h/semana).
 # Índice = weekday() de Python (0 = lunes).
 CAP_JORNADA = (10, 10, 10, 10, 8, 0, 0)
@@ -4599,8 +4602,12 @@ def api_capacidad_indices():
         festivos = _festivos_lft(anio)
         ini, fin = _d.date(anio, 1, 1), _d.date(anio, 12, 31)
         corte = min(max(hoy, ini - _d.timedelta(days=1)), fin)       # capacidad "a la fecha"
-        areas = _load_catalog("areas") or []
-        nombres_area = [a.get("nombre") for a in areas if a.get("nombre")]
+        _na = lambda v: " ".join(_sin_acentos(v).split())
+        todas = _load_catalog("areas") or []
+        por_norma = {_na(a.get("nombre")): a for a in todas if a.get("nombre")}
+        areas = [por_norma[n] for n in CAP_AREAS_INDICES if n in por_norma]      # en el orden fijo
+        nombres_area = [a["nombre"] for a in areas]
+        faltantes = [n.title() for n in CAP_AREAS_INDICES if n not in por_norma]
         mapeo, sugeridas = _cap_mapeo(areas)
 
         # ── 1) Capacidad por área: trabajadores activos × 8 h por día laborable (L-S sin festivos)
@@ -4612,10 +4619,12 @@ def api_capacidad_indices():
         # cumple ese año (año − año de ingreso); quien ingresó en el año aún no tiene. Las
         # horas de vacaciones se reparten en los meses en proporción a sus horas de jornada.
         meses = [(_d.date(anio, m, 1), (_d.date(anio, m + 1, 1) if m < 12 else _d.date(anio + 1, 1, 1)) - _d.timedelta(days=1)) for m in range(1, 13)]
-        cap, sin_ingreso = {}, 0
+        cap, sin_ingreso, trab_fuera = {}, 0, 0
         for p in _load_personal() or []:
             if (p.get("estado") or "Activo") != "Activo": continue
-            area = p.get("area") if p.get("area") in nombres_area else "Sin área asignada"
+            if p.get("area") not in nombres_area:
+                trab_fuera += 1; continue                       # otras áreas no entran en los índices
+            area = p["area"]
             f_ing = fecha(p.get("fecha_ingreso"))
             if not f_ing: sin_ingreso += 1
             if f_ing and f_ing > fin: continue                 # ingresa después del año consultado
@@ -4658,6 +4667,7 @@ def api_capacidad_indices():
 
         # ── 3) Horas registradas en Work Hours del año hasta hoy, por línea (proyecto / otras)
         reg_proy = {k: 0.0 for k in plan}; reg_otras = {k: 0.0 for k in plan}
+        reg_mes = {k: [0.0] * 12 for k in plan}               # rev63: horas en proyectos por mes
         sin_linea = {"proyecto": 0.0, "otras": 0.0}
         for r in wh_load(anio):
             f = fecha(r.get("date_worked"))
@@ -4666,35 +4676,39 @@ def api_capacidad_indices():
             if not c: continue
             _f, k, _dep, h, _cst, _t = c
             es_proy = bool(_CAP_JOB_RE.search(str(r.get("work_code") or "")))
-            if k: (reg_proy if es_proy else reg_otras)[k] += h
+            if k:
+                (reg_proy if es_proy else reg_otras)[k] += h
+                if es_proy: reg_mes[k][f.month - 1] += h
             else: sin_linea["proyecto" if es_proy else "otras"] += h
 
         # ── Agregar por área
         filas = {a: {"area": a, "lineas": [], "trabajadores": 0, "cap_bruta": 0.0, "vac_dias": 0, "vac_horas": 0.0,
-                     "mensual": [0.0] * 12, "cap_periodo": 0.0, "cap_fecha": 0.0,
+                     "mensual": [0.0] * 12, "registradas_mes": [0.0] * 12, "cap_periodo": 0.0, "cap_fecha": 0.0,
                      "planeadas": 0.0, "consumidas_plan": 0.0, "registradas": 0.0, "registradas_otras": 0.0}
-                 for a in nombres_area + ["Sin área asignada"]}
+                 for a in nombres_area}
+        fuera = {"planeadas": 0.0, "registradas": sin_linea["proyecto"], "registradas_otras": sin_linea["otras"]}
         for a, c in cap.items():
             filas[a].update(c)
         lineas = []
         for k, n, _p in LINEAS_MO:
-            a = mapeo.get(k) or "Sin área asignada"
-            f = filas[a]
-            f["lineas"].append(n)
-            f["planeadas"] += plan[k]; f["consumidas_plan"] += consumido[k]
-            f["registradas"] += reg_proy[k]; f["registradas_otras"] += reg_otras[k]
+            a = mapeo.get(k)
+            if a in filas:
+                f = filas[a]
+                f["lineas"].append(n)
+                f["planeadas"] += plan[k]; f["consumidas_plan"] += consumido[k]
+                f["registradas"] += reg_proy[k]; f["registradas_otras"] += reg_otras[k]
+                for i in range(12): f["registradas_mes"][i] += reg_mes[k][i]
+            else:                                            # línea sin área de las 4: fuera de los índices
+                fuera["planeadas"] += plan[k]; fuera["registradas"] += reg_proy[k]; fuera["registradas_otras"] += reg_otras[k]
             lineas.append({"k": k, "nombre": n, "area": mapeo.get(k), "sugerida": k in sugeridas,
                            "planeadas": round(plan[k], 1), "consumidas_plan": round(consumido[k], 1),
                            "registradas": round(reg_proy[k], 1), "registradas_otras": round(reg_otras[k], 1)})
-        sa = filas["Sin área asignada"]
-        sa["registradas"] += sin_linea["proyecto"]; sa["registradas_otras"] += sin_linea["otras"]
         out = []
-        for a in nombres_area + ["Sin área asignada"]:
+        for a in nombres_area:
             f = filas[a]
-            if a == "Sin área asignada" and not any(f[x] for x in ("trabajadores", "planeadas", "registradas", "registradas_otras")):
-                continue
             f = {k: (round(v, 1) if isinstance(v, float) else v) for k, v in f.items()}
             f["mensual"] = [round(v, 1) for v in f["mensual"]]
+            f["registradas_mes"] = [round(v, 1) for v in f["registradas_mes"]]
             f["pendiente"] = round(max(f["planeadas"] - f["consumidas_plan"], 0), 1)
             f["cap_restante"] = round(f["cap_periodo"] - f["cap_fecha"], 1)
             f["utilizacion"] = round(f["registradas"] / f["cap_fecha"] * 100, 1) if f["cap_fecha"] else None
@@ -4713,6 +4727,9 @@ def api_capacidad_indices():
                           "descuenta": CAP_JORNADA[f.weekday()] > 0} for f, n in festivos],
             "areas": out, "lineas": lineas, "areas_catalogo": nombres_area,
             "sin_linea": {k: round(v, 1) for k, v in sin_linea.items()},
+            "areas_indices": [por_norma[n]["nombre"] if n in por_norma else n.title() for n in CAP_AREAS_INDICES],
+            "areas_faltantes": faltantes,
+            "fuera": {k: round(v, 1) for k, v in fuera.items()}, "trabajadores_fuera": trab_fuera,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -4723,7 +4740,8 @@ def api_capacidad_mapeo():
     if not can("create", "ops-capacidad"): return jsonify({"error": "Sin permiso"}), 403
     data = (request.json or {}).get("mapeo") or {}
     validas = {k for k, _n, _p in LINEAS_MO}
-    areas = {a.get("nombre") for a in (_load_catalog("areas") or [])}
+    areas = {a.get("nombre") for a in (_load_catalog("areas") or [])
+             if " ".join(_sin_acentos(a.get("nombre")).split()) in CAP_AREAS_INDICES}
     limpio = {k: (v if v in areas else None) for k, v in data.items() if k in validas}
     with lock:
         cap = _load_capacidad()
