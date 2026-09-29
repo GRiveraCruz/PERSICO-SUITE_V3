@@ -2820,6 +2820,7 @@ async function loadCapacidad(){
     document.getElementById('cap-dot').className='conn-dot ok';
     document.getElementById('cap-lbl').textContent='Conectado';
     capRender();
+    loadCapIndices();
   }catch(e){
     capacidadData={};
     document.getElementById('cap-dot').className='conn-dot er';
@@ -2889,6 +2890,119 @@ function capRender(){
   if(!permCanCreate('ops-capacidad')){
     wrap.querySelectorAll('.cap-input').forEach(inp=>inp.disabled=true);
   }
+}
+
+// ════════════════════════════════════════════════════════
+//  CAPACIDAD — ÍNDICES POR ÁREA (rev60)
+//  1) Capacidad disponible: trabajadores activos × 48 h/semana (8 h de lunes a sábado),
+//     sin los días festivos de la LFT (art. 74).
+//  2) Horas planeadas en las configuraciones de proyecto.
+//  3) Horas registradas en Work Hours a la fecha de consulta.
+// ════════════════════════════════════════════════════════
+let capIdx = null, capIdxAnio = new Date().getFullYear(), capIdxProy = 'activos';
+const _capH = v => v==null ? '—' : Number(v).toLocaleString('es-MX',{maximumFractionDigits:0});
+const _capFD = iso => { if(!iso) return ''; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
+
+async function loadCapIndices(){
+  const box = document.getElementById('cap-indices'); if(!box) return;
+  if(!capIdx) box.innerHTML = '<div class="cap-area-title">📊 Índices de capacidad</div><div style="font-size:12px;color:var(--muted);padding:10px 0">Calculando…</div>';
+  try{
+    const r = await fetch(`/api/capacidad/indices?anio=${capIdxAnio}&proyectos=${capIdxProy}`);
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error||`HTTP ${r.status}`);
+    capIdx = d; capRenderIndices();
+  }catch(e){ box.innerHTML = `<div class="cap-area-title">📊 Índices de capacidad</div><div style="font-size:12px;color:var(--red);padding:10px 0">No se pudieron calcular los índices: ${esc(e.message)}</div>`; }
+}
+
+function capRenderIndices(){
+  const box = document.getElementById('cap-indices'), d = capIdx; if(!box || !d) return;
+  const A = d.areas || [];
+  const T = k => A.reduce((a,x)=>a+(+x[k]||0),0);
+  const tot = {trab:T('trabajadores'), capP:T('cap_periodo'), capF:T('cap_fecha'), plan:T('planeadas'), pend:T('pendiente'), reg:T('registradas'), otras:T('registradas_otras'), capR:T('cap_restante')};
+  const util = tot.capF ? Math.round(tot.reg/tot.capF*100) : null, carga = tot.capR ? Math.round(tot.pend/tot.capR*100) : null;
+  const colU = p => p==null ? 'var(--muted)' : p>100 ? '#c8102e' : p>=85 ? '#b45309' : '#1f8a4c';
+  const nFest = d.festivos.filter(f=>f.descuenta).length;
+  const card = 'background:#fff;border-radius:12px;box-shadow:0 3px 14px rgba(0,0,0,.07);padding:12px 14px;min-width:0';
+  const kpi = (l,v,sub,c) => `<div style="${card}"><div style="font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${l}</div><div style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;color:${c||'var(--text)'}">${v}</div><div style="font-size:10px;color:var(--muted)">${sub||''}</div></div>`;
+  const anios = [d.anio-1, d.anio, d.anio+1].filter((v,i,a)=>a.indexOf(v)===i);
+  const maxBar = Math.max(1, ...A.map(x=>Math.max(x.cap_periodo, x.planeadas, x.registradas)));
+  const bar = (v,c,t) => `<div title="${t}: ${_capH(v)} h" style="height:7px;margin:2px 0;border-radius:3px;background:${c};width:${Math.max(v>0?1:0, v/maxBar*100)}%"></div>`;
+  const filas = A.map(x=>`<tr>
+      <td style="text-align:left;padding:7px 8px;font-weight:700;white-space:normal;min-width:150px">${esc(x.area)}<div style="font-size:9.5px;font-weight:400;color:var(--muted)">${x.lineas.length?esc(x.lineas.join(', ')):'<i>sin líneas de mano de obra</i>'}</div></td>
+      <td style="padding:7px 8px">${x.trabajadores}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700">${_capH(x.cap_periodo)}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace">${_capH(x.cap_fecha)}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700;color:#2569a0">${_capH(x.planeadas)}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700;color:#1f3864">${_capH(x.registradas)}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace;color:var(--muted)">${_capH(x.registradas_otras)}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700;color:${colU(x.utilizacion)}">${x.utilizacion==null?'—':Math.round(x.utilizacion)+'%'}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace">${_capH(x.pendiente)} / ${_capH(x.cap_restante)}${x.carga_restante!=null?` <b style="color:${colU(x.carga_restante)}">${Math.round(x.carga_restante)}%</b>`:(x.pendiente>0?' <b style="color:#c8102e">sin capacidad</b>':'')}</td>
+      <td style="padding:7px 8px;min-width:140px">${bar(x.cap_periodo,'#c7d2e6','Capacidad del año')}${bar(x.planeadas,'#2569a0','Planeadas')}${bar(x.registradas,'#1f3864','Registradas')}</td>
+    </tr>`).join('');
+  const puedeEditar = permCanCreate('ops-capacidad');
+  const selArea = l => `<select data-linea="${l.k}" ${puedeEditar?'':'disabled'} style="font-size:11px;padding:3px 6px;min-width:180px"><option value="">— Sin área —</option>${d.areas_catalogo.map(a=>`<option ${l.area===a?'selected':''}>${esc(a)}</option>`).join('')}</select>`;
+  box.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <div class="cap-area-title" style="margin:0">📊 Índices de capacidad por área</div>
+      <select onchange="capIdxAnio=+this.value;loadCapIndices()" style="font-size:11px;padding:3px 6px">${anios.map(y=>`<option ${y===d.anio?'selected':''}>${y}</option>`).join('')}</select>
+      <select onchange="capIdxProy=this.value;loadCapIndices()" style="font-size:11px;padding:3px 6px" title="Qué configuraciones de proyecto se suman en Horas planeadas">
+        <option value="activos" ${d.proyectos==='activos'?'selected':''}>Proyectos activos (Jobs Open/WIP)</option>
+        <option value="todos" ${d.proyectos==='todos'?'selected':''}>Todas las configuraciones</option></select>
+      <span style="font-size:10.5px;color:var(--muted)">Corte al ${_capFD(d.corte)} · ${d.horas_semana} h/semana (${d.horas_dia} h de lunes a sábado) · ${d.dias_laborables} días laborables en ${d.anio} (${nFest} festivo${nFest===1?'':'s'} de ley descontado${nFest===1?'':'s'})</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
+      ${kpi('Capacidad disponible '+d.anio, _capH(tot.capP)+' h', `${tot.trab} trabajadores activos`)}
+      ${kpi('Capacidad a la fecha', _capH(tot.capF)+' h', `${d.dias_laborables_fecha} de ${d.dias_laborables} días laborables`)}
+      ${kpi('Horas planeadas', _capH(tot.plan)+' h', `${d.n_proyectos} configuraci${d.n_proyectos===1?'ón':'ones'} de proyecto`, '#2569a0')}
+      ${kpi('Horas registradas a la fecha', _capH(tot.reg)+' h', `en proyectos · ${_capH(tot.otras)} h en otros códigos`, '#1f3864')}
+      ${kpi('Utilización a la fecha', util==null?'—':util+'%', 'registradas en proyectos / capacidad a la fecha', colU(util))}
+      ${kpi('Carga pendiente', carga==null?'—':carga+'%', `${_capH(tot.pend)} h pendientes / ${_capH(tot.capR)} h de capacidad restante`, colU(carga))}
+    </div>
+    <div class="cap-scroll" style="background:#fff;border-radius:12px;box-shadow:0 3px 14px rgba(0,0,0,.07);margin-bottom:8px">
+      <table class="cap-table" style="width:100%;white-space:nowrap">
+        <thead><tr>
+          <th style="text-align:left!important;padding:7px 8px!important">Área</th>
+          <th style="padding:7px 8px!important" title="Trabajadores activos en Control de Personal">Trab.</th>
+          <th style="padding:7px 8px!important" title="Días laborables del año × 8 h × trabajadores (desde su fecha de ingreso)">Capacidad disponible ${d.anio}</th>
+          <th style="padding:7px 8px!important">Capacidad a la fecha</th>
+          <th style="padding:7px 8px!important" title="Suma de las horas de mano de obra de las configuraciones de proyecto">Horas planeadas (proyectos)</th>
+          <th style="padding:7px 8px!important" title="Work Hours del año hasta la fecha de corte, en códigos de Job">Horas registradas a la fecha</th>
+          <th style="padding:7px 8px!important" title="Work Hours en otros códigos (administración, festivos, permisos…)">Otras registradas</th>
+          <th style="padding:7px 8px!important" title="Horas registradas en proyectos / capacidad a la fecha">Utilización</th>
+          <th style="padding:7px 8px!important" title="Horas planeadas aún no consumidas / capacidad restante del año">Pendiente / cap. restante</th>
+          <th style="padding:7px 8px!important">Capacidad · planeadas · registradas</th>
+        </tr></thead>
+        <tbody>${filas || '<tr><td colspan="10" style="padding:14px;color:var(--muted)">No hay áreas en Control de Personal.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div style="font-size:10.5px;color:var(--muted2);margin-bottom:8px">Las horas planeadas y registradas se toman por <b>línea de mano de obra</b> (las de Configurar Proyecto; las registradas se clasifican por el departamento del trabajador en Hourly Rate) y se suman al área asignada abajo. Utilización y carga: verde &lt; 85 %, ámbar 85–100 %, rojo &gt; 100 %.</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;align-items:flex-start">
+      <details style="flex:1 1 420px;${card}" ${d.lineas.some(l=>!l.area)?'open':''}>
+        <summary style="cursor:pointer;font-size:11px;font-weight:700">Líneas de mano de obra → área ${d.lineas.some(l=>!l.area)?`<span style="color:#b45309">(${d.lineas.filter(l=>!l.area).length} sin área)</span>`:''}</summary>
+        <table style="width:100%;font-size:11px;margin-top:8px;border-collapse:collapse">
+          <thead><tr><th style="text-align:left;padding:4px 6px">Línea</th><th style="text-align:left;padding:4px 6px">Área</th><th style="text-align:right;padding:4px 6px">Planeadas</th><th style="text-align:right;padding:4px 6px">Registradas</th></tr></thead>
+          <tbody>${d.lineas.map(l=>`<tr style="border-top:1px solid var(--border)"><td style="padding:4px 6px">${esc(l.nombre)}</td><td style="padding:4px 6px">${selArea(l)}${l.sugerida?' <span style="font-size:9.5px;color:var(--muted)" title="Sugerida por el nombre del área; guarda para fijarla">sugerida</span>':''}</td>
+            <td style="padding:4px 6px;text-align:right;font-family:'DM Mono',monospace">${_capH(l.planeadas)}</td><td style="padding:4px 6px;text-align:right;font-family:'DM Mono',monospace">${_capH(l.registradas)}</td></tr>`).join('')}</tbody>
+        </table>
+        ${(d.sin_linea.proyecto||d.sin_linea.otras)?`<div style="font-size:10px;color:var(--muted);margin-top:6px">${_capH(d.sin_linea.proyecto+d.sin_linea.otras)} h registradas de trabajadores sin perfil en Hourly Rate se cuentan en "Sin área asignada".</div>`:''}
+        ${puedeEditar?`<button class="btn-reload" onclick="capGuardarMapeo()" style="font-size:11px;padding:4px 12px;margin-top:8px">Guardar relación</button>`:''}
+      </details>
+      <details style="flex:1 1 300px;${card}">
+        <summary style="cursor:pointer;font-size:11px;font-weight:700">Días festivos de ley ${d.anio} (LFT art. 74)</summary>
+        <div style="margin-top:8px;font-size:11px">${d.festivos.map(f=>`<div style="display:flex;gap:10px;padding:3px 0;border-top:1px solid var(--border);${f.descuenta?'':'color:var(--muted)'}"><span style="font-family:'DM Mono',monospace;min-width:74px">${_capFD(f.fecha)}</span><span style="flex:1">${esc(f.nombre)}</span>${f.descuenta?'':'<span title="Cae en domingo: no reduce la capacidad">domingo</span>'}</div>`).join('')}</div>
+      </details>
+    </div>`;
+}
+
+async function capGuardarMapeo(){
+  const mapeo = {};
+  document.querySelectorAll('#cap-indices select[data-linea]').forEach(s=>{ mapeo[s.dataset.linea] = s.value || null; });
+  try{
+    const res = await apiCall('PUT','/capacidad/mapeo',{mapeo});
+    if(res && res.error) throw new Error(res.error);
+    toast('Relación de líneas y áreas guardada','ok');
+    loadCapIndices();
+  }catch(e){ toast('No se pudo guardar: '+e.message,'er'); }
 }
 
 // ── Leyenda de Códigos (Código / Descripción / Color de fuente) ──
