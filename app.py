@@ -13299,8 +13299,11 @@ def _ptsv_key(v):
     return re.sub(r"[^A-Z0-9]", "", str(v or "").upper())
 
 def _doc_meta_publica(tipo, version, filename, size, fecha, usuario, historial):
+    # rev58: si el archivo se eliminó queda el renglón con su número de versión y su
+    # historial (la siguiente subida continúa la numeración), pero sin archivo.
     return {"tipo": tipo, "version": version, "filename": filename, "size": size,
-            "fecha": fecha, "usuario": usuario, "historial": historial or []}
+            "fecha": fecha, "usuario": usuario, "historial": historial or [],
+            "estado": "vigente" if filename else "eliminado"}
 
 def _doc_fs_dir(key, tipo):
     return _os.path.join(PROJ_DOC_DIR, key, tipo)
@@ -13332,7 +13335,7 @@ def api_projconfig_documentos():
     else:
         for t, _n in PROJ_DOC_TIPOS:
             m = _doc_fs_meta(key, t)
-            if m: docs[t] = _doc_meta_publica(t, m["version"], m["filename"], m["size"], m["fecha"], m["usuario"], m.get("historial"))
+            if m: docs[t] = _doc_meta_publica(t, m["version"], m.get("filename"), m.get("size") or 0, m["fecha"], m["usuario"], m.get("historial"))
     return jsonify({"ptsv_key": key, "tipos": [{"k": k, "nombre": n} for k, n in PROJ_DOC_TIPOS],
                     "docs": docs, "max_mb": PROJ_DOC_MAX_BYTES // (1024 * 1024)})
 
@@ -13392,6 +13395,51 @@ def api_projconfig_documentos_subir():
             with open(_os.path.join(d, "meta.json"), "w", encoding="utf-8") as fh: json.dump(m, fh, ensure_ascii=False)
     return jsonify({"ok": True, "doc": _doc_meta_publica(tipo, version, nombre, len(data), ahora, user, hist)})
 
+@app.route("/api/projconfig/documentos", methods=["DELETE"])
+def api_projconfig_documentos_eliminar():
+    """Elimina el archivo vigente de un documento. Se conserva el número de versión y el
+    historial: la siguiente subida será la versión siguiente."""
+    if not (can("delete", "projconfig") or can("create", "projconfig")): return jsonify({"error": "Sin permiso"}), 403
+    key, tipo = _ptsv_key(request.args.get("ptsv")), (request.args.get("tipo") or "").strip()
+    if not key or tipo not in dict(PROJ_DOC_TIPOS): return jsonify({"error": "Parámetros inválidos"}), 400
+    user = session.get("user", "")
+    ahora = datetime.datetime.now().isoformat(timespec="minutes")
+    if _orm and _orm.DB_ENABLED:
+        s = _sesion_propia()
+        try:
+            _pg_lock(s, f"projdoc:{key}:{tipo}")
+            row = (s.query(_orm.ProyectoDocumento)
+                   .filter(_orm.ProyectoDocumento.ptsv_key == key, _orm.ProyectoDocumento.tipo == tipo).one_or_none())
+            if not row or not row.filename: return jsonify({"error": "No hay documento que eliminar"}), 404
+            hist = list(row.historial or [])
+            hist.append({"version": row.version, "filename": row.filename, "size": row.size or 0,
+                         "fecha": ahora, "usuario": user, "accion": "eliminado"})
+            row.content, row.filename, row.size, row.mimetype = None, None, 0, None
+            row.uploaded_by, row.updated_at = user, datetime.datetime.now()
+            row.historial = hist; _orm_flag_modified(row, "historial")
+            s.commit()
+            version = row.version
+        except Exception as e:
+            s.rollback()
+            return jsonify({"error": f"No se pudo eliminar: {e}"}), 500
+        finally:
+            s.close()
+    else:
+        with _projdoc_lock:
+            m = _doc_fs_meta(key, tipo)
+            if not m or not m.get("filename"): return jsonify({"error": "No hay documento que eliminar"}), 404
+            d = _doc_fs_dir(key, tipo)
+            for x in _os.listdir(d):
+                if x != "meta.json":
+                    try: _os.remove(_os.path.join(d, x))
+                    except OSError: pass
+            hist = m.get("historial", []) + [{"version": m["version"], "filename": m["filename"], "size": m.get("size") or 0,
+                                              "fecha": ahora, "usuario": user, "accion": "eliminado"}]
+            m.update(filename=None, size=0, fecha=ahora, usuario=user, historial=hist)
+            with open(_os.path.join(d, "meta.json"), "w", encoding="utf-8") as fh: json.dump(m, fh, ensure_ascii=False)
+            version = m["version"]
+    return jsonify({"ok": True, "doc": _doc_meta_publica(tipo, version, None, 0, ahora, user, hist)})
+
 @app.route("/api/projconfig/documentos/archivo", methods=["GET"])
 def api_projconfig_documentos_archivo():
     """Descarga (o abre, si es PDF/imagen) la versión vigente de un documento."""
@@ -13409,7 +13457,7 @@ def api_projconfig_documentos_archivo():
             s.close()
     else:
         m = _doc_fs_meta(key, tipo)
-        ruta = _os.path.join(_doc_fs_dir(key, tipo), "v%d__%s" % (m["version"], m["filename"])) if m else ""
+        ruta = _os.path.join(_doc_fs_dir(key, tipo), "v%d__%s" % (m["version"], m["filename"])) if (m and m.get("filename")) else ""
         if not m or not _os.path.exists(ruta): return jsonify({"error": "Documento no encontrado"}), 404
         with open(ruta, "rb") as fh: data = fh.read()
         nombre, version = m["filename"], m["version"]
