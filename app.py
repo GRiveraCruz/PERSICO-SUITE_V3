@@ -4508,9 +4508,13 @@ def _save_capacidad(data):
 #  Proyecto / perfil de Hourly Rate); cada línea se asigna a un área de Control de
 #  Personal con la tabla "capacidad_mapeo" (se sugiere sola por nombre).
 # ══════════════════════════════════════════════════════════════════
-CAP_HORAS_SEMANA = 48
 CAP_MAPEO_KEY = "__mapeo_lineas__"
-CAP_DIAS_SEMANA = 6                       # lunes a sábado → 8 h diarias
+# rev61: jornada de la planta — lunes a jueves 10 h, viernes 8 h, sábado y domingo 0 h (48 h/semana).
+# Índice = weekday() de Python (0 = lunes).
+CAP_JORNADA = (10, 10, 10, 10, 8, 0, 0)
+CAP_HORAS_SEMANA = sum(CAP_JORNADA)
+# rev62: un día de vacaciones se valúa con el promedio de la jornada: 48 h / 5 días = 9.6 h
+CAP_HORAS_DIA_VAC = CAP_HORAS_SEMANA / sum(1 for h in CAP_JORNADA if h)
 _CAP_JOB_RE = re.compile(r"\b\d{3}-\d{2}\b")
 
 def _festivos_lft(y):
@@ -4535,16 +4539,17 @@ def _festivos_lft(y):
     if y < 2024 and (2018 - y) % 6 == 0:  out.append((_d.date(y, 12, 1), "Transmisión del Poder Ejecutivo Federal"))
     return sorted(out)
 
-def _cap_dias_laborables(d0, d1, festivos):
-    """Días de lunes a sábado entre d0 y d1 (inclusive) que no son festivos."""
+def _cap_jornada(d0, d1, festivos):
+    """(días laborables, horas) entre d0 y d1 inclusive, según CAP_JORNADA y sin festivos."""
     import datetime as _d
-    if d1 < d0: return 0
+    if d1 < d0: return 0, 0.0
     fest = {f for f, _n in festivos}
-    n, d = 0, d0
+    dias, horas, d = 0, 0.0, d0
     while d <= d1:
-        if d.weekday() < CAP_DIAS_SEMANA and d not in fest: n += 1
+        h = CAP_JORNADA[d.weekday()]
+        if h and d not in fest: dias += 1; horas += h
         d += _d.timedelta(days=1)
-    return n
+    return dias, horas
 
 _CAP_SUGERENCIAS = (                      # línea → palabras que la identifican en el nombre del área
     ("diseno_mecanico", ("MECANIC", "MECHANIC")), ("simulacion", ("SIMULA",)),
@@ -4602,16 +4607,33 @@ def api_capacidad_indices():
         def fecha(v):
             try: return _d.date.fromisoformat(str(v)[:10])
             except Exception: return None
-        cap = {}
+        # rev62: menos las vacaciones de ley según la antigüedad de cada persona (fecha de
+        # ingreso en Control de Personal). En el año se toman los días del aniversario que
+        # cumple ese año (año − año de ingreso); quien ingresó en el año aún no tiene. Las
+        # horas de vacaciones se reparten en los meses en proporción a sus horas de jornada.
+        meses = [(_d.date(anio, m, 1), (_d.date(anio, m + 1, 1) if m < 12 else _d.date(anio + 1, 1, 1)) - _d.timedelta(days=1)) for m in range(1, 13)]
+        cap, sin_ingreso = {}, 0
         for p in _load_personal() or []:
             if (p.get("estado") or "Activo") != "Activo": continue
             area = p.get("area") if p.get("area") in nombres_area else "Sin área asignada"
-            a0 = max(ini, fecha(p.get("fecha_ingreso")) or ini)
-            c = cap.setdefault(area, {"trabajadores": 0, "cap_periodo": 0.0, "cap_fecha": 0.0})
+            f_ing = fecha(p.get("fecha_ingreso"))
+            if not f_ing: sin_ingreso += 1
+            if f_ing and f_ing > fin: continue                 # ingresa después del año consultado
+            a0 = max(ini, f_ing or ini)
+            c = cap.setdefault(area, {"trabajadores": 0, "cap_bruta": 0.0, "vac_dias": 0, "vac_horas": 0.0,
+                                      "cap_periodo": 0.0, "cap_fecha": 0.0, "mensual": [0.0] * 12})
             c["trabajadores"] += 1
-            hd = CAP_HORAS_SEMANA / CAP_DIAS_SEMANA
-            c["cap_periodo"] += _cap_dias_laborables(a0, fin, festivos) * hd
-            c["cap_fecha"] += _cap_dias_laborables(a0, corte, festivos) * hd
+            bruta = _cap_jornada(a0, fin, festivos)[1]
+            bruta_fecha = _cap_jornada(a0, corte, festivos)[1]
+            por_mes = [_cap_jornada(max(a0, m0), m1, festivos)[1] if m1 >= a0 else 0.0 for m0, m1 in meses]
+            aniv = anio - f_ing.year if f_ing else 0
+            vd = _dias_vacaciones_ley(aniv) if aniv >= 1 else 0
+            vh = min(vd * CAP_HORAS_DIA_VAC, bruta)
+            prop = (vh / bruta) if bruta else 0.0
+            c["cap_bruta"] += bruta; c["vac_dias"] += vd; c["vac_horas"] += vh
+            c["cap_periodo"] += bruta - vh
+            c["cap_fecha"] += bruta_fecha * (1 - prop)
+            for i, hm in enumerate(por_mes): c["mensual"][i] += hm * (1 - prop)
 
         # ── 2) Horas planeadas en Configurar Proyecto, por línea (y consumidas en esos mismos Jobs)
         jobs_estado = {str(j.get("job_number") or "").strip().upper(): str(j.get("status") or "").strip().upper() for j in scan_jobs()}
@@ -4648,11 +4670,12 @@ def api_capacidad_indices():
             else: sin_linea["proyecto" if es_proy else "otras"] += h
 
         # ── Agregar por área
-        filas = {a: {"area": a, "lineas": [], "trabajadores": 0, "cap_periodo": 0.0, "cap_fecha": 0.0,
+        filas = {a: {"area": a, "lineas": [], "trabajadores": 0, "cap_bruta": 0.0, "vac_dias": 0, "vac_horas": 0.0,
+                     "mensual": [0.0] * 12, "cap_periodo": 0.0, "cap_fecha": 0.0,
                      "planeadas": 0.0, "consumidas_plan": 0.0, "registradas": 0.0, "registradas_otras": 0.0}
                  for a in nombres_area + ["Sin área asignada"]}
         for a, c in cap.items():
-            filas[a].update(trabajadores=c["trabajadores"], cap_periodo=c["cap_periodo"], cap_fecha=c["cap_fecha"])
+            filas[a].update(c)
         lineas = []
         for k, n, _p in LINEAS_MO:
             a = mapeo.get(k) or "Sin área asignada"
@@ -4671,17 +4694,23 @@ def api_capacidad_indices():
             if a == "Sin área asignada" and not any(f[x] for x in ("trabajadores", "planeadas", "registradas", "registradas_otras")):
                 continue
             f = {k: (round(v, 1) if isinstance(v, float) else v) for k, v in f.items()}
+            f["mensual"] = [round(v, 1) for v in f["mensual"]]
             f["pendiente"] = round(max(f["planeadas"] - f["consumidas_plan"], 0), 1)
             f["cap_restante"] = round(f["cap_periodo"] - f["cap_fecha"], 1)
             f["utilizacion"] = round(f["registradas"] / f["cap_fecha"] * 100, 1) if f["cap_fecha"] else None
             f["carga_restante"] = round(f["pendiente"] / f["cap_restante"] * 100, 1) if f["cap_restante"] else None
             out.append(f)
-        dias_periodo = _cap_dias_laborables(ini, fin, festivos)
+        dias_periodo, horas_persona = _cap_jornada(ini, fin, festivos)
+        dias_fecha, horas_persona_fecha = _cap_jornada(ini, corte, festivos)
         return jsonify({
             "anio": anio, "corte": corte.isoformat(), "hoy": hoy.isoformat(), "proyectos": filtro, "n_proyectos": n_proy,
-            "horas_semana": CAP_HORAS_SEMANA, "horas_dia": CAP_HORAS_SEMANA / CAP_DIAS_SEMANA,
-            "dias_laborables": dias_periodo, "dias_laborables_fecha": _cap_dias_laborables(ini, corte, festivos),
-            "festivos": [{"fecha": f.isoformat(), "nombre": n, "dia": f.weekday(), "descuenta": f.weekday() < CAP_DIAS_SEMANA} for f, n in festivos],
+            "horas_semana": CAP_HORAS_SEMANA, "jornada": list(CAP_JORNADA),
+            "horas_dia_vac": CAP_HORAS_DIA_VAC, "sin_fecha_ingreso": sin_ingreso,
+            "vac_tabla": [{"anios": a, "dias": _dias_vacaciones_ley(a)} for a in (1, 2, 3, 4, 5, 6, 11, 16, 21, 26)],
+            "horas_persona": horas_persona, "horas_persona_fecha": horas_persona_fecha,
+            "dias_laborables": dias_periodo, "dias_laborables_fecha": dias_fecha,
+            "festivos": [{"fecha": f.isoformat(), "nombre": n, "dia": f.weekday(), "horas": CAP_JORNADA[f.weekday()],
+                          "descuenta": CAP_JORNADA[f.weekday()] > 0} for f, n in festivos],
             "areas": out, "lineas": lineas, "areas_catalogo": nombres_area,
             "sin_linea": {k: round(v, 1) for k, v in sin_linea.items()},
         })

@@ -2918,10 +2918,11 @@ function capRenderIndices(){
   const box = document.getElementById('cap-indices'), d = capIdx; if(!box || !d) return;
   const A = d.areas || [];
   const T = k => A.reduce((a,x)=>a+(+x[k]||0),0);
-  const tot = {trab:T('trabajadores'), capP:T('cap_periodo'), capF:T('cap_fecha'), plan:T('planeadas'), pend:T('pendiente'), reg:T('registradas'), otras:T('registradas_otras'), capR:T('cap_restante')};
+  const tot = {trab:T('trabajadores'), vacH:T('vac_horas'), vacD:T('vac_dias'), capP:T('cap_periodo'), capF:T('cap_fecha'), plan:T('planeadas'), pend:T('pendiente'), reg:T('registradas'), otras:T('registradas_otras'), capR:T('cap_restante')};
   const util = tot.capF ? Math.round(tot.reg/tot.capF*100) : null, carga = tot.capR ? Math.round(tot.pend/tot.capR*100) : null;
   const colU = p => p==null ? 'var(--muted)' : p>100 ? '#c8102e' : p>=85 ? '#b45309' : '#1f8a4c';
   const nFest = d.festivos.filter(f=>f.descuenta).length;
+  const hFest = d.festivos.reduce((a,f)=>a+(f.descuenta?f.horas:0),0);
   const card = 'background:#fff;border-radius:12px;box-shadow:0 3px 14px rgba(0,0,0,.07);padding:12px 14px;min-width:0';
   const kpi = (l,v,sub,c) => `<div style="${card}"><div style="font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${l}</div><div style="font-size:22px;font-weight:700;font-family:'DM Mono',monospace;color:${c||'var(--text)'}">${v}</div><div style="font-size:10px;color:var(--muted)">${sub||''}</div></div>`;
   const anios = [d.anio-1, d.anio, d.anio+1].filter((v,i,a)=>a.indexOf(v)===i);
@@ -2930,7 +2931,7 @@ function capRenderIndices(){
   const filas = A.map(x=>`<tr>
       <td style="text-align:left;padding:7px 8px;font-weight:700;white-space:normal;min-width:150px">${esc(x.area)}<div style="font-size:9.5px;font-weight:400;color:var(--muted)">${x.lineas.length?esc(x.lineas.join(', ')):'<i>sin líneas de mano de obra</i>'}</div></td>
       <td style="padding:7px 8px">${x.trabajadores}</td>
-      <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700">${_capH(x.cap_periodo)}</td>
+      <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700" title="Jornada sin festivos: ${_capH(x.cap_bruta)} h · vacaciones: ${x.vac_dias} días = ${_capH(x.vac_horas)} h">${_capH(x.cap_periodo)}${x.vac_horas?`<div style="font-size:9.5px;font-weight:400;color:var(--muted)">−${_capH(x.vac_horas)} h vac.</div>`:''}</td>
       <td style="padding:7px 8px;font-family:'DM Mono',monospace">${_capH(x.cap_fecha)}</td>
       <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700;color:#2569a0">${_capH(x.planeadas)}</td>
       <td style="padding:7px 8px;font-family:'DM Mono',monospace;font-weight:700;color:#1f3864">${_capH(x.registradas)}</td>
@@ -2948,11 +2949,11 @@ function capRenderIndices(){
       <select onchange="capIdxProy=this.value;loadCapIndices()" style="font-size:11px;padding:3px 6px" title="Qué configuraciones de proyecto se suman en Horas planeadas">
         <option value="activos" ${d.proyectos==='activos'?'selected':''}>Proyectos activos (Jobs Open/WIP)</option>
         <option value="todos" ${d.proyectos==='todos'?'selected':''}>Todas las configuraciones</option></select>
-      <span style="font-size:10.5px;color:var(--muted)">Corte al ${_capFD(d.corte)} · ${d.horas_semana} h/semana (${d.horas_dia} h de lunes a sábado) · ${d.dias_laborables} días laborables en ${d.anio} (${nFest} festivo${nFest===1?'':'s'} de ley descontado${nFest===1?'':'s'})</span>
+      <span style="font-size:10.5px;color:var(--muted)">Corte al ${_capFD(d.corte)} · Jornada: lunes a jueves ${d.jornada[0]} h, viernes ${d.jornada[4]} h, sábado y domingo 0 h (${d.horas_semana} h/semana) · <b>${_capH(d.horas_persona)} h por persona en ${d.anio}</b> (${d.dias_laborables} días laborables; ${nFest} festivo${nFest===1?'':'s'} de ley, −${hFest} h), menos sus vacaciones de ley por antigüedad (${d.horas_dia_vac} h por día)</span>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
-      ${kpi('Capacidad disponible '+d.anio, _capH(tot.capP)+' h', `${tot.trab} trabajadores activos`)}
-      ${kpi('Capacidad a la fecha', _capH(tot.capF)+' h', `${d.dias_laborables_fecha} de ${d.dias_laborables} días laborables`)}
+      ${kpi('Capacidad disponible '+d.anio, _capH(tot.capP)+' h', `${tot.trab} trabajadores activos · −${_capH(tot.vacH)} h de vacaciones (${tot.vacD} días)`)}
+      ${kpi('Capacidad a la fecha', _capH(tot.capF)+' h', `${d.dias_laborables_fecha} de ${d.dias_laborables} días laborables · ${_capH(d.horas_persona_fecha)} h por persona`)}
       ${kpi('Horas planeadas', _capH(tot.plan)+' h', `${d.n_proyectos} configuraci${d.n_proyectos===1?'ón':'ones'} de proyecto`, '#2569a0')}
       ${kpi('Horas registradas a la fecha', _capH(tot.reg)+' h', `en proyectos · ${_capH(tot.otras)} h en otros códigos`, '#1f3864')}
       ${kpi('Utilización a la fecha', util==null?'—':util+'%', 'registradas en proyectos / capacidad a la fecha', colU(util))}
@@ -2963,7 +2964,7 @@ function capRenderIndices(){
         <thead><tr>
           <th style="text-align:left!important;padding:7px 8px!important">Área</th>
           <th style="padding:7px 8px!important" title="Trabajadores activos en Control de Personal">Trab.</th>
-          <th style="padding:7px 8px!important" title="Días laborables del año × 8 h × trabajadores (desde su fecha de ingreso)">Capacidad disponible ${d.anio}</th>
+          <th style="padding:7px 8px!important" title="Horas de jornada del año (L-J 10 h, V 8 h) sin festivos, menos vacaciones de ley por antigüedad, de cada trabajador desde su fecha de ingreso">Capacidad disponible ${d.anio}</th>
           <th style="padding:7px 8px!important">Capacidad a la fecha</th>
           <th style="padding:7px 8px!important" title="Suma de las horas de mano de obra de las configuraciones de proyecto">Horas planeadas (proyectos)</th>
           <th style="padding:7px 8px!important" title="Work Hours del año hasta la fecha de corte, en códigos de Job">Horas registradas a la fecha</th>
@@ -2975,6 +2976,7 @@ function capRenderIndices(){
         <tbody>${filas || '<tr><td colspan="10" style="padding:14px;color:var(--muted)">No hay áreas en Control de Personal.</td></tr>'}</tbody>
       </table>
     </div>
+    ${capChartMensual(d)}
     <div style="font-size:10.5px;color:var(--muted2);margin-bottom:8px">Las horas planeadas y registradas se toman por <b>línea de mano de obra</b> (las de Configurar Proyecto; las registradas se clasifican por el departamento del trabajador en Hourly Rate) y se suman al área asignada abajo. Utilización y carga: verde &lt; 85 %, ámbar 85–100 %, rojo &gt; 100 %.</div>
     <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;align-items:flex-start">
       <details style="flex:1 1 420px;${card}" ${d.lineas.some(l=>!l.area)?'open':''}>
@@ -2987,11 +2989,53 @@ function capRenderIndices(){
         ${(d.sin_linea.proyecto||d.sin_linea.otras)?`<div style="font-size:10px;color:var(--muted);margin-top:6px">${_capH(d.sin_linea.proyecto+d.sin_linea.otras)} h registradas de trabajadores sin perfil en Hourly Rate se cuentan en "Sin área asignada".</div>`:''}
         ${puedeEditar?`<button class="btn-reload" onclick="capGuardarMapeo()" style="font-size:11px;padding:4px 12px;margin-top:8px">Guardar relación</button>`:''}
       </details>
+      <details style="flex:1 1 260px;${card}">
+        <summary style="cursor:pointer;font-size:11px;font-weight:700">Vacaciones de ley por antigüedad (LFT art. 76)</summary>
+        <div style="margin-top:8px;font-size:11px">${d.vac_tabla.map((v,i,a)=>{ const hasta = a[i+1] ? a[i+1].anios-1 : null;
+          return `<div style="display:flex;gap:10px;padding:3px 0;border-top:1px solid var(--border)"><span style="flex:1">${hasta && hasta!==v.anios?`${v.anios} a ${hasta} años`:hasta?`${v.anios} año${v.anios===1?'':'s'}`:`${v.anios} a 30 años (+2 días cada 5 años más)`}</span><b>${v.dias} días</b><span style="font-family:'DM Mono',monospace;color:var(--muted);min-width:60px;text-align:right">${_capH(v.dias*d.horas_dia_vac)} h</span></div>`;}).join('')}
+          <div style="font-size:10px;color:var(--muted);margin-top:6px">En ${d.anio} cada persona descuenta los días del aniversario que cumple ese año; quien ingresó en ${d.anio} todavía no tiene vacaciones. Se reparten en los meses en proporción a sus horas de jornada.${d.sin_fecha_ingreso?` <b style="color:#b45309">${d.sin_fecha_ingreso} trabajador(es) sin fecha de ingreso: no se les descuentan vacaciones.</b>`:''}</div></div>
+      </details>
       <details style="flex:1 1 300px;${card}">
         <summary style="cursor:pointer;font-size:11px;font-weight:700">Días festivos de ley ${d.anio} (LFT art. 74)</summary>
-        <div style="margin-top:8px;font-size:11px">${d.festivos.map(f=>`<div style="display:flex;gap:10px;padding:3px 0;border-top:1px solid var(--border);${f.descuenta?'':'color:var(--muted)'}"><span style="font-family:'DM Mono',monospace;min-width:74px">${_capFD(f.fecha)}</span><span style="flex:1">${esc(f.nombre)}</span>${f.descuenta?'':'<span title="Cae en domingo: no reduce la capacidad">domingo</span>'}</div>`).join('')}</div>
+        <div style="margin-top:8px;font-size:11px">${d.festivos.map(f=>`<div style="display:flex;gap:10px;padding:3px 0;border-top:1px solid var(--border);${f.descuenta?'':'color:var(--muted)'}"><span style="font-family:'DM Mono',monospace;min-width:74px">${_capFD(f.fecha)}</span><span style="flex:1">${esc(f.nombre)}</span>${f.descuenta?`<span style="font-family:'DM Mono',monospace">−${f.horas} h</span>`:`<span title="Cae en fin de semana: no reduce la capacidad">${f.dia===5?'sábado':'domingo'}</span>`}</div>`).join('')}</div>
       </details>
     </div>`;
+}
+
+// rev62: disponibilidad de cada área por mes (barras agrupadas: un grupo por mes, una barra por área)
+const CAP_AREA_COLORES = ['#1f3864','#2569a0','#e8702a','#1f8a4c','#a855f7','#c8102e','#f2b134','#38a3d8','#6b7280','#0f766e'];
+function capChartMensual(d){
+  const areas = (d.areas||[]).filter(a=>a.mensual && a.mensual.some(v=>v>0));
+  if(!areas.length) return '';
+  const MES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const W=960, H=280, L=58, R=12, T=14, B=30, pw=W-L-R, ph=H-T-B;
+  const maxV = Math.max(1, ...areas.flatMap(a=>a.mensual));
+  const mag = Math.pow(10, Math.floor(Math.log10(maxV/4)));
+  const paso = [1,2,2.5,5,10].map(c=>c*mag).find(c=>maxV/c<=5) || mag*10, nDiv = Math.ceil(maxV/paso), top = paso*nDiv;
+  const y = v => T + ph - v/top*ph, gw = pw/12, bw = Math.max(3, Math.min(18, (gw*0.82)/areas.length));
+  const hoy = new Date(d.corte+'T00:00:00'), mesHoy = hoy.getFullYear()===d.anio ? hoy.getMonth() : (hoy.getFullYear()>d.anio ? 12 : -1);
+  let g = '';
+  for(let k=0;k<=nDiv;k++){ const v=paso*k; g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(0,0,0,.07)"/><text x="${L-6}" y="${y(v)+3.5}" text-anchor="end" font-size="10" fill="#888">${_capH(v)}</text>`; }
+  MES.forEach((m,i)=>{
+    const x0 = L + gw*i;
+    if(i===mesHoy) g += `<rect x="${x0}" y="${T}" width="${gw}" height="${ph}" fill="rgba(200,16,46,.05)"/>`;
+    g += `<text x="${x0+gw/2}" y="${H-B+15}" text-anchor="middle" font-size="10.5" fill="${i===mesHoy?'#c8102e':'#666'}" font-weight="${i===mesHoy?700:400}">${m}</text>`;
+    const start = x0 + (gw - bw*areas.length)/2;
+    areas.forEach((a,j)=>{ const v=a.mensual[i]||0; const col=CAP_AREA_COLORES[(d.areas.indexOf(a))%CAP_AREA_COLORES.length];
+      g += `<rect x="${start+bw*j}" y="${y(v)}" width="${bw-1}" height="${Math.max(0,y(0)-y(v))}" fill="${col}" opacity="${i<mesHoy?.55:1}"><title>${esc(a.area)} · ${MES[i]} ${d.anio}: ${_capH(v)} h disponibles (${a.trabajadores} trabajador${a.trabajadores===1?'':'es'})</title></rect>`; });
+  });
+  g += `<line x1="${L}" x2="${W-R}" y1="${y(0)}" y2="${y(0)}" stroke="rgba(0,0,0,.25)"/>`;
+  const totMes = MES.map((_,i)=>areas.reduce((s,a)=>s+(a.mensual[i]||0),0));
+  const leyenda = areas.map(a=>`<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:11px;height:11px;border-radius:2px;background:${CAP_AREA_COLORES[d.areas.indexOf(a)%CAP_AREA_COLORES.length]}"></span>${esc(a.area)} · ${_capH(a.cap_periodo)} h</span>`).join('');
+  return `<div style="background:#fff;border-radius:12px;box-shadow:0 3px 14px rgba(0,0,0,.07);padding:12px 14px;margin-bottom:10px">
+    <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Disponibilidad por área y mes · ${d.anio} (horas, sin festivos ni vacaciones)</div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="Disponibilidad por área y mes">${g}</svg>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;margin-top:6px">${leyenda}</div>
+    <div style="overflow-x:auto;margin-top:8px"><table style="width:100%;font-size:10.5px;border-collapse:collapse;white-space:nowrap">
+      <tr><td style="color:var(--muted);padding:2px 6px">Total</td>${totMes.map((v,i)=>`<td style="text-align:right;padding:2px 6px;font-family:'DM Mono',monospace;${i===mesHoy?'color:#c8102e;font-weight:700':''}">${_capH(v)}</td>`).join('')}</tr>
+      <tr><td></td>${MES.map((m,i)=>`<td style="text-align:right;padding:0 6px;color:var(--muted);${i===mesHoy?'color:#c8102e':''}">${m}</td>`).join('')}</tr></table></div>
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">Los meses ya transcurridos se ven más tenues; el mes actual está resaltado.</div>
+  </div>`;
 }
 
 async function capGuardarMapeo(){
