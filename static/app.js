@@ -1111,6 +1111,7 @@ function areaRenderOrgChart(){
 
 async function loadPerfiles(){
   try{ perfilesList=await(await fetch('/api/perfiles')).json(); }catch(e){ perfilesList=[]; }
+  if(!Array.isArray(perfilesList)) perfilesList=[];   // rev69: sin permiso el servidor responde {error}
   perfilRenderList();
   perfilPopulateSelects();
 }
@@ -2144,6 +2145,7 @@ let permisos=[], pmCurrentId=null;
 
 async function loadPermisos(){
   try{ permisos=await(await fetch('/api/permisos')).json(); }catch(e){ permisos=[]; }
+  if(!Array.isArray(permisos)) permisos=[];           // rev69: sin permiso el servidor responde {error}
   pmRender();
 }
 
@@ -5807,6 +5809,9 @@ const MODULE_LABELS = {
   // Reportes y Config
   'wh':'Work Hours', 'report':'Job Report', 'multirpt':'Multi-Job Report', 'fx':'Exchange Rate',
   'projconfig':'Configurar Proyecto',
+  'projconfig-dashboard':'↳ Pestaña Dashboard', 'projconfig-presupuesto':'↳ Pestaña Presupuesto',
+  'projconfig-timing':'↳ Pestaña Timing', 'projconfig-abiertos':'↳ Pestaña Puntos Abiertos',
+  'projconfig-cambios':'↳ Pestaña Control de Cambios', 'projconfig-documentos':'↳ Pestaña Documentación',
   // Finanzas
   'fin-recepciones':'Recepciones', 'fin-procesarcompra':'Procesar Compra',
   'fin-cpp':'CPP (Cuentas por Pagar)', 'fin-pagos':'Pagos', 'fin-esquemas':'Esquemas Tributarios',
@@ -5835,7 +5840,7 @@ const MODULE_GROUPS = [
   { label: '📄 Documentos de Compra', mods: ['gpo','po','ivp','reassign','consig-reassign','recovery'] },
   { label: '🏬 Almacenes',            mods: ['stock','consignacion','ingreso','apartados','manuf-stock','salida'] },
   { label: '✈ Servicio',             mods: ['viaticos','gastos-viaje','envios'] },
-  { label: '📊 Reportes y Config',    mods: ['wh','report','multirpt','fx','projconfig'] },
+  { label: '📊 Reportes y Config',    mods: ['wh','report','multirpt','fx','projconfig','projconfig-dashboard','projconfig-presupuesto','projconfig-timing','projconfig-abiertos','projconfig-cambios','projconfig-documentos'] },
   { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-pagos','fin-esquemas'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-perfiles','personal-listado'] },
   { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os'] },
@@ -5890,10 +5895,12 @@ function adminSelectUser(uname) {
     const hdr = `<tr style="background:rgba(0,0,0,.035)"><td colspan="2"
       style="padding:6px 10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--red);border-bottom:1px solid var(--border)">${grp.label}</td></tr>`;
     return hdr + gm.map(mod => {
-      const lv = isAdmin ? 'full' : (perms[mod]||'none');
+      // rev69: las pestañas de Configurar Proyecto pueden "heredar" el nivel del módulo
+      const esTab = mod.startsWith('projconfig-');
+      const lv = isAdmin ? 'full' : (esTab && !perms[mod] ? 'inherit' : (perms[mod]||'none'));
       const clr = lv==='full'?'var(--green)':lv==='create'?'var(--gold)':lv==='view'?'var(--text)':'var(--muted)';
-      const opts = ['none','view','create','full'].map(l=>
-        `<option value="${l}" ${lv===l?'selected':''}>${LEVEL_LABELS[l]}</option>`).join('');
+      const opts = (esTab?[`<option value="inherit" ${lv==='inherit'?'selected':''}>Igual que Configurar Proyecto (${LEVEL_LABELS[perms['projconfig']||'none']})</option>`]:[]).concat(['none','view','create','full'].map(l=>
+        `<option value="${l}" ${lv===l?'selected':''}>${LEVEL_LABELS[l]}</option>`)).join('');
       return `<tr style="border-bottom:1px solid rgba(0,0,0,.045)">
         <td style="padding:7px 10px 7px 18px;font-size:11px;color:var(--muted2);width:55%">${MODULE_LABELS[mod]||mod}</td>
         <td style="padding:4px 10px"><select data-user="${uname}" data-mod="${mod}" onchange="adminSetLevel(this)"
@@ -5965,7 +5972,7 @@ async function adminSetPuedeVerSalarios(uname, checked){
 async function adminSetLevel(sel) {
   const uname = sel.dataset.user;
   const mod   = sel.dataset.mod;
-  const level = sel.value;
+  const level = sel.value === 'inherit' ? null : sel.value;   // rev69: null = heredar
   // Update color
   const colors = {full:'var(--green)',create:'var(--gold)',view:'var(--text)',none:'var(--muted)'};
   sel.style.color = colors[level]||'var(--text)';
@@ -5975,7 +5982,8 @@ async function adminSetLevel(sel) {
       body: JSON.stringify({permissions: {[mod]: level}})
     }).then(r=>r.json());
     if(d.error){toast(d.error,'er');return;}
-    toast(`${uname} · ${MODULE_LABELS[mod]||mod} → ${LEVEL_LABELS[level]}`,'ok',2000);
+    if(_adminUsersData?.users?.[uname]){ const pp=_adminUsersData.users[uname].permissions=_adminUsersData.users[uname].permissions||{}; if(level===null) delete pp[mod]; else pp[mod]=level; }
+    toast(`${uname} · ${MODULE_LABELS[mod]||mod} → ${level===null?'igual que Configurar Proyecto':LEVEL_LABELS[level]}`,'ok',2000);
   } catch(e){toast('Error guardando permiso','er');}
 }
 
@@ -6164,7 +6172,7 @@ function applyPermsToDom(d) {
     { pat:'fxOpenImport(',    mod:'fx',           need:'full' },
     { pat:'fxFetchBanxico(',  mod:'fx',           need:'create' },
     // Projconfig
-    { pat:'pcSave(',          mod:'projconfig',   need:'create' },
+    // pcSave: lo decide pcAplicarPermisosPestanas() (rev69: basta con editar alguna pestaña)
     { pat:'pcDeleteConfig(',  mod:'projconfig',   need:'create' },
     // Finanzas
     { pat:'recOpenWizard(',       mod:'fin-recepciones',    need:'create' },
@@ -6393,8 +6401,8 @@ function applyPermsToDom(d) {
     mrptSwitchTab('op');
   }
 
-  // ── Projconfig: view-only = disable all inputs
-  if(viewOnlyMods.includes('projconfig')) {
+  // ── Projconfig: view-only = disable all inputs (rev69: salvo que alguna pestaña sea editable)
+  if(viewOnlyMods.includes('projconfig') && !pcPuedeEditarAlgo()) {
     window.pcSave = function() { return; };
     window.pcDeleteConfig = function() { return; };
     // Make existing inputs readonly after render
@@ -6927,6 +6935,8 @@ async function initHomeDashboard(){
       await loadGMDashboard();
     } else if(me.role === 'OPERATION MANAGER'){
       await loadOMDashboard();
+    } else if(me.role === 'ENGINEERING'){
+      await loadIngDashboard();
     } else if(me.role === 'PROJECT MANAGER'){
       await loadPMDashboard();
     } else if(me.role === 'PURCHASING'){
@@ -7623,6 +7633,123 @@ function renderGMDashboard(d){
   const hd = document.getElementById('home-date-dash');
   if(hd) hd.textContent = new Date().toLocaleDateString('es-MX', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
   loadOMSecciones(document.getElementById('om-secciones'), true);   // rev64: misma información del Operation Manager
+}
+
+// ════════════════════════════════════════════════════════
+//  DASHBOARD ENGINEERING (rev69) — una tarjeta por Job WIP
+//  Documentación del proyecto, Run Off interno/cliente, envío, tiempo transcurrido y
+//  restante, estatus de compras y puntos abiertos.
+// ════════════════════════════════════════════════════════
+let _ing = null, _ingQ = '', _ingOrden = 'restante', _ingFiltro = 'todos';
+async function loadIngDashboard(){
+  const wrap = document.getElementById('home-dashboard'), dflt = document.getElementById('home-default');
+  if(!wrap) return;
+  dflt.style.display='none'; wrap.style.display='block';
+  wrap.innerHTML = `<div style="text-align:center;padding:60px;color:var(--muted)">Cargando Jobs en WIP…</div>`;
+  try{
+    const r = await fetch('/api/dashboard/engineering'); const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error||`HTTP ${r.status}`);
+    _ing = d; ingRender();
+  }catch(e){ wrap.innerHTML = `<div style="padding:30px;color:var(--red)">⚠ No se pudo cargar el dashboard: ${esc(e.message)}</div>`; }
+}
+
+function _ingDocsN(c, d){ return d.doc_tipos.filter(t=>c.docs[t.k]?.estado==='vigente').length; }
+
+function ingCardHTML(c, d){
+  const fd = v => v ? new Date(v.slice(0,10)+'T12:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '<span style="color:var(--muted)">—</span>';
+  const hoy = d.hoy;
+  const venc = v => v && v.slice(0,10) < hoy;
+  // Documentación
+  const docs = d.doc_tipos.map(t=>{
+    const x = c.docs[t.k];
+    const [ic, col, sub] = !x ? ['☐','var(--muted)','pendiente'] : x.estado==='vigente' ? ['☑','#1f8a4c',`v${x.version}`] : ['☒','#c8102e',`v${x.version} eliminada`];
+    return `<div style="display:flex;align-items:center;gap:7px;font-size:12px;padding:2px 0"><span style="color:${col};font-size:15px;line-height:1">${ic}</span><span style="flex:1;${x&&x.estado==='vigente'?'':'color:var(--muted2)'}">${esc(t.nombre)}</span><span style="font-size:10px;color:${col}">${sub}</span></div>`;
+  }).join('');
+  const nDocs = _ingDocsN(c, d);
+  // Fechas
+  const fila = (l, v, alerta) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0"><span style="color:var(--muted2)">${l}</span><b style="${alerta?'color:var(--red)':''}">${alerta?'⚠ ':''}${fd(v)}</b></div>`;
+  // Tiempo
+  let tiempo = `<div style="font-size:11px;color:var(--muted)">Sin fecha de arranque o de finalización.</div>`;
+  if(c.tiempo){
+    const t = c.tiempo, pct = Math.min(100, t.pct), sobre = t.restantes < 0;
+    tiempo = `<div style="display:flex;height:14px;border-radius:4px;overflow:hidden;border:1px solid rgba(0,0,0,.15)" title="Arranque: ${esc(t.inicio)} (${esc(t.inicio_origen)}) · Final: ${esc(t.fin)} (${esc(t.fin_origen)})">
+        <div style="width:${pct}%;background:${sobre?'#7f1d1d':'#dc2626'}"></div><div style="flex:1;background:#16a34a"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;margin-top:4px">
+        <span><b>${Math.max(0,t.transcurridos)}</b> días transcurridos (${Math.round(t.pct)}%)</span>
+        <span style="${sobre?'color:var(--red);font-weight:700':''}">${sobre?`Vencido hace ${-t.restantes} días`:`<b>${t.restantes}</b> días restantes`}</span></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:1px">Desde ${esc(t.inicio_origen)} hasta ${esc(t.fin_origen)} · ${t.total} días</div>`;
+  }
+  // Compras
+  const PURCH_N = {electrico:'Eléctrico', mecanico:'Mecánico', componentes_mayores:'Comp. mayores', manufactura:'Manufactura'};
+  const compras = !d.requisiciones_disponibles ? '<div style="font-size:11px;color:var(--muted)">Requiere la base de datos.</div>' : d.req_tipos.map(t=>{
+    const b = c.compras[t];
+    if(!b) return `<div style="display:grid;grid-template-columns:92px 1fr 40px;gap:6px;align-items:center;font-size:11px;padding:2px 0"><span>${PURCH_N[t]||t}</span><span style="color:var(--muted);font-size:10.5px">Sin requisición</span><span></span></div>`;
+    const r = Math.min(100, b.pct_reasignado*100), o = Math.min(100-r, b.pct_ordenado*100), cub = Math.round(b.pct_cubierto*100);
+    const dias = _purchDias(b.ultima_actualizacion), alerta = cub<100 && dias > PURCH_DIAS_ALERTA;
+    return `<div style="display:grid;grid-template-columns:92px 1fr 40px;gap:6px;align-items:center;font-size:11px;padding:2px 0;cursor:pointer" onclick="purchIrReq('${esc(c.job_number)}','${t}')" title="Reasignado ${Math.round(b.pct_reasignado*100)}% · Ordenado ${Math.round(b.pct_ordenado*100)}% · ${_purchHace(dias)} — clic para abrir la requisición">
+      <span>${PURCH_N[t]||t}${alerta?' <span style="color:#b45309">⚠</span>':''}</span>
+      <div style="display:flex;height:7px;border-radius:3px;overflow:hidden;background:rgba(0,0,0,.07)"><div style="width:${r}%;background:#8b7fe0"></div><div style="width:${o}%;background:#1d9e75"></div></div>
+      <b style="text-align:right;color:${cub>=100?'#15803d':'var(--text)'}">${cub>=100?'✓':cub+'%'}</b></div>`;
+  }).join('');
+  // Puntos abiertos
+  const L = c.lop, nP = L.OPEN + L.CLOSE + L.INFO;
+  const pie = nP ? `<div style="transform:scale(.82);transform-origin:top center;margin-bottom:-28px">${pcDashPie([{label:'Abiertos', value:L.OPEN, color:'#f59e0b'}, {label:'Cerrados', value:L.CLOSE, color:'#16a34a'}, {label:'Informativos', value:L.INFO, color:'#2569a0'}], '')}</div>` : '<div style="font-size:11px;color:var(--muted)">Sin puntos en la LOP.</div>';
+  const sec = t => `<div style="font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin:12px 0 5px;font-weight:700">${t}</div>`;
+  return `<div style="background:#fff;border-radius:18px;box-shadow:0 4px 18px rgba(0,0,0,.08);padding:16px 18px;display:flex;flex-direction:column;min-width:0">
+    <div style="text-align:center;border-bottom:1px solid var(--border);padding-bottom:10px">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:1px">JOB</div>
+      <div style="font-family:'DM Mono',monospace;font-size:22px;font-weight:800">${esc(c.job_number)}</div>
+      <div style="font-size:11px;color:var(--muted2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.description||'')}">${esc(c.customer||'')}${c.description?' · '+esc(c.description):''}</div>
+      <div style="font-size:10.5px;color:var(--muted)">${c.ptsv?esc(c.ptsv)+' · ':''}${esc(String(c.pm||'').replace(/ - Persico$/i,''))}</div>
+    </div>
+    ${sec(`Documentación · ${nDocs}/${d.doc_tipos.length}`)}${c.ptsv?docs:'<div style="font-size:11px;color:var(--amber)">El Job no está en ninguna configuración de proyecto.</div>'}
+    ${sec('Fechas')}
+    ${fila('Run Off interno', c.runoff_interno, venc(c.runoff_interno))}${fila('Run Off cliente', c.runoff_cliente, venc(c.runoff_cliente))}${fila('Envío', c.fecha_envio, venc(c.fecha_envio))}
+    ${sec('Tiempo transcurrido y restante')}${tiempo}
+    ${sec('Estatus de compras')}${compras}
+    ${sec(`Puntos abiertos${nP?` · ${L.OPEN} abiertos de ${L.OPEN+L.CLOSE}`:''}`)}${pie}
+    ${c.ptsv?`<button class="btn-reload" style="margin-top:auto;font-size:11px;padding:6px 10px" onclick="ingAbrirProyecto('${esc(c.ptsv)}')">Abrir configuración del proyecto →</button>`:''}
+  </div>`;
+}
+
+function ingRender(){
+  const wrap = document.getElementById('home-dashboard'), d = _ing; if(!wrap || !d) return;
+  const q = _ingQ.trim().toLowerCase();
+  let cards = d.cards.filter(c=>!q || `${c.job_number} ${c.customer} ${c.pm} ${c.ptsv} ${c.description}`.toLowerCase().includes(q));
+  if(_ingFiltro==='docs') cards = cards.filter(c=>_ingDocsN(c,d) < d.doc_tipos.length);
+  if(_ingFiltro==='vencidos') cards = cards.filter(c=>c.tiempo && c.tiempo.restantes < 0);
+  const rest = c => c.tiempo ? c.tiempo.restantes : 1e9;
+  cards.sort(_ingOrden==='restante' ? (a,b)=>rest(a)-rest(b) || a.job_number.localeCompare(b.job_number)
+           : _ingOrden==='docs' ? (a,b)=>_ingDocsN(a,d)-_ingDocsN(b,d) || a.job_number.localeCompare(b.job_number)
+           : (a,b)=>a.job_number.localeCompare(b.job_number));
+  const total = d.cards.length, faltanDocs = d.cards.filter(c=>_ingDocsN(c,d) < d.doc_tipos.length).length, vencidos = d.cards.filter(c=>c.tiempo && c.tiempo.restantes<0).length;
+  const proxima = d.cards.filter(c=>c.tiempo && c.tiempo.restantes>=0).sort((a,b)=>a.tiempo.restantes-b.tiempo.restantes)[0];
+  const kpi = (l,v,c,sub) => `<div style="background:#fff;border-radius:14px;box-shadow:0 4px 18px rgba(0,0,0,.08);padding:14px 16px;flex:1;min-width:180px"><div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)">${l}</div><div style="font-size:24px;font-weight:800;color:${c||'var(--text)'}">${v}</div>${sub?`<div style="font-size:11px;color:var(--muted)">${sub}</div>`:''}</div>`;
+  const opt = (v,t,cur) => `<option value="${v}" ${v===cur?'selected':''}>${t}</option>`;
+  wrap.innerHTML = `<div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div><div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)">Dashboard · Engineering</div><div style="font-size:22px;font-weight:700">Jobs en WIP</div></div>
+      <button onclick="loadIngDashboard()" class="btn-reload" style="margin-left:auto;font-size:10px">Actualizar</button></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+      ${kpi('Jobs en WIP', total)}
+      ${kpi('Con documentación incompleta', faltanDocs, faltanDocs?'#b45309':'var(--green)', `de ${d.doc_tipos.length} documentos por proyecto`)}
+      ${kpi('Fecha final vencida', vencidos, vencidos?'var(--red)':'var(--green)')}
+      ${kpi('Próximo en terminar', proxima?esc(proxima.job_number):'—', null, proxima?`${proxima.tiempo.restantes} días · ${esc(proxima.tiempo.fin_origen)}`:'')}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <input type="search" value="${esc(_ingQ)}" placeholder="Buscar Job, cliente, PM o PT" oninput="_ingQ=this.value;clearTimeout(window._ingT);window._ingT=setTimeout(()=>{ingRender();const i=document.querySelector('#home-dashboard input[type=search]');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},250)" style="flex:1;min-width:220px;font-size:12px;padding:7px 10px;border:1px solid var(--border2);border-radius:6px">
+      <select onchange="_ingFiltro=this.value;ingRender()" style="font-size:12px;padding:6px 8px">${opt('todos','Todos los Jobs WIP',_ingFiltro)}${opt('docs','Documentación incompleta',_ingFiltro)}${opt('vencidos','Fecha final vencida',_ingFiltro)}</select>
+      <select onchange="_ingOrden=this.value;ingRender()" style="font-size:12px;padding:6px 8px">${opt('restante','Ordenar: menos días restantes',_ingOrden)}${opt('docs','Ordenar: menos documentos',_ingOrden)}${opt('job','Ordenar: Job',_ingOrden)}</select>
+      <span style="font-size:11px;color:var(--muted)">${cards.length} de ${total}</span>
+    </div>
+    ${cards.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;align-items:stretch">${cards.map(c=>ingCardHTML(c,d)).join('')}</div>`
+      : `<div style="background:#fff;border-radius:14px;padding:40px;text-align:center;color:var(--muted)">${total?'Ningún Job coincide con el filtro.':'No hay Jobs en WIP.'}</div>`}
+    <div style="font-size:10.5px;color:var(--muted2);margin-top:12px">Arranque: actividad "Kickoff" del Timing (o F. Inicio del Job). Final: fecha de envío (o Run Off cliente / interno, o fin del Timing). Compras: morado = reasignado, verde = ordenado; ⚠ pendiente sin movimiento en más de ${PURCH_DIAS_ALERTA} días.</div>`;
+}
+
+async function ingAbrirProyecto(ptsv){
+  switchMenu('projconfig', null);
+  try{ await pcLoadConfig(ptsv); }catch(e){}
+  setTimeout(()=>{ const r = document.querySelector('#pc-ptsv-results > *'); if(r) r.click(); }, 900);
 }
 
 // ════════════════════════════════════════════════════════
@@ -10498,7 +10625,54 @@ let pcPersonalRatesMap = {};   // {employee: rate} del Hourly Rate Register del 
 let pcPersonalRange = null;    // {start: Date, end: Date} derivado de Timing
 let _pcPersonalRowSeq = 0;
 
+// ════════════════════════════════════════════════════════
+//  rev69 — Permisos por pestaña de Configurar Proyecto
+//  USER_PERMS.projconfig_tabs = {dashboard, presupuesto, timing, abiertos, cambios,
+//  documentos} con el nivel efectivo (si no se configuró, hereda el de "projconfig").
+//  · Sin acceso → la pestaña no se muestra.  · Ver → solo lectura.  · Crear/Total → edita.
+// ════════════════════════════════════════════════════════
+const PC_TAB_ORDEN = ['dashboard','presupuesto','timing','abiertos','cambios','documentos'];
+const _pcLvOrder = ['none','view','create','full'];
+function pcTabLevel(tab){
+  if(!USER_PERMS) return 'full';
+  if(USER_PERMS.is_admin) return 'full';
+  return (USER_PERMS.projconfig_tabs||{})[tab] || (USER_PERMS.permissions||{})['projconfig'] || 'none';
+}
+const pcTabPuede = (tab, need) => _pcLvOrder.indexOf(pcTabLevel(tab)) >= _pcLvOrder.indexOf(need);
+function pcPuedeEditarAlgo(){ return ['presupuesto','timing','abiertos','cambios'].some(t=>pcTabPuede(t,'create')); }
+function pcPrimeraPestana(){ return PC_TAB_ORDEN.find(t=>pcTabPuede(t,'view')) || 'dashboard'; }
+
+function pcAplicarPermisosPestanas(){
+  PC_TAB_ORDEN.forEach(t=>{ const b=document.getElementById('pc-tab-'+t); if(b) b.style.display = pcTabPuede(t,'view') ? '' : 'none'; });
+  const save = document.getElementById('btn-pc-save'); if(save) save.style.display = pcPuedeEditarAlgo() ? '' : 'none';
+}
+
+// Solo lectura en las pestañas con nivel "Ver"
+function pcAplicarSoloLectura(tab){
+  if(pcTabPuede(tab,'create')) return;
+  const cont = document.getElementById('pc-content-'+tab); if(!cont) return;
+  if(tab==='documentos'){
+    cont.querySelectorAll('.pc-doc-drop, button').forEach(el=>{ el.style.display='none'; });
+    return;
+  }
+  cont.querySelectorAll('input, select, textarea').forEach(el=>{ el.setAttribute('readonly',''); el.disabled = true; el.style.opacity='.75'; });
+  // botones de edición (agregar, eliminar, mover, importar); se dejan las descargas
+  cont.querySelectorAll('button').forEach(b=>{
+    const oc = b.getAttribute('onclick')||'';
+    if(/Export|PDF|Excel|pcToggleGroup|pcSetGanttZoom|pcPrintGantt/i.test(oc) && !/Abrir|Import/i.test(oc)) return;
+    b.style.display='none';
+  });
+  cont.querySelectorAll('.pc-mov,.pc-grp-toggle').forEach(el=>{ if(el.classList.contains('pc-mov')) el.style.display='none'; });
+  if(!cont.querySelector('.pc-solo-lectura')){
+    const av = document.createElement('div'); av.className='pc-solo-lectura';
+    av.style.cssText='margin:0 0 10px;padding:7px 12px;border-radius:8px;background:rgba(0,0,0,.04);font-size:11px;color:var(--muted2)';
+    av.textContent = '🔒 Solo lectura: tu usuario puede ver esta pestaña pero no modificarla.';
+    cont.insertBefore(av, cont.firstChild);
+  }
+}
+
 function pcSwitchTab(tab, opts={}) {
+  if(!pcTabPuede(tab,'view')) tab = pcPrimeraPestana();   // rev69
   pcCurrentTab = tab;
   const tabs = {presupuesto:'pc-tab-presupuesto', dashboard:'pc-tab-dashboard', timing:'pc-tab-timing', abiertos:'pc-tab-abiertos', cambios:'pc-tab-cambios', documentos:'pc-tab-documentos'};
   Object.entries(tabs).forEach(([k,id])=>{
@@ -10512,6 +10686,7 @@ function pcSwitchTab(tab, opts={}) {
   if(tab==='timing') pcUpdateTimingCalcs();
   if(tab==='documentos') pcDocsCargar();
   if(tab==='dashboard' && !opts.sinRender) pcRenderDashboard();
+  setTimeout(()=>pcAplicarSoloLectura(tab), 120);
 }
 
 async function pcSearch(q) {
@@ -10598,7 +10773,7 @@ async function pcSelectPTSV(item) {
   const _dashBody = document.getElementById('pc-dash-body');
   if(_dashBody) _dashBody.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted);font-size:12px">Cargando dashboard…</div>';
   _pcDashTok++;   // descarta un cálculo pendiente del PT anterior
-  setTimeout(() => { pcRenderTiming(savedTiming); if(pcCurrentTab==='dashboard') pcRenderDashboard(); }, 50);
+  setTimeout(() => { pcRenderTiming(savedTiming); if(pcCurrentTab==='dashboard') pcRenderDashboard(); pcAplicarSoloLectura(pcCurrentTab); }, 50);
 
   // Puntos Abiertos y Control de Cambios
   pcRenderPuntos(existingConfig?.puntos_abiertos || []);
@@ -10608,7 +10783,8 @@ async function pcSelectPTSV(item) {
   pcPersonalSaved = existingConfig?.plan_personal || [];
   _pcDocs = null; const _dg = document.getElementById('pc-docs-grid'); if(_dg) _dg.innerHTML = '';
 
-  pcSwitchTab('dashboard', {sinRender:true});
+  pcAplicarPermisosPestanas();
+  pcSwitchTab(pcTabPuede('dashboard','view') ? 'dashboard' : pcPrimeraPestana(), {sinRender:true});
 
   await pcLoadSavedList();
 }
@@ -10766,7 +10942,7 @@ function pcRenderJobs(jobDetails, savedRows) {
 
 function pcApplyProjconfigFieldPerms() {
   if(!USER_PERMS || USER_PERMS.is_admin) return; // admin ve todo
-  const level = (USER_PERMS.permissions||{})['projconfig'] || 'none';
+  const level = pcTabLevel('presupuesto');   // rev69: nivel de la pestaña Presupuesto
   // Amarillo: Markup/Monto Markup/Calculation Cost + Estimados por Área — solo Control Total
   document.querySelectorAll('.pc-full-only').forEach(el => {
     el.style.display = (level === 'full') ? '' : 'none';
@@ -13158,7 +13334,7 @@ function pcDocsRender(){
           <span style="white-space:nowrap">${esc(_pcFechaHora(h.fecha))}</span></div>`).join('')}
           <div style="font-size:10px;color:var(--muted);margin-top:4px">Solo la versión vigente tiene archivo; de las anteriores queda este registro.</div></div></details>`:''}
     </div>`;
-  }).join('');
+  }).join('');  pcAplicarSoloLectura('documentos');
 }
 
 async function pcDocEliminar(tipo){
