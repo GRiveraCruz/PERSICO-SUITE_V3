@@ -11112,24 +11112,42 @@ def api_requisiciones_upload():
 
         wb = openpyxl.load_workbook(io.BytesIO(f.read()), read_only=True, data_only=True)
         ws = wb.active
-        headers = {}
-        for cell in list(ws.iter_rows(min_row=1, max_row=1))[0]:
-            if cell.value:
-                headers[str(cell.value).strip().upper()] = cell.column - 1
-        def col(*aliases):
-            for a in aliases:
-                if a.upper() in headers: return headers[a.upper()]
+        # rev67: encabezados tolerantes. Antes la marca solo se reconocía como BRAND o
+        # MARCA; los BOM mecánicos la traen como FABRICANTE (formato normalizado
+        # FABRICANTE / NUMERO DE PARTE / DESCRIPCION / CANTIDAD) y se perdía en silencio.
+        # Se comparan sin acentos, sin signos y sin espacios extra, y la fila de
+        # encabezados se busca en los primeros 15 renglones (algunos BOM traen título).
+        _hn = lambda v: " ".join(re.sub(r"[^A-Z0-9#]+", " ", _sin_acentos(v)).split())
+        ALIAS = {
+            "brand": ("BRAND", "MARCA", "FABRICANTE", "MANUFACTURER", "MANUFACTURE", "MFR", "MFG", "MAKER",
+                      "BRAND NAME", "MARCA FABRICANTE", "FABRICANTE MARCA", "MANUFACTURER NAME", "VENDOR BRAND"),
+            "pn":    ("PART NUMBER", "PART NO", "PART #", "PN", "P N", "NO PARTE", "NO DE PARTE", "NUMERO DE PARTE",
+                      "NUM DE PARTE", "N DE PARTE", "NUMERO PARTE", "MANUFACTURER PART NUMBER", "MFR PART NUMBER", "CATALOG NUMBER", "CATALOGO"),
+            "desc":  ("DESCRIPTION", "DESCRIPCION", "DESC"),
+            "qty":   ("QUANTITY", "CANTIDAD", "QTY", "CANT", "Q TY"),
+            "stat":  ("STATUS", "ESTATUS"),
+        }
+        filas_top = [list(r) for r in ws.iter_rows(min_row=1, max_row=15, values_only=True)]
+        fila_hdr, headers = None, {}
+        for i, r in enumerate(filas_top):
+            h = {_hn(v): j for j, v in enumerate(r) if v not in (None, "")}
+            if any(a in h for a in ALIAS["pn"]):
+                fila_hdr, headers = i + 1, h
+                break
+        def col(clave):
+            for a in ALIAS[clave]:
+                if a in headers: return headers[a]
             return None
-        ci_brand = col("BRAND", "MARCA")
-        ci_pn    = col("PART NUMBER", "PART_NUMBER", "NO. PARTE", "NUMERO DE PARTE")
-        ci_desc  = col("DESCRIPTION", "DESCRIPCIÓN", "DESCRIPCION")
-        ci_qty   = col("QUANTITY", "CANTIDAD", "QTY")
-        ci_stat  = col("STATUS", "ESTATUS")
+        ci_brand, ci_pn, ci_desc, ci_qty, ci_stat = (col(k) for k in ("brand", "pn", "desc", "qty", "stat"))
         if ci_pn is None:
-            return jsonify({"error": "No se encontró la columna PART NUMBER en el Excel"}), 400
+            return jsonify({"error": "No se encontró la columna de número de parte (PART NUMBER / NUMERO DE PARTE) en los primeros 15 renglones del Excel"}), 400
+        avisos = []
+        if ci_brand is None:
+            avisos.append("No se encontró columna de marca (BRAND, MARCA o FABRICANTE). Encabezados leídos: "
+                          + ", ".join(sorted(headers, key=headers.get)))
 
         def g(row, ci):
-            if ci is None or row[ci] is None: return ""
+            if ci is None or ci >= len(row) or row[ci] is None: return ""
             v = re.sub(r"<[^>]*>", " ", str(row[ci]))      # "<br>TL-POE160S" → "TL-POE160S"
             v = " ".join(v.split())
             return "" if v in ("None", "nan", "#N/A") else v
@@ -11137,7 +11155,7 @@ def api_requisiciones_upload():
         # 1) Leer el archivo y consolidar números de parte repetidos DENTRO del archivo
         #    (misma pieza en dos renglones → un solo renglón con la suma).
         archivo, orden, repetidos = {}, [], 0
-        for row in ws.iter_rows(min_row=2, values_only=True):
+        for row in ws.iter_rows(min_row=fila_hdr + 1, values_only=True):
             pn = g(row, ci_pn)
             if not pn: continue
             qty_raw = g(row, ci_qty)
@@ -11146,6 +11164,8 @@ def api_requisiciones_upload():
             k = _req_pn(pn)
             if k in archivo:
                 archivo[k]["quantity"] += qty; repetidos += 1
+                if not archivo[k]["brand"]: archivo[k]["brand"] = g(row, ci_brand)
+                if not archivo[k]["description"]: archivo[k]["description"] = g(row, ci_desc)
                 continue
             estatus_excel = g(row, ci_stat)
             archivo[k] = {"brand": g(row, ci_brand), "part_number": pn, "description": g(row, ci_desc),
@@ -11154,7 +11174,8 @@ def api_requisiciones_upload():
 
         # 2) Comparar contra los renglones que ya existen para este Job + tipo.
         user, ahora = session.get("user", ""), datetime.datetime.now().isoformat()
-        res = {"agregados": 0, "actualizados": [], "iguales": 0, "revision": [], "consolidados_en_archivo": repetidos}
+        res = {"agregados": 0, "actualizados": [], "iguales": 0, "revision": [], "consolidados_en_archivo": repetidos,
+               "completados": 0, "avisos": avisos}
         s = _orm.get_session()
         try:
             existentes = {}
@@ -11172,6 +11193,14 @@ def api_requisiciones_upload():
                     res["agregados"] += 1
                     continue
                 d = row.data
+                # rev67: si el renglón ya existía sin marca o sin descripción (por ejemplo, se
+                # cargó antes sin la columna FABRICANTE), se completan con lo del archivo. Lo
+                # que ya tenía valor no se sobrescribe.
+                lleno = False
+                for campo in ("brand", "description"):
+                    if nuevo.get(campo) and not str(d.get(campo) or "").strip():
+                        d[campo] = nuevo[campo]; lleno = True
+                if lleno: res["completados"] += 1
                 actual, nueva = float(d.get("quantity") or 0), float(nuevo["quantity"])
                 if nueva == actual:
                     d.pop("revision", None); res["iguales"] += 1

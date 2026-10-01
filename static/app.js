@@ -8102,6 +8102,8 @@ async function reqUploadFile(file){
       <div>• ${d.iguales} sin cambios (misma cantidad, no se duplicaron)</div>
       ${d.revision.length?`<div style="color:var(--amber);font-weight:700">• ${d.revision.length} para revisión (no se cambiaron):</div><ul style="margin:0 0 0 18px;font-size:11px;color:var(--amber)">${li(d.revision,x=>`${esc(x.part_number)}: actual ${x.actual} → archivo ${x.nueva}${x.status==='Comprado'||x.status==='Cancelado'?` (renglón ${esc(x.status)})`:''}`)}</ul>`:''}
       ${d.consolidados_en_archivo?`<div style="color:var(--muted)">• ${d.consolidados_en_archivo} renglón(es) repetido(s) dentro del archivo se sumaron en uno</div>`:''}
+      ${d.completados?`<div>• ${d.completados} renglón(es) existente(s) completado(s) con la marca o descripción del archivo</div>`:''}
+      ${(d.avisos||[]).map(a=>`<div style="color:var(--amber);font-weight:700">⚠ ${esc(a)}</div>`).join('')}
     </div>`;
     toast(`Requisición: ${d.agregados} nuevo(s) · ${d.actualizados.length} actualizado(s) · ${d.iguales} igual(es)${d.revision.length?` · ${d.revision.length} para revisión`:''}`,'ok',6000);
     if(job===reqCurrentJob && tipo===reqCurrentTipo) reqLoadJob();
