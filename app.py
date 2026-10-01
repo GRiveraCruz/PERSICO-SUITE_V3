@@ -1982,7 +1982,8 @@ def api_list_personal():
                        if q in " ".join(str(r.get(k, "")) for k in ("tid", "nombre", "puesto", "area")).lower()]
         if limit:
             records = records[offset:offset + limit]
-        return jsonify(records)
+        # rev77: tipo de puesto heredado del perfil (solo en la respuesta, no se guarda en la persona)
+        return jsonify(_tipo_puesto_de_personas([dict(r) for r in records]))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2226,11 +2227,13 @@ def _catalog_path(name):
     p.mkdir(parents=True, exist_ok=True)
     return p / f"{name}.json"
 
-_CATALOG_MODEL = {"areas": ("nombre", "nombre"), "perfiles": ("pid", "pid")}  # name -> (campo_json, columna_modelo)
+_CATALOG_MODEL = {"areas": ("nombre", "nombre"), "perfiles": ("pid", "pid"), "tipos_puesto": ("tpid", "tpid")}  # name -> (campo_json, columna_modelo)
+def _catalog_modelo(name):
+    return {"areas": _orm.Area, "perfiles": _orm.Perfil, "tipos_puesto": _orm.TipoPuesto}[name]
 
 def _load_catalog(name):
     if _orm and _orm.DB_ENABLED and name in _CATALOG_MODEL:
-        modelo = _orm.Area if name == "areas" else _orm.Perfil
+        modelo = _catalog_modelo(name)
         try:
             s = _orm.get_session()
             try:
@@ -2251,7 +2254,7 @@ def _load_catalog(name):
 def _save_catalog(name, records):
     if _orm and _orm.DB_ENABLED and name in _CATALOG_MODEL:
         campo_json, _ = _CATALOG_MODEL[name]
-        modelo = _orm.Area if name == "areas" else _orm.Perfil
+        modelo = _catalog_modelo(name)
         try:
             s = _orm.get_session()
             try:
@@ -2292,12 +2295,13 @@ def api_create_perfil():
     data = request.json or {}
     nombre = (data.get("nombre") or "").strip()
     area   = (data.get("area") or "").strip() or None
+    tipo_p = (data.get("tipo_puesto") or "").strip() or None          # rev77: tpid
     if not nombre: return jsonify({"error": "El nombre es obligatorio"}), 400
     with lock:
         recs = _load_catalog("perfiles")
         if any((r.get("nombre") or "").strip().lower() == nombre.lower() for r in recs):
             return jsonify({"error": "Ese perfil ya existe"}), 400
-        rec = {"pid": _gen_pid(recs), "nombre": nombre, "area": area}
+        rec = {"pid": _gen_pid(recs), "nombre": nombre, "area": area, "tipo_puesto": tipo_p}
         recs.append(rec)
         _save_catalog("perfiles", recs)
     return jsonify({"ok": True, "nombre": nombre, "pid": rec["pid"]})
@@ -2320,6 +2324,8 @@ def api_update_perfil(idx):
             recs[idx]["pid"] = _gen_pid(recs)
         recs[idx]["nombre"] = nombre
         recs[idx]["area"] = area
+        if "tipo_puesto" in data:                                       # rev77
+            recs[idx]["tipo_puesto"] = (data.get("tipo_puesto") or "").strip() or None
         _save_catalog("perfiles", recs)
         if old_nombre and old_nombre != nombre:
             personal = _load_personal()
@@ -2346,6 +2352,115 @@ def api_delete_perfil(idx):
                 if folder.exists():
                     shutil.rmtree(folder, ignore_errors=True)
     return jsonify({"ok": True})
+
+# ══════════════════════════════════════════════════════════════════
+#  rev77 — TIPOS DE PUESTO (Control de Personal): nombre + jornada semanal
+#  jornada = {"0".."6": {"entrada": "HH:MM", "salida": "HH:MM"}}  (0 = lunes … 6 = domingo)
+#  Un día sin entrada/salida es de descanso. Si la salida es menor que la entrada, el
+#  turno termina al día siguiente (turno nocturno).
+# ══════════════════════════════════════════════════════════════════
+DIAS_SEMANA = ("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo")
+
+def _can_tipos(action):
+    """Permiso del apartado Tipo de Puesto (hereda de Perfiles de Trabajo si no se fijó)."""
+    return can(action, "personal-tipos-puesto")
+
+def _hhmm(v):
+    m = re.match(r"^(\d{1,2}):(\d{2})$", str(v or "").strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59: return None
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+def _jornada_normalizada(j):
+    """Valida la jornada; regresa (jornada, error, horas por día)."""
+    out, horas = {}, []
+    for i in range(7):
+        d = (j or {}).get(str(i)) or {}
+        e, s_ = _hhmm(d.get("entrada")), _hhmm(d.get("salida"))
+        if not e and not s_:
+            out[str(i)] = {"entrada": "", "salida": ""}; horas.append(0.0); continue
+        if not e or not s_:
+            return None, f"{DIAS_SEMANA[i]}: captura hora de entrada y de salida (o deja ambas vacías si es descanso)", None
+        mins = (int(s_[:2]) * 60 + int(s_[3:])) - (int(e[:2]) * 60 + int(e[3:]))
+        if mins == 0: return None, f"{DIAS_SEMANA[i]}: la hora de salida es igual a la de entrada", None
+        if mins < 0: mins += 24 * 60                       # turno que termina al día siguiente
+        out[str(i)] = {"entrada": e, "salida": s_}
+        horas.append(round(mins / 60, 2))
+    return out, None, horas
+
+def _tipo_puesto_publico(t):
+    j, _err, horas = _jornada_normalizada(t.get("jornada") or {})
+    horas = horas or [0.0] * 7
+    return dict(t, horas_dia=horas, horas_semana=round(sum(horas), 2), dias_laborables=sum(1 for h in horas if h > 0))
+
+@app.route("/api/tipos-puesto", methods=["GET"])
+def api_list_tipos_puesto():
+    if not (_can_tipos("view") or can("view", "personal-perfiles") or can("view", "personal-listado")):
+        return jsonify({"error": "Sin permiso"}), 403
+    perfiles = _load_catalog("perfiles")
+    out = []
+    for t in _load_catalog("tipos_puesto"):
+        x = _tipo_puesto_publico(t)
+        x["perfiles"] = [p.get("nombre") for p in perfiles if p.get("tipo_puesto") == t.get("tpid")]
+        out.append(x)
+    return jsonify(out)
+
+def _tipo_puesto_guardar(data, tpid=None):
+    nombre = (data.get("nombre") or "").strip()
+    if not nombre: return None, "El nombre del tipo de puesto es obligatorio"
+    jornada, err, _h = _jornada_normalizada(data.get("jornada") or {})
+    if err: return None, err
+    recs = _load_catalog("tipos_puesto")
+    if any((r.get("nombre") or "").strip().lower() == nombre.lower() and r.get("tpid") != tpid for r in recs):
+        return None, "Ya existe un tipo de puesto con ese nombre"
+    if tpid:
+        rec = next((r for r in recs if r.get("tpid") == tpid), None)
+        if not rec: return None, "Tipo de puesto no encontrado"
+        rec.update(nombre=nombre, jornada=jornada, actualizado=datetime.datetime.now().isoformat(timespec="minutes"),
+                   actualizado_por=session.get("user", ""))
+    else:
+        n = len(recs) + 1
+        while f"TP-{n:03d}" in {r.get("tpid") for r in recs}: n += 1
+        rec = {"tpid": f"TP-{n:03d}", "nombre": nombre, "jornada": jornada,
+               "creado": datetime.datetime.now().isoformat(timespec="minutes"), "creado_por": session.get("user", "")}
+        recs.append(rec)
+    _save_catalog("tipos_puesto", recs)
+    return rec, None
+
+@app.route("/api/tipos-puesto", methods=["POST"])
+def api_create_tipo_puesto():
+    if not _can_tipos("create"): return jsonify({"error": "Sin permiso"}), 403
+    with lock:
+        rec, err = _tipo_puesto_guardar(request.json or {})
+    return (jsonify({"error": err}), 400) if err else jsonify({"ok": True, "record": _tipo_puesto_publico(rec)})
+
+@app.route("/api/tipos-puesto/<tpid>", methods=["PUT"])
+def api_update_tipo_puesto(tpid):
+    if not _can_tipos("create"): return jsonify({"error": "Sin permiso"}), 403
+    with lock:
+        rec, err = _tipo_puesto_guardar(request.json or {}, tpid=tpid)
+    return (jsonify({"error": err}), 400) if err else jsonify({"ok": True, "record": _tipo_puesto_publico(rec)})
+
+@app.route("/api/tipos-puesto/<tpid>", methods=["DELETE"])
+def api_delete_tipo_puesto(tpid):
+    if not _can_tipos("delete"): return jsonify({"error": "Sin permiso"}), 403
+    with lock:
+        en_uso = [p.get("nombre") for p in _load_catalog("perfiles") if p.get("tipo_puesto") == tpid]
+        if en_uso:
+            return jsonify({"error": "No se puede eliminar: lo usan los perfiles " + ", ".join(en_uso) + ". Cámbiales el tipo de puesto primero."}), 400
+        recs = [r for r in _load_catalog("tipos_puesto") if r.get("tpid") != tpid]
+        _save_catalog("tipos_puesto", recs)
+    return jsonify({"ok": True})
+
+def _tipo_puesto_de_personas(personal):
+    """Agrega a cada persona el tipo de puesto heredado de su perfil (campo "puesto")."""
+    perfiles = {(p.get("nombre") or "").strip().lower(): p for p in _load_catalog("perfiles")}
+    tipos = {t.get("tpid"): _tipo_puesto_publico(t) for t in _load_catalog("tipos_puesto")}
+    for p in personal:
+        perf = perfiles.get((p.get("puesto") or "").strip().lower())
+        t = tipos.get((perf or {}).get("tipo_puesto"))
+        p["tipo_puesto"] = {"tpid": t["tpid"], "nombre": t["nombre"], "jornada": t["jornada"], "horas_semana": t["horas_semana"],
+                            "horas_dia": t["horas_dia"]} if t else None
+    return personal
 
 # ── Documentos del Perfil de Puesto ──
 @app.route("/api/perfiles/upload/<pid>", methods=["POST"])
@@ -8612,7 +8727,7 @@ MODULES = [
     "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas",
     # Recursos Humanos
     "rrhh-asistencia", "rrhh-vacaciones", "rrhh-permisos", "rrhh-salario", "rrhh-sueldos", "rrhh-nomina",
-    "personal-areas", "personal-perfiles", "personal-listado",
+    "personal-areas", "personal-tipos-puesto", "personal-perfiles", "personal-listado",
     # Operaciones
     "ops-capacidad", "ops-ot", "ops-op", "ops-os",
 ]
@@ -9078,6 +9193,26 @@ for _prof in PROFILES.values():
     _prof.setdefault("consignacion", _prof.get("stock", LEVEL_NONE))
     _prof.setdefault("consig-reassign", _prof.get("reassign", LEVEL_NONE))
 
+# rev77: módulos que HEREDAN el nivel de otro mientras el administrador no les fije uno.
+# users_load() rellena los módulos nuevos con "view"; estos no se rellenan, y su valor
+# solo cuenta si quedó en la lista "perm_explicitos" del usuario (lo fijó el administrador).
+# Sin esto, las pestañas de Configurar Proyecto (rev69) quedaban en "Ver" para todos.
+MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto": "projconfig",
+                   "projconfig-timing": "projconfig", "projconfig-abiertos": "projconfig",
+                   "projconfig-cambios": "projconfig", "projconfig-documentos": "projconfig",
+                   "personal-tipos-puesto": "personal-perfiles"}
+
+def nivel_heredado(info, mod):
+    """Nivel efectivo de un módulo de MODULOS_HEREDAN para el usuario `info`."""
+    if info.get("role") == "admin": return LEVEL_FULL
+    perms = info.get("permissions", {}) or {}
+    v = perms.get(mod)
+    # Fijado por el administrador. Compatibilidad rev69-76: un valor distinto de "view"
+    # (el que ponía el relleno automático) solo pudo venir del administrador.
+    if v in (LEVEL_NONE, LEVEL_VIEW, LEVEL_CREATE, LEVEL_FULL) and (mod in set(info.get("perm_explicitos") or []) or v != LEVEL_VIEW):
+        return v
+    return perms.get(MODULOS_HEREDAN[mod], LEVEL_NONE)
+
 def _default_perms(role):
     if role == "admin":
         return {m: LEVEL_FULL for m in MODULES}
@@ -9144,7 +9279,7 @@ def users_load():
             _role = info.get("role")
             _defaults = _default_perms(_role) if (_role == "admin" or _role in PROFILES) else {}
             for mod in MODULES:
-                if mod not in migrated:
+                if mod not in migrated and mod not in MODULOS_HEREDAN:     # rev77: esos heredan
                     migrated[mod] = _defaults.get(mod, LEVEL_VIEW)
             info["permissions"] = migrated
         return data
@@ -9207,7 +9342,7 @@ def can(action, module):
     if not user: return False
     info = get_user_perms(user)
     if info.get("role") == "admin": return True
-    level = info.get("permissions", {}).get(module, LEVEL_NONE)
+    level = nivel_heredado(info, module) if module in MODULOS_HEREDAN else info.get("permissions", {}).get(module, LEVEL_NONE)
     if action in ("view",):
         return _level_gte(level, LEVEL_VIEW)
     elif action in ("create", "edit"):
@@ -9219,16 +9354,13 @@ def can(action, module):
 PC_TABS = ("dashboard", "presupuesto", "timing", "abiertos", "cambios", "documentos")
 
 def pc_tab_level(tab, info=None):
-    """Nivel efectivo del usuario en una pestaña de Configurar Proyecto: el de
-    "projconfig-<pestaña>" si está definido; si no, el de "projconfig"."""
+    """Nivel efectivo del usuario en una pestaña de Configurar Proyecto: el fijado por el
+    administrador en "projconfig-<pestaña>"; si no, el de "projconfig"."""
     if info is None:
         user = session.get("user")
         if not user: return LEVEL_NONE
         info = get_user_perms(user)
-    if info.get("role") == "admin": return LEVEL_FULL
-    perms = info.get("permissions", {}) or {}
-    lv = perms.get("projconfig-" + tab)
-    return lv if lv in (LEVEL_NONE, LEVEL_VIEW, LEVEL_CREATE, LEVEL_FULL) else perms.get("projconfig", LEVEL_NONE)
+    return nivel_heredado(info, "projconfig-" + tab)
 
 def pc_tab_can(action, tab):
     need = {"view": LEVEL_VIEW, "create": LEVEL_CREATE, "edit": LEVEL_CREATE, "delete": LEVEL_FULL}[action]
@@ -9460,7 +9592,14 @@ def api_admin_update_user(username):
         # Merge single-module update into existing permissions
         existing = users[username].get("permissions", _default_perms(new_role))
         existing.update(data["permissions"])
-        # rev69: null = quitar la llave (la pestaña vuelve a heredar de "projconfig")
+        # rev69/77: null = quitar la llave (el módulo vuelve a heredar); un valor en un módulo
+        # que hereda queda registrado como fijado por el administrador
+        expl = set(users[username].get("perm_explicitos") or [])
+        for k, v in data["permissions"].items():
+            if k in MODULOS_HEREDAN:
+                if v is None: expl.discard(k)
+                else: expl.add(k)
+        users[username]["perm_explicitos"] = sorted(expl)
         existing = {k: v for k, v in existing.items() if v is not None}
         users[username]["permissions"] = existing
     elif role_changed:
@@ -9469,6 +9608,7 @@ def api_admin_update_user(username):
         # nunca se regeneraban los permisos al cambiar de perfil (bug real, corregido
         # aquí — ver AUDITORIA.md). Ahora sí aplica los permisos del nuevo perfil.
         users[username]["permissions"] = _default_perms(new_role)
+        users[username]["perm_explicitos"] = []           # rev77: con el perfil nuevo todo vuelve a heredar
     users_save(users)
     return jsonify({"ok": True, "user": users[username]})
 
@@ -9477,8 +9617,12 @@ def api_me_perms():
     user = session.get("user")
     if not user: return jsonify({"error": "No autenticado"}), 401
     info = get_user_perms(user)
+    perms = dict(info.get("permissions", _default_perms("viewer")))
+    # rev77: los módulos que heredan se envían con su nivel efectivo
+    for _m in MODULOS_HEREDAN:
+        perms[_m] = nivel_heredado(info, _m)
     return jsonify({"user": user, "role": info.get("role","viewer"),
-                    "permissions": info.get("permissions", _default_perms("viewer")),
+                    "permissions": perms,
                     "puede_ver_salarios": bool(info.get("puede_ver_salarios")) or is_admin(),
                     "projconfig_tabs": {t: pc_tab_level(t, info) for t in PC_TABS},
                     "is_admin": is_admin()})
