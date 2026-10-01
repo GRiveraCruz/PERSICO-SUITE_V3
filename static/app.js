@@ -6995,7 +6995,7 @@ function renderPMDashboard(d, previewUser){
   const charts = pmChartsHTML(d, previewUser, card);
   // rev71: tarjetas (mismo formato que Operaciones / ENGINEERING) en lugar de la lista
   window._pmCards = d.cards ? {cards: d.cards, ...(d.cards_meta||{})} : {error: 'El servidor no devolvió las tarjetas'};
-  window._pmFin = Object.fromEntries(jobs.map(j=>[j.job_number, j]));
+  window._pmFin = Object.fromEntries(jobs.map(j=>[j.job_number, {...j, sin_financiero:true}]));   // rev72: solo resultado operativo
   wrap.innerHTML = head + kpis + charts + `<div id="pm-cards">${jobCardsBlockHTML('pm', 'Mis Jobs Open / WIP')}</div>`;
 }
 
@@ -7709,7 +7709,7 @@ function ingFinHTML(f){
     + lin('Revenue', money(f.revenue))
     + lin('Costo actual', money(f.costo_actual), '', true)
     + res('Resultado operativo', f.resultado_operativo, f.resultado_pct, f.internal_target!=null?'Internal Target':'revenue')
-    + res('Resultado financiero', f.resultado_financiero, f.financiero_pct, 'revenue');
+    + (f.sin_financiero ? '' : res('Resultado financiero', f.resultado_financiero, f.financiero_pct, 'revenue'));   // rev72: el PM no ve el financiero
 }
 
 function ingRender(){
@@ -7802,7 +7802,7 @@ function jobCardsBlockHTML(ctx, titulo='Jobs WIP'){
     </div>
     ${cards.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;align-items:stretch">${cards.map(c=>ingCardHTML(c, d, fin[c.job_number]||{error:'Sin datos'})).join('')}</div>`
       : `<div style="background:#fff;border-radius:14px;padding:40px;text-align:center;color:var(--muted)">${d.cards.length?'Ningún Job coincide con el filtro.':'No hay Jobs.'}</div>`}
-    <div style="font-size:10.5px;color:var(--muted2);margin-top:10px">Resultado operativo = Internal Target (o revenue si el Job no está configurado) − costo actual. Resultado financiero = revenue (Customer PO, o el del Job) − costo actual, igual que el Gross Margin del Job Report. Costo actual = mano de obra + compras + servicios + reasignaciones − recuperaciones, de toda la vida del Job.</div>`;
+    <div style="font-size:10.5px;color:var(--muted2);margin-top:10px">Resultado operativo = Internal Target (o revenue si el Job no está configurado) − costo actual.${ctx==='pm'?'':' Resultado financiero = revenue (Customer PO, o el del Job) − costo actual, igual que el Gross Margin del Job Report.'} Costo actual = mano de obra + compras + servicios + reasignaciones − recuperaciones, de toda la vida del Job.</div>`;
 }
 function jobCardsRender(ctx){ const el = document.getElementById(ctx+'-cards'); if(el) el.innerHTML = jobCardsBlockHTML(ctx, ctx==='pm'?'Mis Jobs Open / WIP':'Jobs WIP'); }
 function omCardsHTML(){ return jobCardsBlockHTML('om', 'Jobs WIP'); }
@@ -8248,6 +8248,7 @@ async function reqUploadFile(file){
     const r = await fetch('/api/requisiciones/upload', {method:'POST', body:fd});
     const d = await r.json();
     if(d.error){ statusEl.innerHTML = `<span style="color:var(--red)">⚠ ${esc(d.error)}</span>`; return; }
+    if(d.version){ _reqCambios.version = d.version; _reqCambios.filtro = 'cambios'; _reqCambios.clave = job+'|'+tipo; }   // rev72: mostrar los cambios de la carga recién subida
     const li = (arr,f) => arr.map(x=>`<li>${f(x)}</li>`).join('');
     statusEl.innerHTML = `<div style="font-size:12px;line-height:1.6">
       <div style="color:#1f8a4c;font-weight:700">✅ Requisición procesada</div>
@@ -8257,6 +8258,7 @@ async function reqUploadFile(file){
       ${d.revision.length?`<div style="color:var(--amber);font-weight:700">• ${d.revision.length} para revisión (no se cambiaron):</div><ul style="margin:0 0 0 18px;font-size:11px;color:var(--amber)">${li(d.revision,x=>`${esc(x.part_number)}: actual ${x.actual} → archivo ${x.nueva}${x.status==='Comprado'||x.status==='Cancelado'?` (renglón ${esc(x.status)})`:''}`)}</ul>`:''}
       ${d.consolidados_en_archivo?`<div style="color:var(--muted)">• ${d.consolidados_en_archivo} renglón(es) repetido(s) dentro del archivo se sumaron en uno</div>`:''}
       ${d.completados?`<div>• ${d.completados} renglón(es) existente(s) completado(s) con la marca o descripción del archivo</div>`:''}
+      ${d.version?`<div style="margin-top:4px">Guardado como <b>versión ${d.version}</b>${d.resumen&&d.resumen.ausente?` · <span style="color:#b91c1c;font-weight:700">${d.resumen.ausente} renglón(es) ya no vienen en el BOM</span>`:''}${d.resumen&&d.resumen.diferencia?` · <span style="color:#1d4ed8">${d.resumen.diferencia} diferencia(s) de marca/descripción</span>`:''}. Revisa los cambios arriba de la tabla.</div>`:''}
       ${(d.avisos||[]).map(a=>`<div style="color:var(--amber);font-weight:700">⚠ ${esc(a)}</div>`).join('')}
     </div>`;
     toast(`Requisición: ${d.agregados} nuevo(s) · ${d.actualizados.length} actualizado(s) · ${d.iguales} igual(es)${d.revision.length?` · ${d.revision.length} para revisión`:''}`,'ok',6000);
@@ -8289,9 +8291,16 @@ async function reqRenderTab(){
   const tb = document.getElementById('req-tb');
   tb.innerHTML = '<tr><td colspan="7"><div class="es"><div class="spinner"></div></div></td></tr>';
   try{
-    const d = await fetch(`/api/requisiciones/${encodeURIComponent(reqCurrentJob)}?tipo=${reqCurrentTipo}`).then(r=>r.json());
+    const [d, cg] = await Promise.all([
+      fetch(`/api/requisiciones/${encodeURIComponent(reqCurrentJob)}?tipo=${reqCurrentTipo}`).then(r=>r.json()),
+      reqCurrentTipo==='manufactura' ? Promise.resolve({cargas:[]}) : fetch(`/api/requisiciones/${encodeURIComponent(reqCurrentJob)}/cargas?tipo=${reqCurrentTipo}`).then(r=>r.json()).catch(()=>({cargas:[]})),
+    ]);
     if(d.error){ toast(d.error,'er'); tb.innerHTML=`<tr><td colspan="7"><div class="es">${esc(d.error)}</div></td></tr>`; return; }
     reqItems = d.items || [];
+    // rev72: historial de cargas; si cambió de Job/BOM, se vuelve a la última versión
+    const clave = reqCurrentJob+'|'+reqCurrentTipo;
+    if(_reqCambios.clave !== clave) Object.assign(_reqCambios, {clave, version:null, filtro:'todos'});
+    reqCargas = cg.cargas || [];
     const porRevisar = reqCurrentTipo==='manufactura' ? 0 : reqItems.filter(i=>i.revision && typeof i.revision==='object').length;
     document.getElementById('req-tab-count').textContent = `${REQ_TIPO_LABELS[reqCurrentTipo]} — ${reqItems.length} renglón(es)${porRevisar?` · ⚠ ${porRevisar} por revisar`:''}`;
     reqRenderTable();
@@ -8588,7 +8597,70 @@ function reqRenderManuf(){
       <td>${((parseFloat(it.cantidad_comprada)||0)>0||it.orden_produccion)?'<span style="color:var(--muted)" title="Tiene orden de compra o de producción: no se puede eliminar">—</span>':`<button class="fi-del" onclick="reqDeleteItem('${esc(it.id)}')">Eliminar</button>`}</td></tr>`;}).join('');
 }
 
+// ════════════════════════════════════════════════════════
+//  rev72 — Cambios entre cargas del BOM
+//  Cada carga de Excel es una versión (v1, v2…) con su lista de cambios: renglones
+//  nuevos, modificados (cantidad, marca/descripción completadas), por revisar (baja de
+//  cantidad o renglón ya comprado), diferencias de marca/descripción (no se aplican) y
+//  renglones que ya no vienen en el BOM. La tabla marca cada renglón y se puede filtrar.
+// ════════════════════════════════════════════════════════
+let reqCargas = [];
+const _reqCambios = {clave:'', version:null, filtro:'todos'};
+const REQ_CAMBIO = {
+  nuevo:      {t:'Nuevo',            fg:'#15803d', bg:'#dcfce7'},
+  modificado: {t:'Modificado',       fg:'#b45309', bg:'#fef3c7'},
+  revision:   {t:'Por revisar',      fg:'#c2410c', bg:'#ffedd5'},
+  diferencia: {t:'Diferencia',       fg:'#1d4ed8', bg:'#dbeafe'},
+  ausente:    {t:'Ya no viene',      fg:'#b91c1c', bg:'#fee2e2'},
+  reaparece:  {t:'Reaparece',        fg:'#6d28d9', bg:'#ede9fe'},
+};
+const REQ_CAMPO = {quantity:'Cantidad', brand:'Marca', description:'Descripción'};
+function reqCargaSel(){ return reqCargas.find(c=>c.version===_reqCambios.version) || reqCargas[0] || null; }
+// Cambios de un renglón en la versión seleccionada → lista de acciones
+function reqCambiosItem(it, carga){
+  if(!carga) return [];
+  const v = carga.version, pn = String(it.part_number||'').trim().toUpperCase(), out = [];
+  for(const c of carga.cambios||[]){
+    if(String(c.part_number||'').trim().toUpperCase() !== pn) continue;
+    out.push(c);
+  }
+  return out;
+}
+const _reqFmtCambio = c => c.campo ? `${REQ_CAMPO[c.campo]||c.campo}: ${c.de===''||c.de==null?'(vacío)':c.de} → ${c.a}` : (c.accion==='nuevo' ? `Cantidad ${c.cantidad}` : c.accion==='ausente' ? `No viene en esta carga (estaba con ${c.cantidad} · ${c.status})` : c.accion==='reaparece' ? `Volvió a aparecer (no venía desde v${c.ausente_desde})` : '');
+
+function reqCambiosPanelHTML(){
+  if(reqCurrentTipo==='manufactura') return '';
+  if(!reqCargas.length) return `<div style="font-size:11px;color:var(--muted);margin:0 0 8px">El historial de cambios empieza con la siguiente carga del BOM.</div>`;
+  const c = reqCargaSel(), r = c.resumen||{}, F = _reqCambios.filtro;
+  const chip = (k, n) => { const m = REQ_CAMBIO[k]; return `<button type="button" onclick="_reqCambios.filtro='${F===k?'todos':k}';reqRenderTable()" style="border:1px solid ${F===k?m.fg:'transparent'};background:${m.bg};color:${m.fg};font-size:11px;font-weight:700;padding:4px 10px;border-radius:12px;cursor:pointer;${n?'':'opacity:.45'}" ${n?'':'disabled'}>${m.t} <span style="font-family:'DM Mono',monospace">${n||0}</span></button>`; };
+  const fecha = v => v ? new Date(v).toLocaleString('es-MX',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+  const total = Object.entries(r).filter(([k])=>k!=='iguales').reduce((a,[,n])=>a+n,0);
+  return `<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 10px;background:rgba(0,0,0,.015)">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b style="font-size:12px">Cambios de la carga</b>
+      <select onchange="_reqCambios.version=+this.value;_reqCambios.filtro='todos';reqRenderTable()" style="font-size:11px;padding:3px 6px">
+        ${reqCargas.map(x=>`<option value="${x.version}" ${x.version===c.version?'selected':''}>v${x.version} · ${esc(fecha(x.fecha))} · ${esc(x.usuario||'')}</option>`).join('')}
+      </select>
+      <span style="font-size:10.5px;color:var(--muted)" title="${esc(c.archivo||'')}">${esc(c.archivo||'')} · ${c.renglones_archivo||0} renglones en el archivo · ${r.iguales||0} sin cambio</span>
+      <label style="margin-left:auto;font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" ${F==='cambios'?'checked':''} onchange="_reqCambios.filtro=this.checked?'cambios':'todos';reqRenderTable()"> Solo renglones con cambios (${total})</label>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${['nuevo','modificado','revision','diferencia','ausente','reaparece'].map(k=>chip(k, r[k])).join('')}
+      ${F!=='todos'?`<button type="button" class="btn-reload" style="font-size:10.5px;padding:3px 9px" onclick="_reqCambios.filtro='todos';reqRenderTable()">Ver todos</button>`:''}</div>
+    ${total?`<details style="margin-top:8px"><summary style="cursor:pointer;font-size:11px;color:var(--muted2)">Lista de cambios de v${c.version} (${total})</summary>
+      <table style="width:100%;font-size:11px;border-collapse:collapse;margin-top:6px">${(c.cambios||[]).map(x=>{ const m=REQ_CAMBIO[x.accion]||{t:x.accion,fg:'var(--text)',bg:'transparent'};
+        return `<tr style="border-top:1px solid var(--border)"><td style="padding:3px 6px;white-space:nowrap"><span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:9px;background:${m.bg};color:${m.fg}">${m.t}</span></td>
+          <td style="padding:3px 6px;font-family:'DM Mono',monospace;color:var(--gold);white-space:nowrap">${esc(x.part_number||'')}</td>
+          <td style="padding:3px 6px;color:var(--muted2)">${esc(x.description||'')}</td><td style="padding:3px 6px">${esc(_reqFmtCambio(x))}</td></tr>`;}).join('')}</table></details>`:''}
+    <div style="font-size:10px;color:var(--muted);margin-top:6px">Las diferencias de marca o descripción no se aplican; solo se informan. Los renglones que ya no vienen no se borran ni se cancelan: decide qué hacer con ellos.</div>
+  </div>`;
+}
+
 function reqRenderTable(){
+  // rev72: panel de cambios entre cargas (arriba de la tabla)
+  let panel = document.getElementById('req-cambios-panel');
+  const tabla = document.getElementById('req-tb')?.closest('table');
+  if(!panel && tabla){ panel = document.createElement('div'); panel.id = 'req-cambios-panel'; (tabla.parentElement.classList.contains('tw')||tabla.parentElement.style.overflowX ? tabla.parentElement : tabla).insertAdjacentElement('beforebegin', panel); }
+  if(panel) panel.innerHTML = reqCambiosPanelHTML();
   const th = document.getElementById('req-thead');
   if(th && REQ_THEAD_COMPRA===null && th.innerHTML.includes('No. Parte')) REQ_THEAD_COMPRA = th.innerHTML;
   if(reqCurrentTipo==='manufactura'){ reqRenderManuf(); return; }
@@ -8604,14 +8676,24 @@ function reqRenderTable(){
       REQ_STATUS_OPCIONES.map(st=>`<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;color:${REQ_STATUS_COLOR[st][0]};background:${REQ_STATUS_COLOR[st][1]}">${st}</span>`).join('')}</span>`);
   }
   document.getElementById('req-legend').innerHTML = REQ_STATUS_OPCIONES.map(st=>`<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;color:${REQ_STATUS_COLOR[st][0]};background:${REQ_STATUS_COLOR[st][1]}">${st}</span>`).join('');
-  tb.innerHTML = reqItems.map(it=>{
+  const cargaSel = reqCargaSel(), F = _reqCambios.filtro;
+  const visibles = reqItems.filter(it=>{
+    if(F==='todos') return true;
+    const ch = reqCambiosItem(it, cargaSel);
+    return F==='cambios' ? ch.length>0 : ch.some(c=>c.accion===F);
+  });
+  if(!visibles.length){ tb.innerHTML = '<tr><td colspan="9"><div class="es">Ningún renglón con ese tipo de cambio en esta carga.</div></td></tr>'; return; }
+  tb.innerHTML = visibles.map(it=>{
     const [fg,bg] = REQ_STATUS_COLOR[it.status] || ['var(--text)','transparent'];
+    const ch = reqCambiosItem(it, cargaSel);
+    const chips = ch.map(c=>{ const m=REQ_CAMBIO[c.accion]||{t:c.accion,fg:'var(--text)',bg:'#eee'}; return `<span title="${esc((cargaSel?'v'+cargaSel.version+' · ':'')+_reqFmtCambio(c))}" style="display:inline-block;font-family:'DM Sans',sans-serif;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:9px;background:${m.bg};color:${m.fg};margin:2px 3px 0 0">${m.t}${c.campo?' · '+(REQ_CAMPO[c.campo]||c.campo):''}</span>`; }).join('');
+    const tinte = ch.length ? (REQ_CAMBIO[ch[0].accion]||{}).bg : '';
     const reas = parseFloat(it.cantidad_reasignada)||0, comp = parseFloat(it.cantidad_comprada)||0, pend = reqPendiente(it);
     const tip = [...(it.reasignaciones||[]).map(r=>`${r.order_number}: ${r.cantidad}`), ...(it.compras||[]).map(c=>`${c.po_number}: ${c.cantidad}`)].join(' · ');
     return `
-    <tr style="box-shadow:inset 4px 0 0 ${fg}">
+    <tr style="box-shadow:inset 4px 0 0 ${fg};${tinte?`background:linear-gradient(90deg, ${tinte} 0, transparent 60%)`:''}">
       <td>${esc(it.brand||'—')}</td>
-      <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number||'')}</td>
+      <td style="font-family:'DM Mono',monospace;color:var(--gold)">${esc(it.part_number||'')}${chips?`<div style="white-space:normal">${chips}</div>`:''}</td>
       <td style="color:var(--muted2)"><div title="${esc(it.description||'')}" style="max-width:min(420px,32vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.description||'')}</div></td>
       <td style="text-align:right" ${tip?`title="Órdenes: ${esc(tip)}"`:''}>
         ${(reas>0||comp>0) ? `<b style="color:${pend>0?'var(--text)':'var(--muted)'}">${pend}</b><div style="font-size:10px;color:#6d28d9">de ${it.quantity}${reas?` · ${reas} reasignado`:''}${comp?` · <span style="color:#15803d">${comp} comprado</span>`:''}</div>` : (it.quantity ?? 0)}

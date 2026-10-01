@@ -7754,10 +7754,8 @@ def api_dashboard_project_manager():
             row, y = _dash_job_row(j, jc, pools, today, con_revenue=True)
             if "resultado_operativo" in row:      # rev71: datos de la sección "Resultado" de las tarjetas
                 row["costo_actual"] = round(row["base"] - row["resultado_operativo"], 2)
-                rv = float(row.get("revenue") or 0)
-                row["resultado_financiero"] = round(rv - row["costo_actual"], 2)
-                row["financiero_pct"] = round(row["resultado_financiero"] / rv * 100, 1) if rv else None
                 row["runoff_interno"] = jc.get("runoff_interno") or ""
+                # rev72: el Project Manager solo ve el resultado operativo (no el financiero)
             if j in jobs:
                 out["jobs"].append(row)
             # rev50: la gráfica de barras también recibe los Jobs Open/WIP de otros años (son la vista
@@ -11340,6 +11338,14 @@ def api_requisiciones_upload():
                "completados": 0, "avisos": avisos}
         s = _orm.get_session()
         try:
+            # rev72: número de versión de esta carga (por Job + tipo de BOM) y bitácora de cambios
+            _pg_lock(s, f"req-carga:{job}:{tipo}")
+            version = (s.query(_orm.RequisicionCarga).filter(_orm.RequisicionCarga.job == job,
+                                                              _orm.RequisicionCarga.tipo == tipo).count()) + 1
+            cambios = []          # [{accion, part_number, description, ...}]
+            def marca(d, campo, de, a, aplicado=True):
+                d.setdefault("cambios_carga", []).append({"version": version, "campo": campo, "de": de, "a": a,
+                                                          "aplicado": aplicado, "fecha": ahora, "usuario": user})
             existentes = {}
             for r in (s.query(_orm.RequisicionCompra)
                       .filter(_orm.RequisicionCompra.job == job, _orm.RequisicionCompra.tipo == tipo)
@@ -11350,11 +11356,25 @@ def api_requisiciones_upload():
                 row = existentes.get(k)
                 if row is None:
                     item = {"id": _req_gen_item_id(), "job": job, "tipo": tipo, **nuevo,
-                            "created_by": user, "created_at": ahora}
+                            "created_by": user, "created_at": ahora, "carga_version": version}
                     s.add(_orm.RequisicionCompra(data=item, item_id=item["id"], job=job, tipo=tipo, status=item["status"]))
                     res["agregados"] += 1
+                    cambios.append({"accion": "nuevo", "part_number": nuevo["part_number"], "description": nuevo.get("description", ""),
+                                    "brand": nuevo.get("brand", ""), "cantidad": nuevo["quantity"]})
                     continue
                 d = row.data
+                if d.get("ausente_desde"):          # volvió a aparecer en el BOM
+                    cambios.append({"accion": "reaparece", "part_number": d.get("part_number"), "description": d.get("description", ""),
+                                    "ausente_desde": d.get("ausente_desde")})
+                    d.pop("ausente_desde", None)
+                # diferencias de marca/descripción contra lo guardado (no se sobrescribe: solo se informa)
+                for campo in ("brand", "description"):
+                    nv, av = str(nuevo.get(campo) or "").strip(), str(d.get(campo) or "").strip()
+                    ya = next((x for x in reversed(d.get("cambios_carga") or []) if x.get("campo") == campo and not x.get("aplicado")), None)
+                    if nv and av and nv.upper() != av.upper() and not (ya and str(ya.get("a")).upper() == nv.upper()):
+                        cambios.append({"accion": "diferencia", "part_number": d.get("part_number"), "description": d.get("description", ""),
+                                        "campo": campo, "de": av, "a": nv})
+                        marca(d, campo, av, nv, aplicado=False)
                 # rev67: si el renglón ya existía sin marca o sin descripción (por ejemplo, se
                 # cargó antes sin la columna FABRICANTE), se completan con lo del archivo. Lo
                 # que ya tenía valor no se sobrescribe.
@@ -11362,6 +11382,9 @@ def api_requisiciones_upload():
                 for campo in ("brand", "description"):
                     if nuevo.get(campo) and not str(d.get(campo) or "").strip():
                         d[campo] = nuevo[campo]; lleno = True
+                        marca(d, campo, "", nuevo[campo])
+                        cambios.append({"accion": "modificado", "part_number": d.get("part_number"), "description": d.get("description", ""),
+                                        "campo": campo, "de": "", "a": nuevo[campo]})
                 if lleno: res["completados"] += 1
                 actual, nueva = float(d.get("quantity") or 0), float(nuevo["quantity"])
                 if nueva == actual:
@@ -11373,21 +11396,66 @@ def api_requisiciones_upload():
                     d["quantity"] = nueva
                     d.pop("revision", None)
                     d.setdefault("cambios_cantidad", []).append({"de": actual, "a": nueva, "fecha": ahora, "usuario": user, "origen": "carga de requisición"})
+                    marca(d, "quantity", actual, nueva)
+                    cambios.append({"accion": "modificado", "part_number": d.get("part_number"), "description": d.get("description", ""),
+                                    "campo": "quantity", "de": actual, "a": nueva})
                     _req_aplicar_estatus(d, row)
                     res["actualizados"].append({"part_number": d.get("part_number"), "de": actual, "a": nueva})
                 else:
                     # Baja la cantidad, o el renglón ya está Comprado/Cancelado: no se toca,
                     # se marca para que alguien lo revise y decida.
-                    d["revision"] = {"cantidad_nueva": nueva, "cantidad_actual": actual, "fecha": ahora, "usuario": user}
+                    previa = d.get("revision") if isinstance(d.get("revision"), dict) else None
+                    if previa and float(previa.get("cantidad_nueva") or -1) == nueva:
+                        # rev72: la misma revisión pendiente de una carga anterior: se deja como
+                        # estaba y no se vuelve a listar como cambio de esta carga
+                        res["iguales"] += 1
+                        row.data = d; _orm_flag_modified(row, "data"); continue
+                    d["revision"] = {"cantidad_nueva": nueva, "cantidad_actual": actual, "fecha": ahora, "usuario": user, "version": version}
                     res["revision"].append({"part_number": d.get("part_number"), "actual": actual, "nueva": nueva, "status": d.get("status")})
+                    marca(d, "quantity", actual, nueva, aplicado=False)
+                    cambios.append({"accion": "revision", "part_number": d.get("part_number"), "description": d.get("description", ""),
+                                    "campo": "quantity", "de": actual, "a": nueva, "status": d.get("status")})
                 row.data = d
                 _orm_flag_modified(row, "data")
+            # rev72: renglones que ya existían y no vienen en esta carga (posible baja del BOM).
+            # No se tocan: solo se marcan para revisarlos.
+            en_archivo = set(orden)
+            for k, row in existentes.items():
+                if k in en_archivo: continue
+                d = row.data
+                if d.get("status") == "Cancelado" or d.get("ausente_desde"): continue
+                d["ausente_desde"] = version
+                cambios.append({"accion": "ausente", "part_number": d.get("part_number"), "description": d.get("description", ""),
+                                "cantidad": d.get("quantity"), "status": d.get("status")})
+                row.data = d; _orm_flag_modified(row, "data")
+            resumen = {}
+            for c in cambios: resumen[c["accion"]] = resumen.get(c["accion"], 0) + 1
+            resumen["iguales"] = res["iguales"]
+            s.add(_orm.RequisicionCarga(job=job, tipo=tipo, version=version, data={
+                "version": version, "fecha": ahora, "usuario": user, "archivo": f.filename, "renglones_archivo": len(orden),
+                "resumen": resumen, "cambios": cambios}))
             s.commit()
+            res["version"] = version; res["resumen"] = resumen
         finally:
             s.close()
         return jsonify({"ok": True, "imported": res["agregados"], **res})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/requisiciones/<job>/cargas", methods=["GET"])
+def api_requisiciones_cargas(job):
+    """rev72: historial de cargas (versiones) de un BOM con lo que cambió en cada una."""
+    if not (can("view", "compras-requisicion") or can("view", "projconfig")): return jsonify({"error": "Sin permiso"}), 403
+    if not _orm or not _orm.DB_ENABLED: return jsonify({"cargas": []})
+    tipo = (request.args.get("tipo") or "").strip()
+    s = _orm.get_session()
+    try:
+        q = s.query(_orm.RequisicionCarga).filter(_orm.RequisicionCarga.job == job)
+        if tipo: q = q.filter(_orm.RequisicionCarga.tipo == tipo)
+        return jsonify({"cargas": [dict(r.data, tipo=r.tipo) for r in q.order_by(_orm.RequisicionCarga.version.desc()).all()]})
+    finally:
+        s.close()
 
 @app.route("/api/requisiciones/<item_id>", methods=["PUT"])
 def api_requisiciones_update(item_id):
