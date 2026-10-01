@@ -7655,7 +7655,7 @@ async function loadIngDashboard(){
 
 function _ingDocsN(c, d){ return d.doc_tipos.filter(t=>c.docs[t.k]?.estado==='vigente').length; }
 
-function ingCardHTML(c, d){
+function ingCardHTML(c, d, fin=null){
   const fd = v => v ? new Date(v.slice(0,10)+'T12:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '<span style="color:var(--muted)">—</span>';
   const hoy = d.hoy;
   const venc = v => v && v.slice(0,10) < hoy;
@@ -7706,10 +7706,26 @@ function ingCardHTML(c, d){
     ${sec('Fechas')}
     ${fila('Run Off interno', c.runoff_interno, venc(c.runoff_interno))}${fila('Run Off cliente', c.runoff_cliente, venc(c.runoff_cliente))}${fila('Envío', c.fecha_envio, venc(c.fecha_envio))}
     ${sec('Tiempo transcurrido y restante')}${tiempo}
+    ${fin ? sec('Resultado') + ingFinHTML(fin) : ''}
     ${sec('Estatus de compras')}${compras}
     ${sec(`Puntos abiertos${nP?` · ${L.OPEN} abiertos de ${L.OPEN+L.CLOSE}`:''}`)}${pie}
     ${c.ptsv?`<button class="btn-reload" style="margin-top:auto;font-size:11px;padding:6px 10px" onclick="ingAbrirProyecto('${esc(c.ptsv)}')">Abrir configuración del proyecto →</button>`:''}
   </div>`;
+}
+
+// rev70: bloque de resultados para las tarjetas de Operaciones / superadmin
+function ingFinHTML(f){
+  const money = v => v==null ? '—' : (v<0?'-':'')+'$'+Math.abs(Number(v)).toLocaleString('en-US',{maximumFractionDigits:0});
+  if(f.error) return `<div style="font-size:11px;color:var(--red)" title="${esc(f.error)}">No se pudo calcular el resultado.</div>`;
+  const lin = (l, v, extra='', b=false) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1.5px 0"><span style="color:var(--muted2)">${l}</span><span style="font-family:'DM Mono',monospace;${b?'font-weight:700':''}">${v}${extra}</span></div>`;
+  const res = (l, v, pct, base) => `<div style="display:flex;justify-content:space-between;align-items:baseline;border-radius:6px;padding:5px 8px;margin-top:4px;background:${v==null?'rgba(0,0,0,.03)':v<0?'rgba(200,16,46,.07)':'rgba(22,163,74,.08)'}">
+      <span style="font-size:11.5px;font-weight:700">${l}<span style="font-weight:400;font-size:10px;color:var(--muted)"> vs ${base}</span></span>
+      <span style="font-family:'DM Mono',monospace;font-weight:800;color:${v==null?'var(--muted)':v<0?'var(--red)':'#15803d'}">${money(v)}${pct!=null&&Math.abs(pct)<1000?` <span style="font-size:10px;font-weight:600">${pct}%</span>`:''}</span></div>`;
+  return lin('Internal Target', f.internal_target!=null?money(f.internal_target):`<span style="color:var(--amber)">Sin config.</span>`)
+    + lin('Revenue', money(f.revenue))
+    + lin('Costo actual', money(f.costo_actual), '', true)
+    + res('Resultado operativo', f.resultado_operativo, f.resultado_pct, f.internal_target!=null?'Internal Target':'revenue')
+    + res('Resultado financiero', f.resultado_financiero, f.financiero_pct, 'revenue');
 }
 
 function ingRender(){
@@ -7772,13 +7788,44 @@ async function loadOMDashboard(){
   await loadOMSecciones(document.getElementById('om-secciones'), false);
 }
 
+// rev70: tarjetas de Jobs WIP (las del dashboard ENGINEERING) + resultado operativo y financiero
+let _omQ = '', _omOrden = 'restante', _omFiltro = 'todos';
+function omCardsHTML(){
+  const d = window._omIng, fin = window._omFin || {};
+  if(!d || d.error) return `<div style="background:#fff;border-radius:14px;padding:20px;color:var(--red)">⚠ No se pudieron cargar las tarjetas: ${esc(d?.error||'')}</div>`;
+  const q = _omQ.trim().toLowerCase();
+  let cards = d.cards.filter(c=>!q || `${c.job_number} ${c.customer} ${c.pm} ${c.ptsv} ${c.description}`.toLowerCase().includes(q));
+  if(_omFiltro==='negativo') cards = cards.filter(c=>(fin[c.job_number]?.resultado_operativo??0) < 0);
+  if(_omFiltro==='vencidos') cards = cards.filter(c=>c.tiempo && c.tiempo.restantes < 0);
+  if(_omFiltro==='docs') cards = cards.filter(c=>_ingDocsN(c,d) < d.doc_tipos.length);
+  const rest = c => c.tiempo ? c.tiempo.restantes : 1e9, ro = c => fin[c.job_number]?.resultado_operativo ?? 0;
+  cards.sort(_omOrden==='restante' ? (a,b)=>rest(a)-rest(b) || a.job_number.localeCompare(b.job_number)
+           : _omOrden==='resultado' ? (a,b)=>ro(a)-ro(b) || a.job_number.localeCompare(b.job_number)
+           : (a,b)=>a.job_number.localeCompare(b.job_number));
+  const opt = (v,t,cur) => `<option value="${v}" ${v===cur?'selected':''}>${t}</option>`;
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-right:6px">Jobs WIP</div>
+      <input type="search" value="${esc(_omQ)}" placeholder="Buscar Job, cliente, PM o PT" oninput="_omQ=this.value;clearTimeout(window._omT);window._omT=setTimeout(()=>{omCardsRender();const i=document.querySelector('#om-cards input[type=search]');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},250)" style="flex:1;min-width:220px;font-size:12px;padding:7px 10px;border:1px solid var(--border2);border-radius:6px">
+      <select onchange="_omFiltro=this.value;omCardsRender()" style="font-size:12px;padding:6px 8px">${opt('todos','Todos los Jobs WIP',_omFiltro)}${opt('negativo','Resultado operativo negativo',_omFiltro)}${opt('vencidos','Fecha final vencida',_omFiltro)}${opt('docs','Documentación incompleta',_omFiltro)}</select>
+      <select onchange="_omOrden=this.value;omCardsRender()" style="font-size:12px;padding:6px 8px">${opt('restante','Ordenar: menos días restantes',_omOrden)}${opt('resultado','Ordenar: peor resultado operativo',_omOrden)}${opt('job','Ordenar: Job',_omOrden)}</select>
+      <span style="font-size:11px;color:var(--muted)">${cards.length} de ${d.cards.length}</span>
+    </div>
+    ${cards.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;align-items:stretch">${cards.map(c=>ingCardHTML(c, d, fin[c.job_number]||{error:'Sin datos'})).join('')}</div>`
+      : `<div style="background:#fff;border-radius:14px;padding:40px;text-align:center;color:var(--muted)">${d.cards.length?'Ningún Job coincide con el filtro.':'No hay Jobs en WIP.'}</div>`}
+    <div style="font-size:10.5px;color:var(--muted2);margin-top:10px">Resultado operativo = Internal Target (o revenue si el Job no está configurado) − costo actual. Resultado financiero = revenue (Customer PO, o el del Job) − costo actual, igual que el Gross Margin del Job Report. Costo actual = mano de obra + compras + servicios + reasignaciones − recuperaciones, de toda la vida del Job.</div>`;
+}
+function omCardsRender(){ const el = document.getElementById('om-cards'); if(el) el.innerHTML = omCardsHTML(); }
+
 async function loadOMSecciones(box, conTitulo){
   if(!box) return;
   box.innerHTML = `${conTitulo?'<div style="font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--red);margin-bottom:12px">Operaciones</div>':''}<div style="text-align:center;padding:40px;color:var(--muted)">Calculando Jobs WIP, puntos abiertos y capacidad…</div>`;
-  const [om, cap] = await Promise.all([
+  const [om, cap, ing] = await Promise.all([
     fetch('/api/dashboard/operation-manager').then(r=>r.json()).catch(e=>({error:e.message})),
+    // fetch de capacidad abajo; las tarjetas usan el mismo endpoint que el dashboard ENGINEERING
     fetch(`/api/capacidad/indices?anio=${_omAnio}&proyectos=activos`).then(r=>r.json()).catch(e=>({error:e.message})),
+    fetch('/api/dashboard/engineering').then(r=>r.json()).catch(e=>({error:e.message})),
   ]);
+  window._omIng = ing; window._omFin = Object.fromEntries((om.jobs||[]).map(j=>[j.job_number, j]));
   const card = 'background:#fff;border-radius:14px;box-shadow:0 4px 18px rgba(0,0,0,.08);padding:18px 20px;min-width:0';
   const lbl = t => `<div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:10px">${t}</div>`;
   const fdate = v => v ? new Date(v.slice(0,10)+'T12:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '<span style="color:var(--muted)">—</span>';
@@ -7813,25 +7860,7 @@ async function loadOMSecciones(box, conTitulo){
             ${topP.map(p=>`<tr style="cursor:default"><td style="padding:3px 6px;border-top:1px solid var(--border);font-family:'DM Mono',monospace">${esc(p.ptsv)} <span style="font-size:9.5px;color:var(--muted)">${esc(p.jobs.join(', '))}</span></td><td style="padding:3px 6px;border-top:1px solid var(--border);text-align:right;font-weight:700;color:${p.abiertos?'#b45309':'var(--muted)'}">${p.abiertos}</td><td style="padding:3px 6px;border-top:1px solid var(--border);text-align:right">${p.cerrados}</td></tr>`).join('')}</table>`:''}
         </div></div>
       </div>
-      <div style="margin-bottom:16px">
-        <div style="${card};overflow-x:auto">${lbl('Jobs WIP')}
-          <table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>
-            ${[['Job'],['Cliente / Descripción'],['PM'],['Estatus'],['Run Off interno'],['Run Off cliente'],['Envío'],['Internal Target','right'],['Costo actual','right'],['Resultado operativo','right']].map(t=>`<th style="padding:7px 8px;text-align:${t[1]||'left'};font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap;cursor:default">${t[0]}</th>`).join('')}
-          </tr></thead><tbody>${jobs.map(j=>{ const ro=j.resultado_operativo; return `<tr style="border-bottom:1px solid rgba(0,0,0,.05);cursor:default">
-            <td style="padding:8px;font-family:'DM Mono',monospace;color:var(--gold);font-weight:700">${esc(j.job_number)}</td>
-            <td style="padding:8px;min-width:170px;max-width:280px">${esc(j.customer||'')}<div style="font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(j.description||'')}">${esc(j.description||'')}</div></td>
-            <td style="padding:8px;font-size:11px;white-space:nowrap">${esc(String(j.pm||'').replace(/ - Persico$/i,''))}</td>
-            <td style="padding:8px"><span class="badge">${esc(j.status)}</span></td>
-            <td style="padding:8px;white-space:nowrap">${fdate(j.runoff_interno)}</td>
-            <td style="padding:8px;white-space:nowrap">${fdate(j.runoff_cliente)}</td>
-            <td style="padding:8px;white-space:nowrap;${j.envio_vencido?'color:var(--red);font-weight:700':''}" title="${esc(j.fecha_envio_origen?'Fuente: '+j.fecha_envio_origen:'')}">${j.envio_vencido?'⚠ ':''}${fdate(j.fecha_envio)}</td>
-            <td style="padding:8px;text-align:right;white-space:nowrap">${j.internal_target!=null?`<b>${money(j.internal_target)}</b>`:`<span style="color:var(--amber)" title="Sin Configurar Proyecto: se usa el revenue">Sin config.</span><div style="font-size:10px;color:var(--muted)">revenue ${money(j.base)}</div>`}</td>
-            <td style="padding:8px;text-align:right;white-space:nowrap">${money(j.costo_actual)}</td>
-            <td style="padding:8px;text-align:right;white-space:nowrap;font-weight:700;color:${ro==null?'var(--muted)':ro<0?'var(--red)':'var(--green)'}">${j.error?`<span title="${esc(j.error)}">error</span>`:money(ro)}${j.resultado_pct!=null&&Math.abs(j.resultado_pct)<1000?`<div style="font-size:10px;font-weight:400;color:var(--muted)">${j.resultado_pct}%</div>`:''}</td>
-          </tr>`;}).join('') || '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--muted)">Sin Jobs en WIP</td></tr>'}</tbody></table>
-          <div style="font-size:10px;color:var(--muted);margin-top:8px">Costo actual = mano de obra + compras + servicios + reasignaciones − recuperaciones (vida del Job). Resultado operativo = Internal Target (o revenue) − costo actual, igual que el Job Report.</div>
-        </div>
-      </div>`;
+      <div id="om-cards" style="margin-bottom:16px">${omCardsHTML()}</div>`;
   }
 
   // ── Capacidad y disponibilidad (mismas gráficas de Operaciones → Capacidad)

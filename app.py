@@ -7674,7 +7674,7 @@ def _ro_job(jn, y, pres, pools, detalle=None):
 
 PM_DASH_STATUS = ("OPEN", "WIP")
 
-def _dash_job_row(j, jc, pools, today):
+def _dash_job_row(j, jc, pools, today, con_revenue=False):
     """Renglón de un Job para los dashboards (PM, Operation Manager): fechas de Configurar
     Proyecto, targets y resultado operativo (misma fórmula que el Job Report, vida del Job)."""
     jn = j["job_number"]
@@ -7691,7 +7691,8 @@ def _dash_job_row(j, jc, pools, today):
     row["target_mo"]       = _num(jc.get("target_mo"))
     try:
         r_ = _ro_job(jn, y, jc.get("presupuesto_disponible"), pools)
-        r_.pop("revenue", None)
+        rev = r_.pop("revenue", None)
+        if con_revenue: row["revenue"] = rev          # rev70: para el resultado financiero
         row.update(r_)
     except Exception as e:
         row["error"] = str(e)
@@ -7796,11 +7797,16 @@ def api_dashboard_operation_manager():
         filas = []
         for j in sorted(activos, key=lambda x: x.get("job_number", "")):
             jc = cfg_by_job.get(j["job_number"].strip().upper(), {})
-            row, _y = _dash_job_row(j, jc, pools, today)
+            row, _y = _dash_job_row(j, jc, pools, today, con_revenue=True)
             row["runoff_interno"] = jc.get("runoff_interno") or ""
             row["fecha_inicio"] = jc.get("fecha_inicio") or ""
             if "resultado_operativo" in row:
                 row["costo_actual"] = round(row["base"] - row["resultado_operativo"], 2)
+                # rev70: resultado financiero = revenue (CPO de todos los años, o el del Job) − costo actual,
+                # igual que el Gross Margin del Job Report
+                rv = float(row.get("revenue") or 0)
+                row["resultado_financiero"] = round(rv - row["costo_actual"], 2)
+                row["financiero_pct"] = round(row["resultado_financiero"] / rv * 100, 1) if rv else None
             filas.append(row)
         # LOP de los proyectos con algún Job Open/WIP
         lop = {"OPEN": 0, "CLOSE": 0, "INFO": 0}
