@@ -6937,6 +6937,8 @@ async function initHomeDashboard(){
       await loadOMDashboard();
     } else if(me.role === 'ENGINEERING'){
       await loadIngDashboard();
+    } else if(me.role === 'HUMAN RESOURCES'){
+      await loadRHDashboard();
     } else if(me.role === 'PROJECT MANAGER'){
       await loadPMDashboard();
     } else if(me.role === 'PURCHASING'){
@@ -7242,8 +7244,92 @@ function renderPurchDashboard(d){
       ${barras.length?pmBarsSVG(barras,{t:'Target Compras',c:'Adquirido',over:'Adquirido sobre target',nota:`${g.length-conT.length} Job(s) sin Target Compras no se grafican`}):vacio('Ningún Job de '+d.year+' tiene Target Compras en Configurar Proyecto')}</div>
     <div style="${card};margin-bottom:16px"><div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Tendencia del % de ahorro · (Target − Adquirido) / Target</div>
       ${conT.length?pmTrendSVG(g,{key:'ahorro_pct',min:0,minLbl:'Sin ahorro',serie:'Ahorro por Job',excl:'sin Target Compras'}):vacio('Sin Jobs con Target Compras')}</div>`;
-  wrap.innerHTML = head + kpis + charts + purchWipTableHTML(d, card);
+  // rev73: tarjetas de los Jobs WIP en lugar de la tabla de requisiciones
+  window._puCards = d.cards ? {cards: d.cards, ...(d.cards_meta||{})} : {error: 'El servidor no devolvió las tarjetas'};
+  wrap.innerHTML = head + kpis + charts + `<div id="pu-cards">${purchCardsBlockHTML()}</div>`;
 }
+
+// ════════════════════════════════════════════════════════
+//  rev73 — Dashboard de Compras: tarjetas de Jobs WIP
+//  BOMs subidos (versión de carga, renglones, por revisar / ya no vienen), estatus de
+//  compras, tiempo transcurrido vs restante y resultado comercial (Target Compras vs
+//  adquirido, % de ahorro).
+// ════════════════════════════════════════════════════════
+const _pu = {q:'', filtro:'todos', orden:'restante'};
+const _puAvance = c => { const v = Object.values(c.compras||{}).filter(b=>b && b.vivos>0); return v.length ? v.reduce((a,b)=>a+b.pct_cubierto,0)/v.length : 0; };
+function purchCardHTML(c, d){
+  const money = v => v==null ? '—' : (v<0?'-':'')+'$'+Math.abs(Number(v)).toLocaleString('en-US',{maximumFractionDigits:0});
+  const sec = t => `<div style="font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin:12px 0 5px;font-weight:700">${t}</div>`;
+  const fcorta = v => v ? new Date(v).toLocaleDateString('es-MX',{day:'2-digit',month:'short'}) : '';
+  // BOMs subidos
+  const bc = c.boms_carga || {};
+  const nSub = d.req_tipos.filter(t=>bc[t]).length;
+  const boms = d.req_tipos.map(t=>{
+    const b = bc[t];
+    if(!b) return `<div style="display:flex;align-items:center;gap:7px;font-size:12px;padding:2px 0;cursor:pointer" onclick="purchIrReq('${esc(c.job_number)}','${t}')" title="Abrir la requisición"><span style="color:var(--muted);font-size:15px;line-height:1">☐</span><span style="flex:1;color:var(--muted2)">${PURCH_N[t]||t}</span><span style="font-size:10px;color:var(--muted)">sin subir</span></div>`;
+    const avisos = [b.por_revisar?`<span style="color:#c2410c">${b.por_revisar} por revisar</span>`:'', b.ausentes?`<span style="color:#b91c1c">${b.ausentes} ya no vienen</span>`:''].filter(Boolean).join(' · ');
+    return `<div style="font-size:12px;padding:2px 0;cursor:pointer" onclick="purchIrReq('${esc(c.job_number)}','${t}')" title="Abrir la requisición${b.usuario?` · última carga de ${esc(b.usuario)}`:''}">
+      <div style="display:flex;align-items:center;gap:7px"><span style="color:#1f8a4c;font-size:15px;line-height:1">☑</span><span style="flex:1">${PURCH_N[t]||t}</span>
+        <span style="font-size:10px;color:var(--muted2)">${b.version?`v${b.version} · `:''}${fcorta(b.fecha||b.ultima_actualizacion)} · ${b.renglones||0} reng.</span></div>
+      ${avisos?`<div style="font-size:10px;margin-left:22px">⚠ ${avisos}</div>`:''}</div>`;
+  }).join('');
+  // Resultado comercial
+  const k = c.comercial || {};
+  let comercial;
+  if(k.error) comercial = `<div style="font-size:11px;color:var(--red)" title="${esc(k.error)}">No se pudo calcular el monto adquirido.</div>`;
+  else {
+    const pct = k.target_compras ? Math.min(100, k.adquirido/k.target_compras*100) : null, sobre = k.target_compras && k.adquirido > k.target_compras;
+    const lin = (l, v, b=false) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1.5px 0"><span style="color:var(--muted2)">${l}</span><span style="font-family:'DM Mono',monospace;${b?'font-weight:700':''}">${v}</span></div>`;
+    comercial = lin('Target Compras', k.target_compras!=null?money(k.target_compras):'<span style="color:var(--amber)">Sin configurar</span>')
+      + lin('Monto adquirido', money(k.adquirido), true)
+      + (pct!=null?`<div style="height:7px;border-radius:3px;background:rgba(0,0,0,.07);overflow:hidden;margin:4px 0 2px" title="${Math.round(k.adquirido/k.target_compras*100)}% del target consumido"><div style="height:100%;width:${pct}%;background:${sobre?'#c8102e':'#2569a0'}"></div></div>`:'')
+      + `<div style="display:flex;justify-content:space-between;align-items:baseline;border-radius:6px;padding:5px 8px;margin-top:4px;background:${k.ahorro==null?'rgba(0,0,0,.03)':k.ahorro<0?'rgba(200,16,46,.07)':'rgba(22,163,74,.08)'}">
+          <span style="font-size:11.5px;font-weight:700">Ahorro<span style="font-weight:400;font-size:10px;color:var(--muted)"> ${Object.values(c.compras||{}).some(b=>b && b.vivos>0 && b.pct_cubierto<0.999) || !Object.values(c.compras||{}).some(Boolean) ? '(preliminar: compras pendientes)' : '(target − adquirido)'}</span></span>
+          <span style="font-family:'DM Mono',monospace;font-weight:800;color:${k.ahorro==null?'var(--muted)':k.ahorro<0?'var(--red)':'#15803d'}">${k.ahorro==null?'—':money(k.ahorro)}${k.ahorro_pct!=null?` <span style="font-size:10px;font-weight:600">${(k.ahorro_pct*100).toFixed(1)}%</span>`:''}</span></div>`;
+  }
+  return `<div style="background:#fff;border-radius:18px;box-shadow:0 4px 18px rgba(0,0,0,.08);padding:16px 18px;display:flex;flex-direction:column;min-width:0">
+    <div style="text-align:center;border-bottom:1px solid var(--border);padding-bottom:10px">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:1px">JOB</div>
+      <div style="font-family:'DM Mono',monospace;font-size:22px;font-weight:800">${esc(c.job_number)}</div>
+      <div style="font-size:11px;color:var(--muted2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.description||'')}">${esc(c.customer||'')}${c.description?' · '+esc(c.description):''}</div>
+      <div style="font-size:10.5px;color:var(--muted)">${c.ptsv?esc(c.ptsv)+' · ':''}${esc(String(c.pm||'').replace(/ - Persico$/i,''))}</div>
+    </div>
+    ${sec(`BOMs subidos · ${nSub}/${d.req_tipos.length}`)}${d.requisiciones_disponibles?boms:'<div style="font-size:11px;color:var(--muted)">Requiere la base de datos.</div>'}
+    ${sec('Estatus de compras')}${ingComprasHTML(c, d)}
+    ${sec('Tiempo transcurrido y restante')}${ingTiempoHTML(c)}
+    ${sec('Resultado comercial')}${comercial}
+  </div>`;
+}
+function purchCardsBlockHTML(){
+  const d = window._puCards;
+  if(!d || d.error) return `<div style="background:#fff;border-radius:14px;padding:20px;color:var(--red)">⚠ No se pudieron cargar las tarjetas: ${esc(d?.error||'')}</div>`;
+  const q = _pu.q.trim().toLowerCase();
+  let cards = d.cards.filter(c=>!q || `${c.job_number} ${c.customer} ${c.pm} ${c.ptsv} ${c.description}`.toLowerCase().includes(q));
+  const pend = c => Object.values(c.compras||{}).some(b=>b && b.vivos>0 && b.pct_cubierto<0.999);
+  const sinBom = c => d.req_tipos.some(t=>!(c.boms_carga||{})[t]);
+  const revisar = c => Object.values(c.boms_carga||{}).some(b=>b && (b.por_revisar||b.ausentes));
+  if(_pu.filtro==='pendientes') cards = cards.filter(pend);
+  if(_pu.filtro==='sinbom') cards = cards.filter(sinBom);
+  if(_pu.filtro==='revisar') cards = cards.filter(revisar);
+  if(_pu.filtro==='sobre') cards = cards.filter(c=>(c.comercial?.ahorro??0) < 0);
+  const rest = c => c.tiempo ? c.tiempo.restantes : 1e9, ah = c => c.comercial?.ahorro_pct ?? 1e9;
+  cards.sort(_pu.orden==='restante' ? (a,b)=>rest(a)-rest(b) || a.job_number.localeCompare(b.job_number)
+           : _pu.orden==='avance' ? (a,b)=>_puAvance(a)-_puAvance(b) || a.job_number.localeCompare(b.job_number)
+           : _pu.orden==='ahorro' ? (a,b)=>ah(a)-ah(b) || a.job_number.localeCompare(b.job_number)
+           : (a,b)=>a.job_number.localeCompare(b.job_number));
+  const opt = (v,t,cur) => `<option value="${v}" ${v===cur?'selected':''}>${t}</option>`;
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-right:6px">Jobs WIP</div>
+      <input type="search" value="${esc(_pu.q)}" placeholder="Buscar Job, cliente, PM o PT" oninput="_pu.q=this.value;clearTimeout(window._puT);window._puT=setTimeout(()=>{purchCardsRender();const i=document.querySelector('#pu-cards input[type=search]');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},250)" style="flex:1;min-width:220px;font-size:12px;padding:7px 10px;border:1px solid var(--border2);border-radius:6px">
+      <select onchange="_pu.filtro=this.value;purchCardsRender()" style="font-size:12px;padding:6px 8px">${opt('todos','Todos los Jobs WIP',_pu.filtro)}${opt('pendientes','Con compras pendientes',_pu.filtro)}${opt('sinbom','Con algún BOM sin subir',_pu.filtro)}${opt('revisar','BOM con renglones por revisar / ya no vienen',_pu.filtro)}${opt('sobre','Adquirido sobre el target',_pu.filtro)}</select>
+      <select onchange="_pu.orden=this.value;purchCardsRender()" style="font-size:12px;padding:6px 8px">${opt('restante','Ordenar: menos días restantes',_pu.orden)}${opt('avance','Ordenar: menor avance de compras',_pu.orden)}${opt('ahorro','Ordenar: menor ahorro',_pu.orden)}${opt('job','Ordenar: Job',_pu.orden)}</select>
+      <span style="font-size:11px;color:var(--muted)">${cards.length} de ${d.cards.length}</span>
+    </div>
+    ${cards.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;align-items:stretch">${cards.map(c=>purchCardHTML(c,d)).join('')}</div>`
+      : `<div style="background:#fff;border-radius:14px;padding:40px;text-align:center;color:var(--muted)">${d.cards.length?'Ningún Job coincide con el filtro.':'No hay Jobs en WIP.'}</div>`}
+    <div style="font-size:10.5px;color:var(--muted2);margin-top:10px">Compras: morado = reasignado, verde = ordenado; ⚠ pendiente sin movimiento en más de ${PURCH_DIAS_ALERTA} días. Clic en un BOM abre su requisición. Monto adquirido = órdenes de compra del Job en todos sus años (USD). Ahorro = Target Compras − adquirido.</div>`;
+}
+function purchCardsRender(){ const el = document.getElementById('pu-cards'); if(el) el.innerHTML = purchCardsBlockHTML(); }
 
 // ════════════════════════════════════════════════════════
 //  rev66 — Jobs en WIP · requisiciones: un renglón por Job
@@ -7620,6 +7706,118 @@ function renderGMDashboard(d){
 }
 
 // ════════════════════════════════════════════════════════
+//  DASHBOARD RECURSOS HUMANOS (rev74)
+// ════════════════════════════════════════════════════════
+let _rh = null, _rhExtraArea = 'Total', _rhAsisFiltro = 'sin registro';
+async function loadRHDashboard(){
+  const wrap = document.getElementById('home-dashboard'), dflt = document.getElementById('home-default');
+  if(!wrap) return;
+  dflt.style.display='none'; wrap.style.display='block';
+  wrap.innerHTML = `<div style="text-align:center;padding:60px;color:var(--muted)">Calculando indicadores de personal…</div>`;
+  try{
+    const r = await fetch('/api/dashboard/rh'); const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error||`HTTP ${r.status}`);
+    _rh = d; rhRender();
+  }catch(e){ wrap.innerHTML = `<div style="padding:30px;color:var(--red)">⚠ No se pudo cargar el dashboard: ${esc(e.message)}</div>`; }
+}
+
+function rhRender(){
+  const wrap = document.getElementById('home-dashboard'), d = _rh; if(!wrap || !d) return;
+  const card = 'background:#fff;border-radius:14px;box-shadow:0 4px 18px rgba(0,0,0,.08);padding:18px 20px;min-width:0';
+  const lbl = t => `<div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:10px">${t}</div>`;
+  const fd = v => v ? new Date(v.slice(0,10)+'T12:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+  const MES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const mesLbl = ym => { const [y,m]=ym.split('-'); return `${MES[+m-1]} ${y.slice(2)}`; };
+  const kpi = (l,v,sub,c) => `<div style="${card};flex:1;min-width:200px"><div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)">${l}</div><div style="font-size:26px;font-weight:800;color:${c||'var(--text)'};margin-top:4px">${v}</div><div style="font-size:11px;color:var(--muted)">${sub||''}</div></div>`;
+  const A = d.asistencia || {};
+  const pctAsis = d.activos && A.conectado ? Math.round(A.presentes/d.activos*100) : null;
+  const uc = d.ultima_contratacion, ub = d.ultima_baja;
+
+  // Subtotal por perfil / área (barras)
+  const barras = (obj, color) => { const max = Math.max(1, ...Object.values(obj)); return Object.entries(obj).map(([k,v])=>`
+    <div style="display:grid;grid-template-columns:minmax(120px,40%) 1fr 34px;gap:8px;align-items:center;font-size:12px;margin:4px 0">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${k==='Sin asignar'?'color:var(--muted)':''}" title="${esc(k)}">${esc(k)}</span>
+      <div style="height:10px;background:rgba(0,0,0,.05);border-radius:4px;overflow:hidden"><div style="height:100%;width:${v/max*100}%;background:${color}"></div></div>
+      <b style="text-align:right">${v}</b></div>`).join('') || '<div style="font-size:12px;color:var(--muted)">Sin personal activo.</div>'; };
+
+  // Rotación (mapa de calor áreas × meses)
+  const rot = d.rotacion||{}, areasRot = Object.keys(rot).filter(a=>a!=='Total' && rot[a].some(x=>x.plantilla>0||x.bajas>0));
+  const colR = v => v==null ? 'transparent' : v===0 ? 'rgba(22,163,74,.10)' : v<3 ? 'rgba(245,158,11,.22)' : v<6 ? 'rgba(245,158,11,.45)' : 'rgba(200,16,46,.40)';
+  const celda = x => `<td title="${x.mes}: ${x.bajas} baja(s), ${x.altas} alta(s), plantilla promedio ${x.plantilla}" style="padding:5px 6px;text-align:center;font-family:'DM Mono',monospace;font-size:11px;background:${colR(x.indice)}">${x.indice==null?'<span style="color:var(--muted)">—</span>':x.indice.toFixed(1)}</td>`;
+  const tot12 = (rot.Total||[]).reduce((a,x)=>a+x.bajas,0), prom12 = (rot.Total||[]).reduce((a,x)=>a+x.plantilla,0)/Math.max(1,(rot.Total||[]).length);
+  const rotTabla = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;white-space:nowrap">
+    <thead><tr><th style="text-align:left;padding:5px 6px;cursor:default">Área</th>${d.rotacion_meses.map(m=>`<th style="padding:5px 6px;cursor:default;text-align:center">${mesLbl(m)}</th>`).join('')}</tr></thead>
+    <tbody>${areasRot.map(a=>`<tr><td style="padding:5px 6px;font-weight:600">${esc(a)}</td>${rot[a].map(celda).join('')}</tr>`).join('')}
+      <tr style="border-top:2px solid var(--border)"><td style="padding:5px 6px;font-weight:800">Total</td>${(rot.Total||[]).map(celda).join('')}</tr></tbody></table></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--muted2);margin-top:6px">
+      <span>Índice = bajas del mes / plantilla promedio ((inicio + fin) / 2) × 100</span>
+      <span><span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,.2)"></span> 0%</span><span><span style="display:inline-block;width:10px;height:10px;background:rgba(245,158,11,.3)"></span> &lt;3%</span><span><span style="display:inline-block;width:10px;height:10px;background:rgba(245,158,11,.5)"></span> 3–6%</span><span><span style="display:inline-block;width:10px;height:10px;background:rgba(200,16,46,.4)"></span> ≥6%</span>
+      <span>12 meses: <b>${tot12}</b> bajas · rotación anual ≈ <b>${prom12?(tot12/prom12*100).toFixed(1):'—'}%</b></span>
+      ${d.bajas_sin_fecha?`<span style="color:var(--amber)">⚠ ${d.bajas_sin_fecha} baja(s) sin fecha de baja no se pueden ubicar en un mes</span>`:''}</div>`;
+
+  // Horas extra semanales
+  const HX = d.horas_extra||{}, areasX = ['Total', ...d.areas_extra];
+  if(!areasX.includes(_rhExtraArea)) _rhExtraArea = 'Total';
+  const serie = HX[_rhExtraArea] || [];
+  const xs = d.semanas.map(w=>new Date(w+'T00:00:00'));
+  const chartX = serie.length ? pcDashChart({xs, H:230, yFmt:v=>Math.round(v)+'%', xLabel:t=>t.toLocaleDateString('es-MX',{day:'2-digit',month:'short'}),
+      series:[{name:'Índice', values:serie.map(x=>x.indice), color:'#c8102e', width:2.6, area:true}],
+      tip:(i,t)=>{ const x=serie[i]; return `Semana del ${t.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}${x.parcial?' (en curso)':''}\nÍndice: ${x.indice==null?'—':x.indice+'%'}\nHoras extra: ${x.extra} de ${x.ordinarias} ordinarias\nEmpleados: ${x.empleados} · con horas extra: ${x.con_extra} · más de ${d.extra_max_lft} h extra: ${x.sobre_lft}`; }}) : '';
+  const ult = serie.filter(x=>!x.parcial).slice(-1)[0];
+  const tablaX = `<div style="overflow-x:auto;margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:11px;white-space:nowrap">
+    <thead><tr><th style="text-align:left;padding:4px 6px;cursor:default">Área</th>${d.semanas.map((w,i)=>`<th style="padding:4px 6px;cursor:default;text-align:right">${new Date(w+'T00:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}${i===d.semanas.length-1?'*':''}</th>`).join('')}</tr></thead>
+    <tbody>${areasX.map(a=>`<tr ${a==='Total'?'style="border-top:2px solid var(--border);font-weight:700"':''}><td style="padding:4px 6px">${esc(a)}</td>${(HX[a]||[]).map(x=>`<td title="${x.extra} h extra · ${x.empleados} empleados · ${x.con_extra} con extra" style="padding:4px 6px;text-align:right;font-family:'DM Mono',monospace;color:${x.indice==null?'var(--muted)':x.indice>10?'#c8102e':x.indice>5?'#b45309':'var(--text)'}">${x.indice==null?'—':x.indice.toFixed(1)+'%'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <div style="font-size:10.5px;color:var(--muted2);margin-top:6px">Índice = horas extra / horas ordinarias. Horas extra = lo que pasa de ${d.horas_semana} h por persona en la semana (jornada L-J 10 h, V 8 h), según Work Hours; el área sale del departamento del trabajador en Hourly Rate y la relación línea → área de Capacidad. * Semana en curso.</div>`;
+
+  // Asistencia del día
+  let asis;
+  if(!A.laborable || A.festivo) asis = `<div style="font-size:12px;color:var(--muted)">Hoy ${A.festivo?`es día festivo (${esc(A.festivo)})`:'no es día laborable'}.</div>`;
+  else if(!A.configurado) asis = `<div style="font-size:12px;color:var(--amber)">El servicio de asistencia (kiosco) no está configurado en el servidor (ATTENDANCE_URL). Se muestran solo los permisos aprobados de hoy.</div>`;
+  else if(!A.conectado) asis = `<div style="font-size:12px;color:var(--red)">⚠ ${esc(A.error||'No se pudo leer la asistencia del kiosco.')}</div>`;
+  else asis = '';
+  const pa = A.por_area||{};
+  const filasAsis = Object.entries(pa).map(([a,x])=>`<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px">${esc(a)}</td><td style="padding:5px 6px;text-align:right">${x.activos}</td>
+      <td style="padding:5px 6px;text-align:right;color:#15803d;font-weight:700">${A.conectado?x.presentes:'—'}</td><td style="padding:5px 6px;text-align:right;color:#2569a0">${x.permiso}</td>
+      <td style="padding:5px 6px;text-align:right;color:${x.sin_registro&&A.conectado?'#c8102e':'var(--muted)'};font-weight:700">${A.conectado?x.sin_registro:'—'}</td>
+      <td style="padding:5px 6px;min-width:110px"><div style="display:flex;height:8px;border-radius:3px;overflow:hidden;background:rgba(0,0,0,.06)"><div style="width:${A.conectado?x.presentes/x.activos*100:0}%;background:#16a34a"></div><div style="width:${x.permiso/x.activos*100}%;background:#2569a0"></div></div></td></tr>`).join('');
+  const personas = (A.personas||[]).filter(p=>_rhAsisFiltro==='todos' || (_rhAsisFiltro==='sin registro' ? p.estado==='sin registro' : _rhAsisFiltro==='presente' ? p.estado==='presente' : !['presente','sin registro'].includes(p.estado)));
+  const hora = t => t ? new Date(t).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) : '';
+
+  wrap.innerHTML = `<div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div><div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)">Dashboard · Recursos Humanos</div><div style="font-size:22px;font-weight:700">Personal</div></div>
+      <button onclick="loadRHDashboard()" class="btn-reload" style="margin-left:auto;font-size:10px">Actualizar</button></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+      ${kpi('Personal activo', d.activos, `${d.bajas_total} baja(s) registradas`)}
+      ${kpi('Última contratación', uc?fd(uc.fecha):'—', uc?`${esc(uc.nombre)}${uc.puesto?' · '+esc(uc.puesto):''}`:'Sin fechas de ingreso')}
+      ${kpi('Última baja', ub?fd(ub.fecha):'—', ub?`${esc(ub.nombre)}${ub.area?' · '+esc(ub.area):''}`:'Sin bajas con fecha')}
+      ${kpi('Asistencia de hoy', pctAsis==null?'—':pctAsis+'%', A.conectado?`${A.presentes} de ${d.activos} con entrada · ${A.permiso} con permiso`:(A.permiso?`${A.permiso} con permiso aprobado`:'sin datos del kiosco'), pctAsis==null?null:pctAsis>=90?'var(--green)':pctAsis>=75?'#b45309':'var(--red)')}
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+      <div style="${card};flex:1 1 380px">${lbl(`Personal activo por perfil de puesto · ${d.activos}`)}${barras(d.por_perfil, '#1f3864')}</div>
+      <div style="${card};flex:1 1 320px">${lbl('Personal activo por área')}${barras(d.por_area, '#2569a0')}
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;font-size:11px">
+          <div style="flex:1;min-width:150px"><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px">Últimas contrataciones</div>${(d.ultimas_contrataciones||[]).map(p=>`<div>${fd(p.fecha)} · ${esc(p.nombre)}</div>`).join('')||'—'}</div>
+          <div style="flex:1;min-width:150px"><div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px">Últimas bajas</div>${(d.ultimas_bajas||[]).map(p=>`<div>${fd(p.fecha)} · ${esc(p.nombre)}</div>`).join('')||'—'}</div>
+        </div></div>
+    </div>
+    <div style="${card};margin-bottom:16px">${lbl('Asistencia del día · '+fd(d.hoy))}${asis}
+      ${filasAsis?`<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>${['Área','Activos','Con entrada','Permiso / vacaciones','Sin registro',''].map((h,i)=>`<th style="padding:5px 6px;text-align:${i&&i<5?'right':'left'};cursor:default">${h}</th>`).join('')}</tr></thead><tbody>${filasAsis}</tbody></table>`:''}
+      ${(A.personas||[]).length?`<div style="display:flex;gap:8px;align-items:center;margin:12px 0 6px;flex-wrap:wrap"><span style="font-size:11px;color:var(--muted)">Ver:</span>
+        ${[['sin registro','Sin registro'],['permiso','Con permiso'],['presente','Con entrada'],['todos','Todos']].map(([k,t])=>`<button type="button" onclick="_rhAsisFiltro='${k}';rhRender()" class="btn-reload" style="font-size:10.5px;padding:3px 9px;${_rhAsisFiltro===k?'border-color:var(--red);color:var(--red)':''}">${t}</button>`).join('')}</div>
+        <div style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px"><table style="width:100%;border-collapse:collapse;font-size:11.5px">${personas.map(p=>`<tr style="border-top:1px solid var(--border)"><td style="padding:4px 8px">${esc(p.nombre||'')}</td><td style="padding:4px 8px;color:var(--muted2)">${esc(p.area)}</td><td style="padding:4px 8px;color:var(--muted2)">${esc(p.puesto||'')}</td>
+          <td style="padding:4px 8px;font-weight:700;color:${p.estado==='presente'?'#15803d':p.estado==='sin registro'?'#c8102e':'#2569a0'}">${esc(p.estado)}${p.entrada?' · '+hora(p.entrada):''}</td></tr>`).join('')||'<tr><td style="padding:10px;color:var(--muted)">Nadie en esta lista.</td></tr>'}</table></div>`:''}
+    </div>
+    <div style="${card};margin-bottom:16px">${lbl('Índice de rotación de personal mensual por área (%)')}${areasRot.length||(rot.Total||[]).some(x=>x.plantilla)?rotTabla:'<div style="font-size:12px;color:var(--muted)">Sin datos de ingreso o baja.</div>'}</div>
+    <div style="${card};margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">${lbl('Índice de horas extraordinarias semanal')}
+        <select onchange="_rhExtraArea=this.value;rhRender()" style="font-size:11px;padding:3px 6px;margin:-10px 0 0">${areasX.map(a=>`<option ${a===_rhExtraArea?'selected':''} value="${esc(a)}">${a==='Total'?'Las 4 áreas':esc(a)}</option>`).join('')}</select>
+        ${ult?`<span style="margin:-10px 0 0 auto;font-size:11px;color:var(--muted2)">Última semana completa: <b>${ult.indice==null?'—':ult.indice+'%'}</b> · ${ult.extra} h extra · ${ult.con_extra} persona(s) con extra${ult.sobre_lft?` · <b style="color:#c8102e">${ult.sobre_lft} con más de ${d.extra_max_lft} h (límite LFT)</b>`:''}</span>`:''}</div>
+      ${chartX || '<div style="font-size:12px;color:var(--muted)">Sin horas registradas en las últimas semanas.</div>'}
+      ${tablaX}
+    </div>`;
+}
+
+// ════════════════════════════════════════════════════════
 //  DASHBOARD ENGINEERING (rev69) — una tarjeta por Job WIP
 //  Documentación del proyecto, Run Off interno/cliente, envío, tiempo transcurrido y
 //  restante, estatus de compras y puntos abiertos.
@@ -7653,6 +7851,13 @@ function ingCardHTML(c, d, fin=null){
   // Fechas
   const fila = (l, v, alerta) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0"><span style="color:var(--muted2)">${l}</span><b style="${alerta?'color:var(--red)':''}">${alerta?'⚠ ':''}${fd(v)}</b></div>`;
   // Tiempo
+  const tiempo = ingTiempoHTML(c);
+  const compras = ingComprasHTML(c, d);
+  // Puntos abiertos
+  return _ingCardResto(c, d, fin, docs, nDocs, fila, venc, tiempo, compras);
+}
+
+function ingTiempoHTML(c){
   let tiempo = `<div style="font-size:11px;color:var(--muted)">Sin fecha de arranque o de finalización.</div>`;
   if(c.tiempo){
     const t = c.tiempo, pct = Math.min(100, t.pct), sobre = t.restantes < 0;
@@ -7663,9 +7868,12 @@ function ingCardHTML(c, d, fin=null){
         <span style="${sobre?'color:var(--red);font-weight:700':''}">${sobre?`Vencido hace ${-t.restantes} días`:`<b>${t.restantes}</b> días restantes`}</span></div>
       <div style="font-size:10px;color:var(--muted);margin-top:1px">Desde ${esc(t.inicio_origen)} hasta ${esc(t.fin_origen)} · ${t.total} días</div>`;
   }
-  // Compras
-  const PURCH_N = {electrico:'Eléctrico', mecanico:'Mecánico', componentes_mayores:'Comp. mayores', manufactura:'Manufactura'};
-  const compras = !d.requisiciones_disponibles ? '<div style="font-size:11px;color:var(--muted)">Requiere la base de datos.</div>' : d.req_tipos.map(t=>{
+  return tiempo;
+}
+
+const PURCH_N = {electrico:'Eléctrico', mecanico:'Mecánico', componentes_mayores:'Comp. mayores', manufactura:'Manufactura'};
+function ingComprasHTML(c, d){
+  return !d.requisiciones_disponibles ? '<div style="font-size:11px;color:var(--muted)">Requiere la base de datos.</div>' : d.req_tipos.map(t=>{
     const b = c.compras[t];
     if(!b) return `<div style="display:grid;grid-template-columns:92px 1fr 40px;gap:6px;align-items:center;font-size:11px;padding:2px 0"><span>${PURCH_N[t]||t}</span><span style="color:var(--muted);font-size:10.5px">Sin requisición</span><span></span></div>`;
     const r = Math.min(100, b.pct_reasignado*100), o = Math.min(100-r, b.pct_ordenado*100), cub = Math.round(b.pct_cubierto*100);
@@ -7675,7 +7883,9 @@ function ingCardHTML(c, d, fin=null){
       <div style="display:flex;height:7px;border-radius:3px;overflow:hidden;background:rgba(0,0,0,.07)"><div style="width:${r}%;background:#8b7fe0"></div><div style="width:${o}%;background:#1d9e75"></div></div>
       <b style="text-align:right;color:${cub>=100?'#15803d':'var(--text)'}">${cub>=100?'✓':cub+'%'}</b></div>`;
   }).join('');
-  // Puntos abiertos
+}
+
+function _ingCardResto(c, d, fin, docs, nDocs, fila, venc, tiempo, compras){
   const L = c.lop, nP = L.OPEN + L.CLOSE + L.INFO;
   const pie = nP ? `<div style="transform:scale(.82);transform-origin:top center;margin-bottom:-28px">${pcDashPie([{label:'Abiertos', value:L.OPEN, color:'#f59e0b'}, {label:'Cerrados', value:L.CLOSE, color:'#16a34a'}, {label:'Informativos', value:L.INFO, color:'#2569a0'}], '')}</div>` : '<div style="font-size:11px;color:var(--muted)">Sin puntos en la LOP.</div>';
   const sec = t => `<div style="font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin:12px 0 5px;font-weight:700">${t}</div>`;
