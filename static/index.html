@@ -4302,6 +4302,8 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:11px;color:var(--muted)"><span id="req-tab-count">—</span></div>
+          <span id="req-btns-excel" style="margin-right:6px"><button class="btn-reload" onclick="reqDescargarExcel(false)" title="Descarga en Excel el BOM de la pestaña actual">⬇ Excel de este BOM</button>
+          <button class="btn-reload" onclick="reqDescargarExcel(true)" title="Un archivo con una hoja por BOM, resumen e historial de cargas" style="margin-left:6px">⬇ Excel de todos los BOMs</button></span>
           <span id="req-btns-compra"><button class="btn-reload" onclick="reqBuscarStock()">Buscar en Stock</button>
           <button class="btn-reload" onclick="reqOpenOC()" style="margin-left:6px;border-color:var(--red);color:var(--red)">Generar Orden de Compra</button></span>
           <span id="req-btns-manuf" style="display:none"><input type="file" id="req-planos-file" accept=".pdf,application/pdf" multiple style="display:none" onchange="reqSubirPlanos(this.files)">

@@ -8501,6 +8501,16 @@ async function reqLoadJob(){
   await reqRenderTab();
 }
 
+// rev76: respaldo en Excel del BOM actual o de todos los BOMs del Job
+function reqDescargarExcel(todos){
+  if(!reqCurrentJob){ toast('Selecciona un Job','er'); return; }
+  const tipo = todos ? 'todos' : reqCurrentTipo;
+  const a = document.createElement('a');
+  a.href = `/api/requisiciones/${encodeURIComponent(reqCurrentJob)}/excel?tipo=${encodeURIComponent(tipo)}`;
+  document.body.appendChild(a); a.click(); a.remove();
+  toast(todos ? 'Descargando todos los BOMs…' : 'Descargando el BOM…', 'ok', 2500);
+}
+
 function reqSetTipo(tipo){
   reqCurrentTipo = tipo;
   // Manufactura trabaja con planos PDF: sus propios botones

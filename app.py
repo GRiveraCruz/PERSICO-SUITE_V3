@@ -11430,6 +11430,120 @@ def api_requisiciones_list(job):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ══════════════════════════════════════════════════════════════════
+#  rev76 — Descargar los BOMs de una requisición en Excel (respaldo)
+#  ?tipo=electrico|mecanico|componentes_mayores|manufactura|todos
+#  Las primeras 5 columnas (BRAND, PART NUMBER, DESCRIPTION, QUANTITY, STATUS) son las
+#  de la plantilla de carga, así que el archivo se puede volver a importar.
+# ══════════════════════════════════════════════════════════════════
+REQ_TIPO_NOMBRE = {"electrico": "Electric BOM", "mecanico": "Mechanic BOM", "componentes_mayores": "Major items", "manufactura": "Manufacturing BOM"}
+
+@app.route("/api/requisiciones/<job>/excel", methods=["GET"])
+def api_requisiciones_excel(job):
+    if not can("view", "compras-requisicion"): return jsonify({"error": "Sin permiso"}), 403
+    if not _orm or not _orm.DB_ENABLED:
+        return jsonify({"error": "Este módulo requiere la base de datos — contacta a soporte."}), 400
+    from openpyxl.utils import get_column_letter
+    tipo = (request.args.get("tipo") or "todos").strip()
+    tipos = list(REQ_TIPOS) if tipo == "todos" else [tipo]
+    if any(t not in REQ_TIPOS for t in tipos): return jsonify({"error": "Tipo de BOM inválido"}), 400
+    s = _orm.get_session()
+    try:
+        R, C = _orm.RequisicionCompra, _orm.RequisicionCarga
+        items = {t: [] for t in tipos}
+        for r in s.query(R).filter(R.job == job, R.tipo.in_(tipos)).order_by(R.id.asc()).all():
+            items[r.tipo].append(_req_con_pendiente(r.data))
+        cargas = [dict(c.data, tipo=c.tipo) for c in s.query(C).filter(C.job == job, C.tipo.in_(tipos)).order_by(C.tipo, C.version).all()]
+    finally:
+        s.close()
+    jinfo = next((j for j in scan_jobs() if str(j.get("job_number") or "").strip().upper() == job.strip().upper()), {})
+    ahora = datetime.datetime.now()
+    azul, gris = PatternFill("solid", fgColor="1F3864"), PatternFill("solid", fgColor="E7E6E6")
+    st_fill = {"Solicitado": "FFF4CC", "Reas. Parcial": "DDF3F8", "Comprado": "D9F2E3", "Cancelado": "E7E6E6",
+               "Reasignado": "EDE9FE", "Homologado": "DCE9F7"}
+    def fecha(v):
+        try: return datetime.datetime.fromisoformat(str(v)[:19])
+        except Exception: return v or None
+    def encabezado(ws, cols, widths):
+        ws.append(cols)
+        for c in ws[ws.max_row]:
+            c.font = Font(bold=True, color="FFFFFF"); c.fill = azul
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.row_dimensions[ws.max_row].height = 30
+        for i, w in enumerate(widths, start=1): ws.column_dimensions[get_column_letter(i)].width = w
+    wb = openpyxl.Workbook()
+    # ── Resumen
+    res = wb.active; res.title = "Resumen"
+    res["A1"] = f"Requisición de compra · Job {job}"; res["A1"].font = Font(bold=True, size=14, color="C8102E")
+    res["A2"] = f"{jinfo.get('customer','')} · {jinfo.get('description','')}".strip(" ·")
+    res["A3"] = f"Descargado {ahora:%d/%m/%Y %H:%M} por {session.get('user','')}"; res["A3"].font = Font(italic=True, color="777777")
+    res.append([])
+    encabezado(res, ["BOM", "Renglones", "Solicitado", "Reas. Parcial", "Comprado", "Reasignado", "Homologado", "Cancelado",
+                     "Por revisar", "Ya no vienen", "Última carga"], [22, 11, 11, 13, 11, 12, 12, 11, 12, 12, 26])
+    for t in tipos:
+        its = items[t]
+        cnt = lambda st: sum(1 for i in its if i.get("status") == st)
+        ult = max((c for c in cargas if c["tipo"] == t), key=lambda c: c.get("version", 0), default=None)
+        res.append([REQ_TIPO_NOMBRE[t], len(its), cnt("Solicitado"), cnt("Reas. Parcial"), cnt("Comprado"), cnt("Reasignado"),
+                    cnt("Homologado"), cnt("Cancelado"), sum(1 for i in its if isinstance(i.get("revision"), dict)),
+                    sum(1 for i in its if i.get("ausente_desde")),
+                    f"v{ult['version']} · {str(ult.get('fecha',''))[:16].replace('T',' ')}" if ult else "—"])
+    # ── Una hoja por BOM
+    for t in tipos:
+        ws = wb.create_sheet(REQ_TIPO_NOMBRE[t][:31])
+        manuf = t == "manufactura"
+        cols = ["BRAND", "PART NUMBER", "DESCRIPTION", "QUANTITY", "STATUS", "REASIGNADO", "COMPRADO", "PENDIENTE"] \
+             + (["ORDEN DE PRODUCCIÓN"] if manuf else []) \
+             + ["SOLICITÓ", "FECHA DE ALTA", "COMPRADOR", "FECHA DE COMPRA", "VERSIÓN DE ALTA", "REVISIÓN PENDIENTE",
+                "YA NO VIENE DESDE", "ÚLTIMO CAMBIO DE CARGA", "ID"]
+        encabezado(ws, cols, [18, 22, 50, 10, 14, 11, 11, 11] + ([18] if manuf else []) + [16, 17, 16, 17, 11, 22, 12, 34, 16])
+        for it in items[t]:
+            rev = it.get("revision") if isinstance(it.get("revision"), dict) else None
+            ult = (it.get("cambios_carga") or [])[-1:] or [None]
+            ult = ult[0]
+            fila = [it.get("brand") or "", it.get("part_number") or "", it.get("description") or "", it.get("quantity"),
+                    it.get("status") or "", it.get("cantidad_reasignada"), it.get("cantidad_comprada"), it.get("cantidad_pendiente")] \
+                 + ([it.get("orden_produccion") or ""] if manuf else []) \
+                 + [it.get("created_by") or "", fecha(it.get("created_at")), it.get("comprador") or "", fecha(it.get("comprador_fecha")),
+                    f"v{it['carga_version']}" if it.get("carga_version") else "",
+                    f"Pide {rev.get('cantidad_nueva')} (actual {rev.get('cantidad_actual')})" if rev else "",
+                    f"v{it['ausente_desde']}" if it.get("ausente_desde") else "",
+                    (f"v{ult.get('version')} · {ult.get('campo')}: {ult.get('de') if ult.get('de') not in ('', None) else '(vacío)'} → {ult.get('a')}"
+                     + ("" if ult.get("aplicado", True) else " (no aplicado)")) if ult else "",
+                    it.get("id") or ""]
+            ws.append(fila)
+            rr = ws.max_row
+            ws.cell(row=rr, column=2).number_format = "@"                  # el número de parte se conserva como texto
+            ws.cell(row=rr, column=5).fill = PatternFill("solid", fgColor=st_fill.get(it.get("status"), "FFFFFF"))
+            for ci, v in enumerate(fila, start=1):
+                if isinstance(v, datetime.datetime): ws.cell(row=rr, column=ci).number_format = "DD/MM/YYYY HH:MM"
+        ws.freeze_panes = "C2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{max(ws.max_row, 1)}"
+    # ── Historial de cargas (versiones y cambios)
+    if cargas:
+        wh = wb.create_sheet("Historial de cargas")
+        encabezado(wh, ["BOM", "VERSIÓN", "FECHA", "USUARIO", "ARCHIVO", "CAMBIO", "PART NUMBER", "DESCRIPTION", "CAMPO", "ANTES", "DESPUÉS"],
+                   [18, 9, 17, 14, 28, 13, 22, 40, 13, 18, 18])
+        nombre_acc = {"nuevo": "Nuevo", "modificado": "Modificado", "revision": "Por revisar", "diferencia": "Diferencia",
+                      "ausente": "Ya no viene", "reaparece": "Reaparece"}
+        for c in cargas:
+            base = [REQ_TIPO_NOMBRE.get(c["tipo"], c["tipo"]), c.get("version"), fecha(c.get("fecha")), c.get("usuario", ""), c.get("archivo", "")]
+            if not c.get("cambios"):
+                wh.append(base + ["Sin cambios"]); continue
+            for x in c["cambios"]:
+                wh.append(base + [nombre_acc.get(x.get("accion"), x.get("accion")), x.get("part_number", ""), x.get("description", ""),
+                                  x.get("campo", "") or ("cantidad" if x.get("cantidad") is not None else ""),
+                                  x.get("de", "") if x.get("de") is not None else "", x.get("a", x.get("cantidad", ""))])
+                wh.cell(row=wh.max_row, column=3).number_format = "DD/MM/YYYY HH:MM"
+                wh.cell(row=wh.max_row, column=7).number_format = "@"
+        wh.freeze_panes = "A2"
+        wh.auto_filter.ref = f"A1:K{wh.max_row}"
+    if len(tipos) == 1: wb.active = 1          # abre directo en la hoja del BOM
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    sufijo = "todos_los_BOMs" if tipo == "todos" else REQ_TIPO_NOMBRE[tipo].replace(" ", "_")
+    return send_file(buf, as_attachment=True, download_name=f"Requisicion_{re.sub(r'[^A-Za-z0-9_-]', '', job)}_{sufijo}_{ahora:%Y-%m-%d}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 @app.route("/api/requisiciones/template", methods=["GET"])
 def api_requisiciones_template():
     if not can("view", "compras-requisicion"): return jsonify({"error": "Sin permiso"}), 403
