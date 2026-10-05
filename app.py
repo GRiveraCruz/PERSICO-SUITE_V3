@@ -928,6 +928,8 @@ def require_login():
         return None
     if request.path.startswith("/api/vacaciones/externo/"):         # rev80: saldo para el kiosco
         return None
+    if request.path == "/api/kiosco/ping":                           # rev81: diagnóstico
+        return None
     if request.path.startswith("/api/ordenes-servicio/externo"):
         return None
     if request.path.startswith("/api/tareas/externo"):
@@ -3989,8 +3991,19 @@ def api_delete_permiso_file(pid, filename):
 # por su selección de nombre; el kiosco reenvía la solicitud aquí server-to-server,
 # autenticada con la misma llave compartida que ya se usa para sincronizar trabajadores.
 def _require_sync_key_permisos():
-    key = request.headers.get("X-Sync-Key", "")
+    key = (request.headers.get("X-Sync-Key", "") or "").strip()
     return bool(ATTENDANCE_SYNC_KEY) and key == ATTENDANCE_SYNC_KEY
+
+@app.route("/api/kiosco/ping", methods=["GET"])
+def api_kiosco_ping():
+    """rev81: diagnóstico de la conexión kiosco → Suite (no revela la llave)."""
+    if not ATTENDANCE_SYNC_KEY:
+        return jsonify({"ok": False, "error": "La Suite no tiene configurada la variable ATTENDANCE_SYNC_KEY"}), 401
+    if not _require_sync_key_permisos():
+        k = (request.headers.get("X-Sync-Key", "") or "").strip()
+        return jsonify({"ok": False, "error": "La llave del kiosco no coincide con ATTENDANCE_SYNC_KEY de la Suite",
+                        "largo_kiosco": len(k), "largo_suite": len(ATTENDANCE_SYNC_KEY)}), 401
+    return jsonify({"ok": True})
 
 @app.route("/api/permisos/externo", methods=["POST"])
 def api_create_permiso_externo():
@@ -4073,8 +4086,12 @@ def api_vacaciones_externo(external_id):
 #  trabajadores (Suite → kiosco) y se consultan los registros ya capturados
 #  (kiosco → Suite), sin duplicar el almacenamiento de registros.
 # ══════════════════════════════════════════════════════════════════
-ATTENDANCE_URL      = _os.environ.get("ATTENDANCE_URL", "").rstrip("/")
-ATTENDANCE_SYNC_KEY = _os.environ.get("ATTENDANCE_SYNC_KEY", "")
+# rev82: se acepta con o sin protocolo ("sko-permex.up.railway.app" → "https://sko-permex.up.railway.app")
+ATTENDANCE_URL      = _os.environ.get("ATTENDANCE_URL", "").strip().strip('"').strip("'").strip().rstrip("/")
+if ATTENDANCE_URL and not re.match(r"^https?://", ATTENDANCE_URL, re.I):
+    ATTENDANCE_URL = "https://" + ATTENDANCE_URL
+# rev81: sin espacios ni comillas que se cuelan al pegar el valor en Railway
+ATTENDANCE_SYNC_KEY = _os.environ.get("ATTENDANCE_SYNC_KEY", "").strip().strip('"').strip("'").strip()
 
 # ── rev80: kiosco sobre la MISMA base de datos ─────────────────────────────────
 # El kiosco v2 guarda sus registros en tablas kiosco_* de esta base y toma los
@@ -4159,7 +4176,17 @@ def api_asistencia_status():
         return jsonify({"configured": True, "connected": True, "modo": "base_de_datos"})
     try:
         r = _requests.get(ATTENDANCE_URL + "/api/workers", timeout=6)
-        return jsonify({"configured": True, "connected": r.status_code == 200, "modo": "http"})
+        # rev82: si el kiosco es v2 pero no dejó su marca en ESTA base, casi siempre es que
+        # su DATABASE_URL apunta a otra base de datos
+        aviso = None
+        try:
+            e = _requests.get(ATTENDANCE_URL + "/api/estado", timeout=6)
+            if e.status_code == 200 and "base_de_datos" in (e.json() or {}):
+                aviso = ("El kiosco ya es la versión con base de datos, pero no está usando la misma base que la Suite: "
+                         "revisa que su variable DATABASE_URL sea la misma que la de la Suite.")
+        except Exception:
+            pass
+        return jsonify({"configured": True, "connected": r.status_code == 200, "modo": "http", "aviso": aviso})
     except Exception:
         return jsonify({"configured": True, "connected": False})
 
