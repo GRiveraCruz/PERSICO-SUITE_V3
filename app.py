@@ -2231,9 +2231,11 @@ def _catalog_path(name):
     p.mkdir(parents=True, exist_ok=True)
     return p / f"{name}.json"
 
-_CATALOG_MODEL = {"areas": ("nombre", "nombre"), "perfiles": ("pid", "pid"), "tipos_puesto": ("tpid", "tpid")}  # name -> (campo_json, columna_modelo)
+_CATALOG_MODEL = {"areas": ("nombre", "nombre"), "perfiles": ("pid", "pid"), "tipos_puesto": ("tpid", "tpid"),
+                  "kpi_asignaciones": ("kid", "kid")}  # name -> (campo_json, columna_modelo)
 def _catalog_modelo(name):
-    return {"areas": _orm.Area, "perfiles": _orm.Perfil, "tipos_puesto": _orm.TipoPuesto}[name]
+    return {"areas": _orm.Area, "perfiles": _orm.Perfil, "tipos_puesto": _orm.TipoPuesto,
+            "kpi_asignaciones": _orm.KpiAsignacion}[name]
 
 def _load_catalog(name):
     if _orm and _orm.DB_ENABLED and name in _CATALOG_MODEL:
@@ -8253,6 +8255,311 @@ def api_dashboard_engineering():
         return jsonify({"error": str(e)}), 500
 
 # ══════════════════════════════════════════════════════════════════
+#  KPIs DEL PERSONAL (rev84)
+#  Cada KPI se asigna a una persona con una meta. El valor se calcula con los datos de la
+#  Suite; la persona se reconoce por los "identificadores" de la asignación: los nombres
+#  con que aparece como PM (Jobs, Customer POs), como Key Account Manager / Technical
+#  Sales (cotizaciones) y como empleado (Work Hours). Alcance "global" = toda la empresa.
+# ══════════════════════════════════════════════════════════════════
+KPI_CATALOGO = [
+    {"k": "cotizaciones_creadas", "nombre": "Tasa de creación de cotizaciones", "periodo": "mensual", "unidad": "cotizaciones",
+     "sentido": "mayor", "fuente": "Cotizaciones (Key Account Manager / Technical Sales)",
+     "formula": "Cotizaciones registradas en el mes (fecha de recepción del RFQ, o de alta)."},
+    {"k": "aceptacion_cotizaciones", "nombre": "Tasa de aceptación de cotizaciones", "periodo": "trimestral", "unidad": "%",
+     "sentido": "mayor", "fuente": "Cotizaciones (Key Account Manager / Technical Sales)",
+     "formula": "Cotizaciones ganadas (Awarded) ÷ cotizaciones enviadas al cliente en el trimestre × 100."},
+    {"k": "pos_recibidas", "nombre": "Índice de POs recibidas", "periodo": "mensual", "unidad": "POs",
+     "sentido": "mayor", "fuente": "Customer POs (PM)",
+     "formula": "Customer POs de revenue recibidas en el mes (fecha de la PO). También se informa el monto."},
+    {"k": "margen_proyectos", "nombre": "Margen de ganancia promedio de proyectos asignados", "periodo": "trimestral", "unidad": "%",
+     "sentido": "mayor", "fuente": "Jobs donde es PM",
+     "formula": "Promedio del margen de sus Jobs cerrados en el trimestre (fecha de cierre): resultado operativo ÷ Internal Target; si el Job no tiene Internal Target, (revenue − costo) ÷ revenue."},
+    {"k": "entrega_tiempo", "nombre": "Entrega en tiempo de proyectos asignados", "periodo": "proyecto", "unidad": "%",
+     "sentido": "mayor", "fuente": "Jobs donde es PM",
+     "formula": "Proyectos entregados en o antes de la fecha de envío comprometida ÷ proyectos entregados × 100. Entrega real: fecha real de la actividad de Envío del Timing, o fecha de cierre del Job."},
+    {"k": "ahorro_compras", "nombre": "Porcentaje promedio de ahorro por compra de componentes", "periodo": "proyecto", "unidad": "%",
+     "sentido": "mayor", "fuente": "Jobs donde es PM (o global para Compras)",
+     "formula": "Promedio de (Target Compras − adquirido) ÷ Target Compras × 100 de los proyectos cerrados."},
+    {"k": "horas_extra", "nombre": "Índice de horas extras", "periodo": "semanal", "unidad": "%",
+     "sentido": "menor", "fuente": "Work Hours (empleado)",
+     "formula": "Horas que pasan de su jornada semanal (Tipo de Puesto, o 48 h) ÷ horas ordinarias × 100."},
+    {"k": "eficiencia_horas", "nombre": "Eficiencia horas planeadas vs horas usadas por proyecto", "periodo": "proyecto", "unidad": "%",
+     "sentido": "mayor", "fuente": "Jobs donde es PM",
+     "formula": "Horas planeadas (Configurar Proyecto) ÷ horas usadas (Work Hours) × 100, al cierre del proyecto. 100 % = se usó exactamente lo planeado."},
+]
+KPI_POR_CLAVE = {k["k"]: k for k in KPI_CATALOGO}
+
+def _kpi_norm(v):
+    """Nombre comparable: sin acentos, sin " - Persico", sin signos, palabras ordenadas."""
+    t = re.sub(r"\s*-\s*persico.*$", "", str(v or ""), flags=re.I)
+    t = re.sub(r"[^A-Z0-9 ]+", " ", _sin_acentos(t))
+    return " ".join(sorted(t.split()))
+
+def _kpi_es(persona_ids, valor):
+    """¿El nombre `valor` corresponde a la persona? Coincidencia exacta de palabras, o que
+    todas las palabras de un identificador estén en el valor (ej. "LUZ MUNOZ" ⊂ "MUNOZ RODRIGUEZ LUZ AILED")."""
+    v = _kpi_norm(valor)
+    if not v: return False
+    vs = set(v.split())
+    for i in persona_ids:
+        ws = set(i.split())
+        if i == v or (len(ws) >= 2 and ws <= vs) or (len(vs) >= 2 and vs <= ws): return True
+    return False
+
+def _can_kpis(action):
+    return can(action, "rrhh-kpis")
+
+@app.route("/api/kpis/catalogo", methods=["GET"])
+def api_kpis_catalogo():
+    if not _can_kpis("view"): return jsonify({"error": "Sin permiso"}), 403
+    # identificadores que existen en los datos, para sugerirlos al asignar
+    nombres = {"pm": set(), "ventas": set(), "empleados": set()}
+    try:
+        for j in scan_jobs():
+            if j.get("pm"): nombres["pm"].add(str(j["pm"]).strip())
+        for q in read_quote_records():
+            for c in ("keyAccountManager", "technicalSales"):
+                if q.get(c): nombres["ventas"].add(str(q[c]).strip())
+        for r in load_rates(CURRENT_YEAR):
+            if r.get("employee"): nombres["empleados"].add(str(r["employee"]).strip())
+    except Exception as e:
+        print(f"[kpis] sugerencias: {e}")
+    personal = [{"tid": p.get("tid"), "nombre": p.get("nombre"), "puesto": p.get("puesto"), "area": p.get("area")}
+                for p in _load_personal() if (p.get("estado") or "Activo") != "Baja"]
+    return jsonify({"kpis": KPI_CATALOGO, "personal": sorted(personal, key=lambda x: x["nombre"] or ""),
+                    "sugerencias": {k: sorted(v) for k, v in nombres.items()}})
+
+@app.route("/api/kpis/asignaciones", methods=["GET"])
+def api_kpis_asignaciones():
+    if not _can_kpis("view"): return jsonify({"error": "Sin permiso"}), 403
+    return jsonify(_load_catalog("kpi_asignaciones"))
+
+@app.route("/api/kpis/asignaciones", methods=["POST"])
+def api_kpis_asignar():
+    if not _can_kpis("create"): return jsonify({"error": "Sin permiso"}), 403
+    d = request.json or {}
+    kpi = d.get("kpi")
+    if kpi not in KPI_POR_CLAVE: return jsonify({"error": "KPI inválido"}), 400
+    alcance = "global" if d.get("alcance") == "global" else "persona"
+    tid = (d.get("tid") or "").strip()
+    personal = {p.get("tid"): p for p in _load_personal()}
+    if alcance == "persona" and tid not in personal: return jsonify({"error": "Selecciona a la persona"}), 400
+    try:
+        meta = float(d.get("meta"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Captura la meta (número)"}), 400
+    tol = d.get("tolerancia")
+    try: tol = float(tol) if tol not in (None, "") else None
+    except (TypeError, ValueError): return jsonify({"error": "La tolerancia debe ser un número"}), 400
+    ids = [str(x).strip() for x in (d.get("identificadores") or []) if str(x).strip()]
+    if alcance == "persona" and not ids: ids = [personal[tid].get("nombre") or ""]
+    with lock:
+        recs = _load_catalog("kpi_asignaciones")
+        kid = d.get("kid")
+        rec = next((r for r in recs if r.get("kid") == kid), None) if kid else None
+        if rec is None:
+            n = len(recs) + 1
+            while f"KPI-{n:04d}" in {r.get("kid") for r in recs}: n += 1
+            rec = {"kid": f"KPI-{n:04d}", "creado": datetime.datetime.now().isoformat(timespec="minutes"), "creado_por": session.get("user", "")}
+            recs.append(rec)
+        rec.update(kpi=kpi, alcance=alcance, tid=tid if alcance == "persona" else None,
+                   nombre=(personal.get(tid) or {}).get("nombre") if alcance == "persona" else "Global (toda la empresa)",
+                   meta=meta, tolerancia=tol, identificadores=ids, activo=bool(d.get("activo", True)),
+                   notas=(d.get("notas") or "").strip()[:500], actualizado=datetime.datetime.now().isoformat(timespec="minutes"),
+                   actualizado_por=session.get("user", ""))
+        _save_catalog("kpi_asignaciones", recs)
+    return jsonify({"ok": True, "record": rec})
+
+@app.route("/api/kpis/asignaciones/<kid>", methods=["DELETE"])
+def api_kpis_eliminar(kid):
+    if not _can_kpis("delete"): return jsonify({"error": "Sin permiso"}), 403
+    with lock:
+        recs = [r for r in _load_catalog("kpi_asignaciones") if r.get("kid") != kid]
+        _save_catalog("kpi_asignaciones", recs)
+    return jsonify({"ok": True})
+
+def _kpi_estado(valor, meta, sentido, tol):
+    """verde (cumple), ámbar (dentro de la tolerancia), rojo; None sin dato."""
+    if valor is None or meta is None: return None
+    tol = abs(tol) if tol is not None else abs(meta) * 0.1
+    if sentido == "menor":
+        return "verde" if valor <= meta else ("ambar" if valor <= meta + tol else "rojo")
+    return "verde" if valor >= meta else ("ambar" if valor >= meta - tol else "rojo")
+
+@app.route("/api/kpis/resultados", methods=["GET"])
+def api_kpis_resultados():
+    """Valores de cada KPI asignado en el año: por mes, trimestre, semana o proyecto."""
+    if not _can_kpis("view"): return jsonify({"error": "Sin permiso"}), 403
+    try:
+        anio = int(request.args.get("anio") or datetime.date.today().year)
+        hoy = datetime.date.today()
+        asign = [a for a in _load_catalog("kpi_asignaciones") if a.get("activo", True)]
+        if request.args.get("tid"): asign = [a for a in asign if a.get("tid") == request.args["tid"] or a.get("alcance") == "global"]
+        def fd(v):
+            try: return datetime.date.fromisoformat(str(v or "")[:10])
+            except ValueError: return None
+        trimestre = lambda d: (d.month - 1) // 3 + 1
+        necesita = {a["kpi"] for a in asign}
+        # ── Datos comunes, cargados solo si algún KPI los necesita
+        quotes = read_quote_records() if necesita & {"cotizaciones_creadas", "aceptacion_cotizaciones"} else []
+        cpos = cpo_load(anio) if "pos_recibidas" in necesita else []
+        jobs = scan_jobs() if necesita & {"margen_proyectos", "entrega_tiempo", "ahorro_compras", "eficiencia_horas"} else []
+        cfg_job = _cfg_por_job() if jobs else {}
+        tf_cfg = {}
+        if "entrega_tiempo" in necesita:
+            for cfg in projcfg_load():
+                for jc in cfg.get("jobs") or []:
+                    tf_cfg.setdefault(str(jc.get("job_number") or "").strip().upper(), cfg.get("timing") or [])
+        pools = _ro_pools_factory() if jobs else None
+        cache_job = {}
+        def info_job(j):
+            jn = j["job_number"]
+            if jn in cache_job: return cache_job[jn]
+            jc = cfg_job.get(jn.strip().upper(), {})
+            det = {}
+            try:
+                r = _ro_job(jn, int(_year_of(j) or CURRENT_YEAR), jc.get("presupuesto_disponible"), pools, detalle=det)
+            except Exception as e:
+                r, det = {"error": str(e)}, {}
+            dd = det.get("d") or {}
+            plan = sum(float(jc.get("mo_horas_" + k) or 0) for k, _n, _p in LINEAS_MO)
+            tc = jc.get("target_compras")
+            cache_job[jn] = {"ro": r, "horas_usadas": float(dd.get("accum_hours") or 0), "horas_plan": plan,
+                             "target_compras": float(tc) if tc not in (None, "") else None,
+                             "adquirido": float(dd.get("purchasing_total") or 0), "jc": jc}
+            return cache_job[jn]
+        # Work Hours por empleado y semana ISO (para horas extra)
+        wh_sem = None
+        if "horas_extra" in necesita:
+            sem1 = datetime.date.fromisocalendar(anio, 1, 1)
+            n_sem = datetime.date(anio, 12, 28).isocalendar()[1]
+            wh_sem = {}
+            for yy in (anio - 1, anio):
+                for r in wh_load(yy):
+                    f = fd(r.get("date_worked"))
+                    if not f or f.isocalendar()[0] != anio: continue
+                    try: h = float(r.get("hours") or 0)
+                    except (TypeError, ValueError): continue
+                    e = _kpi_norm(r.get("employee"))
+                    k = (e, f.isocalendar()[1])
+                    wh_sem[k] = wh_sem.get(k, 0.0) + h
+            personas_tp = {p.get("tid"): p for p in _tipo_puesto_de_personas([dict(p) for p in _load_personal()])}
+        out = []
+        for a in asign:
+            K = KPI_POR_CLAVE.get(a["kpi"])
+            if not K: continue
+            glob = a.get("alcance") == "global"
+            ids = [_kpi_norm(x) for x in a.get("identificadores") or [] if _kpi_norm(x)]
+            es = (lambda v: True) if glob else (lambda v: _kpi_es(ids, v))
+            periodos, detalle, nota = [], [], ""
+            if a["kpi"] == "cotizaciones_creadas":
+                for m in range(1, 13):
+                    n = sum(1 for q in quotes if (fd(q.get("received")) or fd(q.get("created_at"))) and
+                            (fd(q.get("received")) or fd(q.get("created_at"))).year == anio and
+                            (fd(q.get("received")) or fd(q.get("created_at"))).month == m and
+                            (es(q.get("keyAccountManager")) or es(q.get("technicalSales"))))
+                    futuro = datetime.date(anio, m, 1) > hoy
+                    periodos.append({"p": f"{anio}-{m:02d}", "valor": None if futuro else n})
+            elif a["kpi"] == "aceptacion_cotizaciones":
+                for t in range(1, 5):
+                    env = [q for q in quotes if fd(q.get("sentClient")) and fd(q["sentClient"]).year == anio and trimestre(fd(q["sentClient"])) == t
+                           and (es(q.get("keyAccountManager")) or es(q.get("technicalSales")))]
+                    gan = sum(1 for q in env if q.get("awarded"))
+                    futuro = datetime.date(anio, 3 * t - 2, 1) > hoy
+                    periodos.append({"p": f"T{t}", "valor": None if futuro or not env else round(gan / len(env) * 100, 1),
+                                     "extra": f"{gan} de {len(env)}" if env else ""})
+            elif a["kpi"] == "pos_recibidas":
+                for m in range(1, 13):
+                    sel = [c for c in cpos if fd(c.get("date")) and fd(c["date"]).year == anio and fd(c["date"]).month == m
+                           and "REVENUE" in str(c.get("type_name") or "01_REVENUE").upper() and es(c.get("pm"))]
+                    futuro = datetime.date(anio, m, 1) > hoy
+                    periodos.append({"p": f"{anio}-{m:02d}", "valor": None if futuro else len(sel),
+                                     "extra": f"${sum(float(c.get('value') or 0) for c in sel):,.0f}" if sel else ""})
+            elif a["kpi"] == "margen_proyectos":
+                for t in range(1, 5):
+                    js = [j for j in jobs if fd(j.get("closing_date")) and fd(j["closing_date"]).year == anio and trimestre(fd(j["closing_date"])) == t and es(j.get("pm"))]
+                    vals = []
+                    for j in js:
+                        r = info_job(j)["ro"]
+                        # margen operativo (vs Internal Target); si el Job no tiene target, margen vs revenue
+                        pct = r.get("resultado_pct") if r.get("base") else None
+                        if pct is None and r.get("revenue"):
+                            costo = (r.get("amount_wh") or 0) + (r.get("purchasing_total") or 0) + (r.get("svc_total") or 0) + (r.get("reassign_total") or 0) - (r.get("recovery_total") or 0)
+                            pct = round((r["revenue"] - costo) / r["revenue"] * 100, 1)
+                        if pct is not None:
+                            vals.append(pct); detalle.append({"job": j["job_number"], "p": f"T{t}", "valor": pct})
+                    periodos.append({"p": f"T{t}", "valor": round(sum(vals) / len(vals), 1) if vals else None, "extra": f"{len(vals)} Job(s)" if vals else ""})
+            elif a["kpi"] in ("entrega_tiempo", "ahorro_compras", "eficiencia_horas"):
+                js = [j for j in jobs if es(j.get("pm"))]
+                vals = []
+                for j in js:
+                    jn = j["job_number"]
+                    cerrado = fd(j.get("closing_date"))
+                    if a["kpi"] == "entrega_tiempo":
+                        jc = cfg_job.get(jn.strip().upper(), {})
+                        comp = fd(jc.get("fecha_envio")) or fd(j.get("ship_date"))
+                        real = None
+                        for t in tf_cfg.get(jn.strip().upper(), []):
+                            if re.search(r"ENV[IÍ]O|SHIP", _sin_acentos(t.get("actividad")), re.I) and fd(t.get("fecha_real_finalizacion")):
+                                real = fd(t.get("fecha_real_finalizacion"))
+                        real = real or cerrado
+                        if not (real and comp) or real.year != anio: continue
+                        ok = real <= comp
+                        vals.append(100.0 if ok else 0.0)
+                        detalle.append({"job": jn, "p": real.isoformat(), "valor": 100 if ok else 0,
+                                        "extra": f"comprometido {comp.isoformat()} · real {real.isoformat()} · {'a tiempo' if ok else f'{(real - comp).days} día(s) tarde'}"})
+                    else:
+                        if not cerrado or cerrado.year != anio: continue
+                        ij = info_job(j)
+                        if a["kpi"] == "ahorro_compras":
+                            if not ij["target_compras"]: continue
+                            v = round((ij["target_compras"] - ij["adquirido"]) / ij["target_compras"] * 100, 1)
+                            extra = f"target ${ij['target_compras']:,.0f} · adquirido ${ij['adquirido']:,.0f}"
+                        else:
+                            if not ij["horas_usadas"] or not ij["horas_plan"]: continue
+                            v = round(ij["horas_plan"] / ij["horas_usadas"] * 100, 1)
+                            extra = f"{ij['horas_plan']:,.0f} h planeadas · {ij['horas_usadas']:,.0f} h usadas"
+                        vals.append(v); detalle.append({"job": jn, "p": cerrado.isoformat(), "valor": v, "extra": extra})
+                detalle.sort(key=lambda x: x["p"])
+                periodos = [{"p": x["job"], "valor": x["valor"], "extra": x.get("extra", "")} for x in detalle]
+                nota = f"{len(vals)} proyecto(s) en {anio}"
+                val_anual = round(sum(vals) / len(vals), 1) if vals else None
+            elif a["kpi"] == "horas_extra":
+                p = personas_tp.get(a.get("tid")) if not glob else None
+                base = float(((p or {}).get("tipo_puesto") or {}).get("horas_semana") or CAP_HORAS_SEMANA)
+                hoy_sem = hoy.isocalendar()[1] if hoy.isocalendar()[0] == anio else (99 if hoy.year > anio else 0)
+                for w in range(1, n_sem + 1):
+                    tot = [h for (e, s_), h in wh_sem.items() if s_ == w and (glob or _kpi_es(ids, e))]
+                    if w > hoy_sem or not tot:
+                        periodos.append({"p": f"S{w}", "valor": None}); continue
+                    ords = sum(min(h, base) for h in tot); ext = sum(max(0.0, h - base) for h in tot)
+                    periodos.append({"p": f"S{w}", "valor": round(ext / ords * 100, 1) if ords else None,
+                                     "extra": f"{ext:,.1f} h extra de {sum(tot):,.1f} h"})
+                nota = f"Jornada base {base:g} h/semana" + ("" if glob else (" (Tipo de Puesto)" if (p or {}).get("tipo_puesto") else " (sin Tipo de Puesto: 48 h)"))
+            # el periodo en curso (mes, trimestre o semana de hoy) se muestra pero no se evalúa:
+            # todavía no termina y bajaría el promedio injustamente
+            if K["periodo"] != "proyecto" and anio == hoy.year:
+                actual = {"mensual": f"{anio}-{hoy.month:02d}", "trimestral": f"T{trimestre(hoy)}",
+                          "semanal": f"S{hoy.isocalendar()[1]}" if hoy.isocalendar()[0] == anio else None}[K["periodo"]]
+                for x in periodos:
+                    if x["p"] == actual and x.get("valor") is not None: x["en_curso"] = True
+            # resumen
+            con = [x["valor"] for x in periodos if x.get("valor") is not None and not x.get("en_curso")]
+            if a["kpi"] not in ("entrega_tiempo", "ahorro_compras", "eficiencia_horas"):
+                val_anual = round(sum(con) / len(con), 1) if con else None
+            ultimo = next((x for x in reversed(periodos) if x.get("valor") is not None and not x.get("en_curso")), None)
+            en_curso = next((x for x in periodos if x.get("en_curso")), None)
+            for x in periodos: x["estado"] = None if x.get("en_curso") else _kpi_estado(x.get("valor"), a.get("meta"), K["sentido"], a.get("tolerancia"))
+            out.append({"asignacion": a, "kpi": K, "periodos": periodos, "nota": nota,
+                        "ultimo": ultimo, "en_curso": en_curso, "promedio": val_anual,
+                        "estado": _kpi_estado(val_anual, a.get("meta"), K["sentido"], a.get("tolerancia")),
+                        "cumplidos": sum(1 for x in periodos if x.get("estado") == "verde"), "evaluados": len(con)})
+        return jsonify({"anio": anio, "resultados": out})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════
 #  DASHBOARD RECURSOS HUMANOS (rev74)
 # ══════════════════════════════════════════════════════════════════
 DASH_RH_ROLES = ("HUMAN RESOURCES", "GENERAL MANAGEMENT")
@@ -8865,6 +9172,7 @@ MODULES = [
     # Recursos Humanos
     "rrhh-asistencia", "rrhh-vacaciones", "rrhh-permisos", "rrhh-salario", "rrhh-sueldos", "rrhh-nomina",
     "personal-areas", "personal-tipos-puesto", "personal-perfiles", "personal-listado",
+    "rrhh-kpis",
     # Operaciones
     "ops-capacidad", "ops-ot", "ops-op", "ops-os",
 ]
@@ -9337,7 +9645,8 @@ for _prof in PROFILES.values():
 MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto": "projconfig",
                    "projconfig-timing": "projconfig", "projconfig-abiertos": "projconfig",
                    "projconfig-cambios": "projconfig", "projconfig-documentos": "projconfig",
-                   "personal-tipos-puesto": "personal-perfiles"}
+                   "personal-tipos-puesto": "personal-perfiles",
+                   "rrhh-kpis": "personal-listado"}
 
 def nivel_heredado(info, mod):
     """Nivel efectivo de un módulo de MODULOS_HEREDAN para el usuario `info`."""

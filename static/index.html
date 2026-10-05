@@ -539,6 +539,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <button onclick="switchMenu('rrhh-salario','ng-rrhh')">Calcular Salario</button>
         <button onclick="switchMenu('rrhh-sueldos','ng-rrhh')">Sueldos y Salarios</button>
         <button onclick="switchMenu('rrhh-nomina','ng-rrhh')">Nómina</button>
+        <button onclick="switchMenu('rrhh-kpis','ng-rrhh')">KPIs del Personal</button>
         <div class="nav-subgroup">
           <button class="nav-sub-btn">Control de Personal ▸</button>
           <div class="nav-submenu">
@@ -2704,6 +2705,48 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       <button class="btn btn-s" onclick="closeMo('mo-isr-import')">Cerrar</button>
       <button class="btn btn-p" id="isr-imp-btn" onclick="isrImportSubmit()" disabled>Subir</button>
     </div>
+  </div>
+</div>
+
+<!-- ══ MODULE: KPIs del Personal (rev84) ══ -->
+<div class="module" id="mod-rrhh-kpis">
+  <div class="main-content" style="overflow-y:auto">
+    <div class="bar-top"><h1>🎯 KPIs del Personal</h1>
+      <select id="kpi-anio" onchange="kpiCargarResultados()" style="font-size:12px;padding:5px 8px"></select>
+      <select id="kpi-filtro" onchange="kpiRender()" style="font-size:12px;padding:5px 8px;max-width:260px"><option value="">Todas las personas</option></select>
+      <button class="btn-reload" onclick="kpiCargar()">Recargar</button>
+      <button class="btn-new" id="kpi-btn-nuevo" onclick="kpiAbrir()" style="width:auto;padding:8px 16px;margin-left:auto">+ Asignar KPI</button>
+    </div>
+    <div id="kpi-body" style="padding:20px 24px"></div>
+  </div>
+</div>
+
+<div class="mo" id="mo-kpi" style="z-index:150">
+  <div class="md" style="max-width:720px;width:calc(100% - 32px)">
+    <div class="mh"><h2 id="kpi-mo-titulo">Asignar KPI</h2><button class="px" onclick="closeMo('mo-kpi')">Cerrar</button></div>
+    <div class="mb2">
+      <input type="hidden" id="kpi-kid">
+      <div class="fi"><label>KPI</label><select id="kpi-kpi" onchange="kpiInfo()"></select></div>
+      <div id="kpi-info" style="font-size:11.5px;color:var(--muted2);margin:-4px 0 12px;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,.03)"></div>
+      <div class="fr">
+        <div class="fi"><label>Alcance</label><select id="kpi-alcance" onchange="kpiInfo()"><option value="persona">Una persona</option><option value="global">Global (toda la empresa)</option></select></div>
+        <div class="fi" id="kpi-persona-box"><label>Persona</label><select id="kpi-tid" onchange="kpiSugerirIds()"></select></div>
+      </div>
+      <div class="fr">
+        <div class="fi"><label id="kpi-meta-lbl">Meta</label><input type="number" id="kpi-meta" step="any"></div>
+        <div class="fi"><label>Tolerancia (ámbar)</label><input type="number" id="kpi-tol" step="any" placeholder="10 % de la meta"></div>
+      </div>
+      <div class="fi" id="kpi-ids-box"><label>Identificadores (cómo aparece la persona en los datos)</label>
+        <div id="kpi-ids-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px"><input id="kpi-id-nuevo" list="kpi-ids-dl" placeholder="Ej. Luz Munoz - Persico" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();kpiAgregarId();}">
+          <button type="button" class="btn-reload" onclick="kpiAgregarId()">Agregar</button></div>
+        <datalist id="kpi-ids-dl"></datalist>
+        <div id="kpi-ids-ayuda" style="font-size:10.5px;color:var(--muted);margin-top:4px"></div>
+      </div>
+      <div class="fi"><label>Notas</label><input id="kpi-notas" placeholder="Opcional"></div>
+      <label style="font-size:12px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="kpi-activo" checked> Activo</label>
+    </div>
+    <div class="mf"><button class="btn-new" onclick="kpiGuardar()" style="width:auto;padding:9px 20px">Guardar</button></div>
   </div>
 </div>
 
