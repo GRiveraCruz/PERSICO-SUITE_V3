@@ -1077,10 +1077,18 @@ def api_update_job(job_number):
                       "revenue","estimated_cost","po_number","ship_date","closing_date",
                       "approval_fc","status","notes"]:
                 if k in data: meta[k] = data[k]
+            # rev85: al pasar a Done (cerrado) sin Closing Date, se pone la fecha de hoy (la usan los KPIs)
+            if str(meta.get("status") or "").strip().upper() in JOB_ESTATUS_CERRADO and not str(meta.get("closing_date") or "").strip():
+                meta["closing_date"] = datetime.date.today().isoformat()
+                meta["closing_date_auto"] = True
             meta["updated_at"] = datetime.datetime.now().isoformat()
             write_meta(job_number, meta)
             return jsonify(meta)
     except Exception as e: return jsonify({"error": str(e)}), 500
+
+# rev85: estatus que significan "Job cerrado". En la pantalla de Jobs el estatus de cierre
+# es "Done"; se aceptan también los que llegan de importaciones o capturas anteriores.
+JOB_ESTATUS_CERRADO = {"DONE", "CLOSED", "CLOSE", "CERRADO", "TERMINADO", "FINISHED"}
 
 @app.route("/api/jobs/<job_number>", methods=["DELETE"])
 def api_delete_job(job_number):
@@ -6287,6 +6295,104 @@ def api_get_wh():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ══════════════════════════════════════════════════════════════════
+#  rev86 — Reasignar horas de un Job a otro (Mano de Obra)
+# ══════════════════════════════════════════════════════════════════
+def _wh_anios_existentes():
+    if _orm and _orm.DB_ENABLED:
+        s = _orm.get_session()
+        try:
+            return sorted({y for (y,) in s.query(_orm.WorkHour.year).distinct().all() if y})
+        finally:
+            s.close()
+    return sorted(wh_available_years())
+
+def _wh_job_norm(v):
+    return re.sub(r"\s+", "", str(v or "")).upper()
+
+@app.route("/api/wh/por-job", methods=["GET"])
+def api_wh_por_job():
+    """Registros de Work Hours cuyo Work Code es el Job indicado, en todos los años."""
+    if not can("view", "wh"): return jsonify({"error": "Sin permiso"}), 403
+    job = _wh_job_norm(request.args.get("job"))
+    if not job: return jsonify({"error": "Indica el Job"}), 400
+    out = []
+    if _orm and _orm.DB_ENABLED:
+        s = _orm.get_session()
+        try:
+            from sqlalchemy import func as _f
+            rows = s.query(_orm.WorkHour).filter(_f.upper(_f.replace(_orm.WorkHour.job, " ", "")) == job).all()
+            for r in rows:
+                d = r.data or {}
+                out.append({"year": r.year, "id": r.source_id, "date_worked": d.get("date_worked"), "employee": d.get("employee"),
+                            "hours": d.get("hours"), "description": d.get("description"), "work_code": d.get("work_code")})
+        finally:
+            s.close()
+    else:
+        for y in _wh_anios_existentes():
+            for r in wh_load(y):
+                if _wh_job_norm(r.get("work_code")) == job:
+                    out.append({"year": y, "id": r.get("id"), "date_worked": r.get("date_worked"), "employee": r.get("employee"),
+                                "hours": r.get("hours"), "description": r.get("description"), "work_code": r.get("work_code")})
+    out.sort(key=lambda x: (str(x.get("date_worked") or ""), str(x.get("employee") or "")))
+    jobs = {_wh_job_norm(j.get("job_number")): j for j in scan_jobs()}
+    info = jobs.get(job)
+    return jsonify({"job": job, "registros": out, "total_horas": round(sum(float(x.get("hours") or 0) for x in out), 2),
+                    "job_existe": bool(info), "job_info": {k: (info or {}).get(k) for k in ("customer", "description", "status", "pm")} if info else None})
+
+@app.route("/api/wh/reasignar", methods=["POST"])
+def api_wh_reasignar():
+    """Cambia el Work Code (Job) de los registros elegidos. Body: {origen, destino,
+    registros: [{year, id}]}. Solo cambia registros que siguen teniendo el Job origen y
+    deja en cada uno la bitácora de la reasignación."""
+    if not can("create", "wh"): return jsonify({"error": "Sin permiso"}), 403
+    d = request.json or {}
+    origen, destino = _wh_job_norm(d.get("origen")), _wh_job_norm(d.get("destino"))
+    sel = d.get("registros") or []
+    if not origen or not destino: return jsonify({"error": "Indica el Job actual y el nuevo"}), 400
+    if origen == destino: return jsonify({"error": "El Job nuevo es igual al actual"}), 400
+    if not sel: return jsonify({"error": "No hay registros seleccionados"}), 400
+    jobs = {_wh_job_norm(j.get("job_number")): j for j in scan_jobs()}
+    if destino not in jobs and not d.get("forzar"):
+        return jsonify({"error": f"El Job {destino} no existe en Jobs. Revisa el número.", "job_no_existe": True}), 400
+    destino_txt = (jobs.get(destino) or {}).get("job_number") or destino
+    user, ahora = session.get("user", ""), datetime.datetime.now().isoformat(timespec="seconds")
+    por_anio = {}
+    for x in sel:
+        try: por_anio.setdefault(int(x.get("year")), set()).add(int(x.get("id")))
+        except (TypeError, ValueError): continue
+    cambiados, omitidos, horas = 0, 0, 0.0
+    bitacora = lambda r: r.setdefault("reasignaciones", []).append({"de": r.get("work_code"), "a": destino_txt, "fecha": ahora, "usuario": user})
+    if _orm and _orm.DB_ENABLED:
+        s = _sesion_propia()
+        try:
+            for y, ids in por_anio.items():
+                _orm.acquire_year_lock(s, "work_hours", y)
+                for r in s.query(_orm.WorkHour).filter(_orm.WorkHour.year == y, _orm.WorkHour.source_id.in_(list(ids))).all():
+                    data = dict(r.data or {})
+                    if _wh_job_norm(data.get("work_code")) != origen: omitidos += 1; continue
+                    bitacora(data); data["work_code"] = destino_txt
+                    r.data = data; r.job = destino_txt; _orm_flag_modified(r, "data")
+                    cambiados += 1; horas += float(data.get("hours") or 0)
+            s.commit()
+        except Exception as e:
+            s.rollback()
+            return jsonify({"error": f"No se cambió nada: {e}"}), 500
+        finally:
+            s.close()
+    else:
+        with lock:
+            for y, ids in por_anio.items():
+                recs = wh_load(y)
+                for r in recs:
+                    if r.get("id") in ids:
+                        if _wh_job_norm(r.get("work_code")) != origen: omitidos += 1; continue
+                        bitacora(r); r["work_code"] = destino_txt
+                        cambiados += 1; horas += float(r.get("hours") or 0)
+                wh_save(y, recs)
+    print(f"[wh] reasignación {origen} → {destino_txt}: {cambiados} registros ({horas:.2f} h) por {user}")
+    return jsonify({"ok": True, "cambiados": cambiados, "omitidos": omitidos, "horas": round(horas, 2), "destino": destino_txt})
+
 @app.route("/api/wh/import", methods=["POST"])
 def api_import_wh():
     """
@@ -8411,6 +8517,26 @@ def api_kpis_resultados():
                 for jc in cfg.get("jobs") or []:
                     tf_cfg.setdefault(str(jc.get("job_number") or "").strip().upper(), cfg.get("timing") or [])
         pools = _ro_pools_factory() if jobs else None
+        # rev85: fecha de cierre efectiva. Closing Date del Job; si está Closed sin esa fecha,
+        # la del último registro de horas del Job (o su última actualización).
+        ult_wh = {}
+        if jobs:
+            for yy in range(anio - 2, anio + 1):
+                try: regs = wh_load(yy)
+                except Exception: regs = []
+                for r in regs:
+                    m = re.search(r"\b(\d{3}-\d{2})\b", str(r.get("work_code") or ""))
+                    f = fd(r.get("date_worked"))
+                    if m and f and (m.group(1) not in ult_wh or f > ult_wh[m.group(1)]): ult_wh[m.group(1)] = f
+        def cierre(j):
+            if str(j.get("status") or "").strip().upper() in ("CANCELLED", "CANCELED", "CANCELADO"): return None, ""
+            c = fd(j.get("closing_date"))
+            if c: return c, "Closing Date" + (" (automática)" if j.get("closing_date_auto") else "")
+            if str(j.get("status") or "").strip().upper() not in JOB_ESTATUS_CERRADO: return None, ""
+            jm = "-".join(str(j.get("job_number") or "").split("-")[:2])
+            if ult_wh.get(jm): return ult_wh[jm], "último registro de horas (el Job no tiene Closing Date)"
+            u = fd(j.get("updated_at"))
+            return (u, "última actualización del Job (no tiene Closing Date)") if u else (None, "")
         cache_job = {}
         def info_job(j):
             jn = j["job_number"]
@@ -8424,7 +8550,7 @@ def api_kpis_resultados():
             dd = det.get("d") or {}
             plan = sum(float(jc.get("mo_horas_" + k) or 0) for k, _n, _p in LINEAS_MO)
             tc = jc.get("target_compras")
-            cache_job[jn] = {"ro": r, "horas_usadas": float(dd.get("accum_hours") or 0), "horas_plan": plan,
+            cache_job[jn] = {"ro": r, "horas_usadas": float(dd.get("accum_hours") or 0), "horas_plan": plan, "en_config": bool(jc),
                              "target_compras": float(tc) if tc not in (None, "") else None,
                              "adquirido": float(dd.get("purchasing_total") or 0), "jc": jc}
             return cache_job[jn]
@@ -8451,7 +8577,7 @@ def api_kpis_resultados():
             glob = a.get("alcance") == "global"
             ids = [_kpi_norm(x) for x in a.get("identificadores") or [] if _kpi_norm(x)]
             es = (lambda v: True) if glob else (lambda v: _kpi_es(ids, v))
-            periodos, detalle, nota = [], [], ""
+            periodos, detalle, nota, excluidos = [], [], "", []
             if a["kpi"] == "cotizaciones_creadas":
                 for m in range(1, 13):
                     n = sum(1 for q in quotes if (fd(q.get("received")) or fd(q.get("created_at"))) and
@@ -8477,7 +8603,7 @@ def api_kpis_resultados():
                                      "extra": f"${sum(float(c.get('value') or 0) for c in sel):,.0f}" if sel else ""})
             elif a["kpi"] == "margen_proyectos":
                 for t in range(1, 5):
-                    js = [j for j in jobs if fd(j.get("closing_date")) and fd(j["closing_date"]).year == anio and trimestre(fd(j["closing_date"])) == t and es(j.get("pm"))]
+                    js = [j for j in jobs if cierre(j)[0] and cierre(j)[0].year == anio and trimestre(cierre(j)[0]) == t and es(j.get("pm"))]
                     vals = []
                     for j in js:
                         r = info_job(j)["ro"]
@@ -8491,10 +8617,10 @@ def api_kpis_resultados():
                     periodos.append({"p": f"T{t}", "valor": round(sum(vals) / len(vals), 1) if vals else None, "extra": f"{len(vals)} Job(s)" if vals else ""})
             elif a["kpi"] in ("entrega_tiempo", "ahorro_compras", "eficiencia_horas"):
                 js = [j for j in jobs if es(j.get("pm"))]
-                vals = []
+                vals, excluidos = [], []
                 for j in js:
                     jn = j["job_number"]
-                    cerrado = fd(j.get("closing_date"))
+                    cerrado, origen_c = cierre(j)
                     if a["kpi"] == "entrega_tiempo":
                         jc = cfg_job.get(jn.strip().upper(), {})
                         comp = fd(jc.get("fecha_envio")) or fd(j.get("ship_date"))
@@ -8503,26 +8629,38 @@ def api_kpis_resultados():
                             if re.search(r"ENV[IÍ]O|SHIP", _sin_acentos(t.get("actividad")), re.I) and fd(t.get("fecha_real_finalizacion")):
                                 real = fd(t.get("fecha_real_finalizacion"))
                         real = real or cerrado
+                        if real and real.year == anio and not comp:
+                            excluidos.append({"job": jn, "motivo": "sin fecha de envío comprometida (Configurar Proyecto o Job)"})
                         if not (real and comp) or real.year != anio: continue
                         ok = real <= comp
                         vals.append(100.0 if ok else 0.0)
                         detalle.append({"job": jn, "p": real.isoformat(), "valor": 100 if ok else 0,
                                         "extra": f"comprometido {comp.isoformat()} · real {real.isoformat()} · {'a tiempo' if ok else f'{(real - comp).days} día(s) tarde'}"})
                     else:
-                        if not cerrado or cerrado.year != anio: continue
+                        if not cerrado:
+                            # cerrado (Done) pero sin ninguna fecha: se avisa para que capturen la Closing Date
+                            if str(j.get("status") or "").strip().upper() in JOB_ESTATUS_CERRADO:
+                                excluidos.append({"job": jn, "motivo": f"estatus {j.get('status')} sin Closing Date ni registros de horas: captura la fecha de cierre en el Job"})
+                            continue
+                        if cerrado.year != anio: continue
                         ij = info_job(j)
                         if a["kpi"] == "ahorro_compras":
-                            if not ij["target_compras"]: continue
+                            if not ij["en_config"]: excluidos.append({"job": jn, "motivo": "no está en ninguna Configuración de Proyecto"}); continue
+                            if not ij["target_compras"]: excluidos.append({"job": jn, "motivo": "sin Target Compras"}); continue
                             v = round((ij["target_compras"] - ij["adquirido"]) / ij["target_compras"] * 100, 1)
                             extra = f"target ${ij['target_compras']:,.0f} · adquirido ${ij['adquirido']:,.0f}"
                         else:
-                            if not ij["horas_usadas"] or not ij["horas_plan"]: continue
+                            if not ij["en_config"]: excluidos.append({"job": jn, "motivo": "no está en ninguna Configuración de Proyecto (no hay horas planeadas)"}); continue
+                            if not ij["horas_plan"]: excluidos.append({"job": jn, "motivo": "sin horas planeadas en Configurar Proyecto"}); continue
+                            if not ij["horas_usadas"]: excluidos.append({"job": jn, "motivo": "sin horas registradas en Work Hours"}); continue
                             v = round(ij["horas_plan"] / ij["horas_usadas"] * 100, 1)
                             extra = f"{ij['horas_plan']:,.0f} h planeadas · {ij['horas_usadas']:,.0f} h usadas"
+                        if not origen_c.startswith("Closing Date ") and origen_c != "Closing Date":
+                            extra += f" · cierre: {origen_c}"
                         vals.append(v); detalle.append({"job": jn, "p": cerrado.isoformat(), "valor": v, "extra": extra})
                 detalle.sort(key=lambda x: x["p"])
                 periodos = [{"p": x["job"], "valor": x["valor"], "extra": x.get("extra", "")} for x in detalle]
-                nota = f"{len(vals)} proyecto(s) en {anio}"
+                nota = f"{len(vals)} proyecto(s) en {anio}" + (f" · {len(excluidos)} cerrado(s) sin dato" if excluidos else "")
                 val_anual = round(sum(vals) / len(vals), 1) if vals else None
             elif a["kpi"] == "horas_extra":
                 p = personas_tp.get(a.get("tid")) if not glob else None
@@ -8551,6 +8689,7 @@ def api_kpis_resultados():
             en_curso = next((x for x in periodos if x.get("en_curso")), None)
             for x in periodos: x["estado"] = None if x.get("en_curso") else _kpi_estado(x.get("valor"), a.get("meta"), K["sentido"], a.get("tolerancia"))
             out.append({"asignacion": a, "kpi": K, "periodos": periodos, "nota": nota,
+                        "excluidos": excluidos if a["kpi"] in ("entrega_tiempo", "ahorro_compras", "eficiencia_horas") else [],
                         "ultimo": ultimo, "en_curso": en_curso, "promedio": val_anual,
                         "estado": _kpi_estado(val_anual, a.get("meta"), K["sentido"], a.get("tolerancia")),
                         "cumplidos": sum(1 for x in periodos if x.get("estado") == "verde"), "evaluados": len(con)})

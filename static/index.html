@@ -1826,6 +1826,30 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
   </div>
 </div>
 
+<!-- ── Modal: Reasignar horas (rev86) -->
+<div class="mo" id="mo-wh-reasig" style="z-index:150">
+  <div class="md" style="max-width:900px;width:calc(100% - 32px)">
+    <div class="mh"><h2>Reasignar horas a otro Job</h2><button class="px" onclick="closeMo('mo-wh-reasig')">Cerrar</button></div>
+    <div class="mb2">
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="fi" style="margin:0;flex:1;min-width:200px"><label>1. Job actual (el que se va a mudar)</label>
+          <input id="whr-origen" list="whr-jobs" placeholder="Ej. 665-01" onkeydown="if(event.key==='Enter')whReasigBuscar()"></div>
+        <button class="btn-reload" onclick="whReasigBuscar()" style="padding:9px 16px">Buscar registros</button>
+      </div>
+      <datalist id="whr-jobs"></datalist>
+      <div id="whr-origen-info" style="font-size:11px;color:var(--muted2);margin:6px 0 10px"></div>
+      <div id="whr-lista"></div>
+      <div id="whr-destino-box" style="display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+        <div class="fi" style="margin:0"><label>3. Nuevo Job</label>
+          <input id="whr-destino" list="whr-jobs" placeholder="Ej. 665-02" oninput="whReasigInfoDestino()"></div>
+        <div id="whr-destino-info" style="font-size:11px;margin-top:6px"></div>
+      </div>
+    </div>
+    <div class="mf"><span id="whr-resumen" style="flex:1;font-size:11.5px;color:var(--muted2)"></span>
+      <button class="btn-new" id="whr-btn" onclick="whReasigConfirmar()" disabled style="width:auto;padding:9px 20px">Reasignar</button></div>
+  </div>
+</div>
+
 <!-- ── Modal: Punto abierto (rev79) -->
 <div class="mo" id="mo-pc-punto" style="z-index:150">
   <div class="md" style="max-width:920px;width:calc(100% - 32px)">
@@ -2117,6 +2141,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
     </div>
     <div class="sb-btns">
       <button class="btn-new" onclick="whOpenImport()">Cargar Excel</button>
+      <button class="btn-sec" onclick="whReasigAbrir()" style="margin-top:6px">↔ Reasignar horas</button>
       <button class="btn-sec btn-export" onclick="whExportCSV()">Exportar CSV</button>
     </div>
   </aside>

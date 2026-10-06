@@ -6393,6 +6393,7 @@ function applyPermsToDom(d) {
     { pat:'perfilCreate(',       mod:'personal-perfiles',need:'create' },
     { pat:'tpGuardar(',          mod:'personal-tipos-puesto',need:'create' },
     { pat:'kpiAbrir(',           mod:'rrhh-kpis',need:'create' },
+    { pat:'whReasigAbrir(',      mod:'wh',need:'create' },
     { pat:'tpEliminar(',         mod:'personal-tipos-puesto',need:'full' },
     { pat:'perfilEditStart(',    mod:'personal-perfiles',need:'create' },
     { pat:'perfilDelete(',       mod:'personal-perfiles',need:'full' },
@@ -18736,6 +18737,8 @@ function kpiRender(){
         ${a.meta?`<div title="Meta ${esc(kpiFmt(a.meta,K.unidad))}" style="position:absolute;left:0;right:0;bottom:${lblH+metaY}px;border-top:1px dashed var(--red);opacity:.7"></div>`:''}</div>`:''}
       ${x.nota?`<div style="font-size:10px;color:var(--muted);margin-top:4px">${esc(x.nota)}</div>`:''}
       ${tablaProy}
+      ${(x.excluidos||[]).length?`<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:#b45309">⚠ ${x.excluidos.length} proyecto(s) cerrado(s) sin dato para calcular</summary>
+        <table style="width:100%;font-size:11px;border-collapse:collapse;margin-top:4px">${x.excluidos.map(e=>`<tr style="border-top:1px solid var(--border)"><td style="padding:3px 4px;font-family:'DM Mono',monospace;color:var(--gold)">${esc(e.job)}</td><td style="padding:3px 4px;color:var(--muted2)">${esc(e.motivo)}</td></tr>`).join('')}</table></details>`:''}
       ${a.alcance!=='global'?`<div style="font-size:9.5px;color:var(--muted);margin-top:6px" title="Identificadores">🔎 ${esc((a.identificadores||[]).join(' · '))}</div>`:''}
     </div>`;
   };
@@ -18806,4 +18809,89 @@ async function kpiEliminar(kid){
   const r = await (await fetch('/api/kpis/asignaciones/'+encodeURIComponent(kid),{method:'DELETE'})).json();
   if(r.error){ toast(r.error,'er'); return; }
   toast('KPI eliminado','if'); kpiCargar();
+}
+
+
+// ════════════════════════════════════════════════════════
+//  rev86 — Mano de Obra: reasignar horas de un Job a otro
+// ════════════════════════════════════════════════════════
+let _whr = {origen:'', regs:[], jobs:null};
+async function whReasigAbrir(){
+  _whr = {origen:'', regs:[], jobs:_whr.jobs};
+  ['whr-origen','whr-destino'].forEach(id=>document.getElementById(id).value='');
+  ['whr-origen-info','whr-lista','whr-destino-info','whr-resumen'].forEach(id=>document.getElementById(id).innerHTML='');
+  document.getElementById('whr-destino-box').style.display='none';
+  document.getElementById('whr-btn').disabled = true;
+  document.getElementById('mo-wh-reasig').classList.add('on');
+  setTimeout(()=>document.getElementById('whr-origen').focus(), 50);
+  if(!_whr.jobs){
+    try{ const r = await fetch('/api/jobs'); const d = await r.json(); _whr.jobs = (Array.isArray(d)?d:(d.jobs||d.records||[])); }catch(e){ _whr.jobs = []; }
+    document.getElementById('whr-jobs').innerHTML = _whr.jobs.map(j=>`<option value="${esc(j.job_number)}">${esc(j.customer||'')} · ${esc(j.description||'')}</option>`).join('');
+  }
+}
+async function whReasigBuscar(){
+  const job = document.getElementById('whr-origen').value.trim();
+  if(!job){ toast('Escribe el Job actual','er'); return; }
+  document.getElementById('whr-lista').innerHTML = '<div style="padding:16px;color:var(--muted);text-align:center">Buscando…</div>';
+  try{
+    const r = await fetch('/api/wh/por-job?job='+encodeURIComponent(job)); const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    _whr.origen = d.job; _whr.regs = d.registros.map(x=>({...x, sel:true}));
+    document.getElementById('whr-origen-info').innerHTML = d.job_existe
+      ? `<b>${esc(d.job)}</b> · ${esc(d.job_info.customer||'')} · ${esc(d.job_info.description||'')} · ${esc(d.job_info.status||'')}`
+      : `<span style="color:var(--amber)">${esc(d.job)} no existe en Jobs (puede ser un código capturado con error).</span>`;
+    whReasigRender();
+  }catch(e){ document.getElementById('whr-lista').innerHTML = `<div style="color:var(--red)">⚠ ${esc(e.message)}</div>`; }
+}
+function whReasigRender(){
+  const box = document.getElementById('whr-lista'), R = _whr.regs;
+  if(!R.length){ box.innerHTML = `<div style="padding:14px;text-align:center;color:var(--muted)">No hay registros de horas con el Job ${esc(_whr.origen)}.</div>`;
+    document.getElementById('whr-destino-box').style.display='none'; whReasigResumen(); return; }
+  const todos = R.every(x=>x.sel);
+  box.innerHTML = `<div class="sl" style="margin-top:0">2. Registros asociados (${R.length})</div>
+    <div style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:8px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="position:sticky;top:0;background:var(--sb)">
+      <th style="padding:6px;cursor:default"><input type="checkbox" ${todos?'checked':''} onchange="_whr.regs.forEach(x=>x.sel=this.checked);whReasigRender()" title="Seleccionar todos"></th>
+      <th style="padding:6px;text-align:left;cursor:default">Fecha</th><th style="padding:6px;text-align:left;cursor:default">Empleado</th>
+      <th style="padding:6px;text-align:right;cursor:default">Horas</th><th style="padding:6px;text-align:left;cursor:default">Descripción</th></tr></thead>
+    <tbody>${R.map((x,i)=>`<tr style="border-top:1px solid var(--border);${x.sel?'':'opacity:.45'}">
+      <td style="padding:5px 6px;text-align:center"><input type="checkbox" ${x.sel?'checked':''} onchange="_whr.regs[${i}].sel=this.checked;whReasigRender()"></td>
+      <td style="padding:5px 6px;white-space:nowrap">${esc(String(x.date_worked||'').slice(0,10))}</td>
+      <td style="padding:5px 6px">${esc(x.employee||'')}</td>
+      <td style="padding:5px 6px;text-align:right;font-family:'DM Mono',monospace">${Number(x.hours||0).toLocaleString('es-MX',{maximumFractionDigits:2})}</td>
+      <td style="padding:5px 6px;color:var(--muted2)">${esc(x.description||'')}</td></tr>`).join('')}</tbody></table></div>
+    <div style="font-size:10.5px;color:var(--muted);margin-top:4px">Desmarca los registros que no deben moverse.</div>`;
+  document.getElementById('whr-destino-box').style.display='';
+  whReasigInfoDestino();
+}
+function whReasigInfoDestino(){
+  const v = document.getElementById('whr-destino').value.trim().toUpperCase().replace(/\s+/g,''), el = document.getElementById('whr-destino-info');
+  const j = (_whr.jobs||[]).find(x=>String(x.job_number||'').toUpperCase().replace(/\s+/g,'')===v);
+  if(!v) el.innerHTML = '';
+  else if(v===_whr.origen) el.innerHTML = '<span style="color:var(--red)">Es el mismo Job actual.</span>';
+  else if(j) el.innerHTML = `<span style="color:#15803d">✓ ${esc(j.job_number)} · ${esc(j.customer||'')} · ${esc(j.description||'')} · ${esc(j.status||'')}</span>`;
+  else el.innerHTML = '<span style="color:var(--red)">Ese Job no existe en Jobs.</span>';
+  whReasigResumen(!!j && v!==_whr.origen);
+}
+function whReasigResumen(destinoOk){
+  const sel = _whr.regs.filter(x=>x.sel), h = sel.reduce((a,x)=>a+Number(x.hours||0),0);
+  document.getElementById('whr-resumen').textContent = sel.length ? `${sel.length} registro(s) · ${h.toLocaleString('es-MX',{maximumFractionDigits:2})} h seleccionadas` : '';
+  document.getElementById('whr-btn').disabled = !(sel.length && destinoOk);
+}
+async function whReasigConfirmar(){
+  const sel = _whr.regs.filter(x=>x.sel), destino = document.getElementById('whr-destino').value.trim();
+  if(!sel.length || !destino) return;
+  const h = sel.reduce((a,x)=>a+Number(x.hours||0),0);
+  const emps = new Set(sel.map(x=>x.employee)).size;
+  // 4. alerta antes del cambio
+  if(!confirm(`⚠ ATENCIÓN\n\nSe cambiará el Job de ${sel.length} registro(s) de horas (${h.toLocaleString('es-MX',{maximumFractionDigits:2})} h de ${emps} empleado(s)):\n\n   ${_whr.origen}  →  ${destino.toUpperCase()}\n\nEl costo de mano de obra de esas horas dejará de contar en ${_whr.origen} y pasará a ${destino.toUpperCase()} (Job Report, dashboards, KPIs y capacidad).\n\nCada registro guarda la bitácora del cambio. ¿Continuar?`)) return;
+  const btn = document.getElementById('whr-btn'); btn.disabled = true; btn.textContent = 'Reasignando…';
+  try{
+    const r = await apiCall('POST','/wh/reasignar',{origen:_whr.origen, destino, registros: sel.map(x=>({year:x.year, id:x.id}))});
+    if(r.error) throw new Error(r.error);
+    toast(`✓ ${r.cambiados} registro(s) (${r.horas} h) reasignados de ${_whr.origen} a ${r.destino}${r.omitidos?` · ${r.omitidos} ya no tenían ese Job y no se tocaron`:''}`,'ok',7000);
+    closeMo('mo-wh-reasig');
+    if(typeof whLoad==='function') whLoad(); else if(typeof loadWH==='function') loadWH();
+  }catch(e){ toast('No se reasignó: '+e.message,'er',8000); }
+  finally{ btn.textContent = 'Reasignar'; }
 }
