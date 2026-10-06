@@ -8385,7 +8385,7 @@ KPI_CATALOGO = [
      "formula": "Proyectos entregados en o antes de la fecha de envío comprometida ÷ proyectos entregados × 100. Entrega real: fecha real de la actividad de Envío del Timing, o fecha de cierre del Job."},
     {"k": "ahorro_compras", "nombre": "Porcentaje promedio de ahorro por compra de componentes", "periodo": "proyecto", "unidad": "%",
      "sentido": "mayor", "fuente": "Jobs donde es PM (o global para Compras)",
-     "formula": "Promedio de (Target Compras − adquirido) ÷ Target Compras × 100 de los proyectos cerrados."},
+     "formula": "Promedio de (Target Compras − adquirido) ÷ Target Compras × 100 de los proyectos cerrados (estatus Done). Target Compras = el de Configurar Proyecto; adquirido = órdenes de compra del Job (todos sus años)."},
     {"k": "horas_extra", "nombre": "Índice de horas extras", "periodo": "semanal", "unidad": "%",
      "sentido": "menor", "fuente": "Work Hours (empleado)",
      "formula": "Horas que pasan de su jornada semanal (Tipo de Puesto, o 48 h) ÷ horas ordinarias × 100."},
@@ -8529,10 +8529,11 @@ def api_kpis_resultados():
                     f = fd(r.get("date_worked"))
                     if m and f and (m.group(1) not in ult_wh or f > ult_wh[m.group(1)]): ult_wh[m.group(1)] = f
         def cierre(j):
-            if str(j.get("status") or "").strip().upper() in ("CANCELLED", "CANCELED", "CANCELADO"): return None, ""
-            c = fd(j.get("closing_date"))
-            if c: return c, "Closing Date" + (" (automática)" if j.get("closing_date_auto") else "")
+            # rev89: un Job cuenta como cerrado SOLO por su estatus (Done / Closed). La Closing
+            # Date sola no basta: en Jobs abiertos suele estar capturada como fecha estimada.
             if str(j.get("status") or "").strip().upper() not in JOB_ESTATUS_CERRADO: return None, ""
+            c = fd(j.get("closing_date"))
+            if c and c <= hoy: return c, "Closing Date" + (" (automática)" if j.get("closing_date_auto") else "")
             jm = "-".join(str(j.get("job_number") or "").split("-")[:2])
             if ult_wh.get(jm): return ult_wh[jm], "último registro de horas (el Job no tiene Closing Date)"
             u = fd(j.get("updated_at"))
