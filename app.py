@@ -8376,7 +8376,7 @@ KPI_CATALOGO = [
     {"k": "aceptacion_cotizaciones", "nombre": "Quote success rate", "nombre_es": "Tasa de aceptación de cotizaciones",
      "periodo": "trimestral", "unidad": "%", "sentido": "mayor", "alcances": ["global", "persona"],
      "fuente": "Cotizaciones (Key Account Manager / Technical Sales)",
-     "formula": "Cotizaciones ganadas (Awarded) ÷ cotizaciones enviadas al cliente en el trimestre × 100."},
+     "formula": "Cotizaciones aceptadas (Awarded, sin rechazo) ÷ cotizaciones emitidas (enviadas al cliente) × 100. La tarjeta muestra el pastel del año: aceptadas, rechazadas y pendientes; el cumplimiento de la meta se evalúa por trimestre."},
     {"k": "pos_recibidas", "nombre": "POs received by month", "nombre_es": "Índice de POs recibidas",
      "periodo": "mensual", "unidad": "POs", "sentido": "mayor", "alcances": ["global", "persona"], "fuente": "Customer POs (PM)",
      "formula": "Customer POs de revenue recibidas en el mes (fecha de la PO). También se informa el monto."},
@@ -8891,6 +8891,7 @@ def api_kpis_resultados(_asign=None, _anio=None):
                        if (p.get("area") or "").strip().lower() == (a.get("area") or "").strip().lower() and _kpi_norm(p.get("nombre"))]
             es = (lambda v: True) if glob else (lambda v: _kpi_es(ids, v))
             periodos, detalle, nota, excluidos, desglose = [], [], "", [], []
+            pie = None
             if a["kpi"] == "cotizaciones_creadas":
                 for m in range(1, 13):
                     n = sum(1 for q in quotes if (fd(q.get("received")) or fd(q.get("created_at"))) and
@@ -8903,10 +8904,16 @@ def api_kpis_resultados(_asign=None, _anio=None):
                 for t in range(1, 5):
                     env = [q for q in quotes if fd(q.get("sentClient")) and fd(q["sentClient"]).year == anio and trimestre(fd(q["sentClient"])) == t
                            and (es(q.get("keyAccountManager")) or es(q.get("technicalSales")))]
-                    gan = sum(1 for q in env if q.get("awarded"))
+                    gan = sum(1 for q in env if q.get("awarded") and not q.get("refused"))
                     futuro = datetime.date(anio, 3 * t - 2, 1) > hoy
                     periodos.append({"p": f"T{t}", "valor": None if futuro or not env else round(gan / len(env) * 100, 1),
                                      "extra": f"{gan} de {len(env)}" if env else ""})
+                # rev96: gráfica de pastel del año — emitidas = enviadas al cliente en el año
+                env_y = [q for q in quotes if fd(q.get("sentClient")) and fd(q["sentClient"]).year == anio
+                         and (es(q.get("keyAccountManager")) or es(q.get("technicalSales")))]
+                acc = sum(1 for q in env_y if q.get("awarded") and not q.get("refused"))
+                rech = sum(1 for q in env_y if q.get("refused"))
+                pie = {"emitidas": len(env_y), "aceptadas": acc, "rechazadas": rech, "pendientes": len(env_y) - acc - rech}
             elif a["kpi"] == "pos_recibidas":
                 for m in range(1, 13):
                     sel = [c for c in cpos if fd(c.get("date")) and fd(c["date"]).year == anio and fd(c["date"]).month == m
@@ -9114,6 +9121,8 @@ def api_kpis_resultados(_asign=None, _anio=None):
             if a["kpi"] in ("valor_stock", "valor_consignacion"):
                 ult_v = next((x for x in reversed(periodos) if x.get("valor") is not None), None)
                 val_anual = ult_v["valor"] if ult_v else None      # valor más reciente, no promedio
+            elif a["kpi"] == "aceptacion_cotizaciones":            # rev96: tasa del año (aceptadas ÷ emitidas)
+                val_anual = round(pie["aceptadas"] / pie["emitidas"] * 100, 1) if pie and pie["emitidas"] else None
             elif a["kpi"] not in ("margen_proyectos", "entrega_tiempo", "ahorro_compras", "eficiencia_horas"):
                 val_anual = round(sum(con) / len(con), 1) if con else None
             ultimo = next((x for x in reversed(periodos) if x.get("valor") is not None and not x.get("en_curso")), None)
@@ -9128,7 +9137,7 @@ def api_kpis_resultados(_asign=None, _anio=None):
                 estado_g = _kpi_estado(val_anual, a.get("meta"), K["sentido"], a.get("tolerancia"))
             out.append({"asignacion": a, "kpi": K, "periodos": periodos, "nota": nota,
                         "excluidos": excluidos if a["kpi"] in ("margen_proyectos", "entrega_tiempo", "ahorro_compras", "eficiencia_horas") else [],
-                        "ultimo": ultimo, "en_curso": en_curso, "promedio": val_anual, "desglose": desglose,
+                        "ultimo": ultimo, "en_curso": en_curso, "promedio": val_anual, "desglose": desglose, "pie": pie,
                         "wip": (lambda w: {"n": len(w), "promedio": round(sum(w) / len(w), 1) if w else None})(
                             [x["valor"] for x in periodos if x.get("en_curso") and x.get("valor") is not None]) if K["periodo"] == "proyecto" else None,
                         "estado": estado_g,

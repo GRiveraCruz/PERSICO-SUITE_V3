@@ -18807,10 +18807,10 @@ function kpiTarjetaHTML(x, puede, compacta){
       </div>
       <div style="display:flex;align-items:baseline;gap:10px;margin:8px 0 4px;flex-wrap:wrap">
         <span style="font-size:26px;font-weight:800;color:${col}">${esc(kpiFmt(x.promedio,K.unidad))}</span>
-        <span style="font-size:10.5px;color:var(--muted2)">${K.sentido==='reduccion'?(()=>{ const u=[...x.periodos].reverse().find(p=>p.valor!=null); return `último valor${u?` (${esc(u.p)})`:''}${u&&u.variacion!=null?` · ${u.variacion>0?'+':''}${u.variacion} % vs mes anterior`:''}`; })():K.periodo==='proyecto'?'promedio de proyectos cerrados':'promedio del año'}${x.ultimo&&K.periodo!=='proyecto'?` · último (${esc(x.ultimo.p)}): <b>${esc(kpiFmt(x.ultimo.valor,K.unidad))}</b>`:''}${x.en_curso&&K.periodo!=='proyecto'?` · en curso (${esc(x.en_curso.p)}): ${esc(kpiFmt(x.en_curso.valor,K.unidad))}`:''}${x.wip&&x.wip.n?` · <span title="Jobs en WIP: valor al día de hoy, no se evalúan">WIP (${x.wip.n}): ${esc(kpiFmt(x.wip.promedio,K.unidad))}</span>`:''}</span>
+        <span style="font-size:10.5px;color:var(--muted2)">${x.pie?`del año · ${x.pie.aceptadas} de ${x.pie.emitidas} emitidas`:K.sentido==='reduccion'?(()=>{ const u=[...x.periodos].reverse().find(p=>p.valor!=null); return `último valor${u?` (${esc(u.p)})`:''}${u&&u.variacion!=null?` · ${u.variacion>0?'+':''}${u.variacion} % vs mes anterior`:''}`; })():K.periodo==='proyecto'?'promedio de proyectos cerrados':'promedio del año'}${x.ultimo&&K.periodo!=='proyecto'?` · último (${esc(x.ultimo.p)}): <b>${esc(kpiFmt(x.ultimo.valor,K.unidad))}</b>`:''}${x.en_curso&&K.periodo!=='proyecto'?` · en curso (${esc(x.en_curso.p)}): ${esc(kpiFmt(x.en_curso.valor,K.unidad))}`:''}${x.wip&&x.wip.n?` · <span title="Jobs en WIP: valor al día de hoy, no se evalúan">WIP (${x.wip.n}): ${esc(kpiFmt(x.wip.promedio,K.unidad))}</span>`:''}</span>
         <span style="margin-left:auto;font-size:10.5px;color:var(--muted2)">${a.meta==null?'sin meta':x.evaluados?`cumplió ${x.cumplidos} de ${x.evaluados}`:'sin datos aún'}</span>
       </div>
-      ${x.periodos.length?`<div style="position:relative;display:flex;gap:${fina?1:3}px;align-items:flex-end;height:${H+lblH+4}px;padding-top:4px">${barras}
+      ${x.pie ? kpiPieHTML(x.pie) : x.periodos.length?`<div style="position:relative;display:flex;gap:${fina?1:3}px;align-items:flex-end;height:${H+lblH+4}px;padding-top:4px">${barras}
         ${a.meta!=null && K.sentido!=='reduccion'?`<div title="Meta ${esc(kpiFmt(a.meta,K.unidad))}" style="position:absolute;left:0;right:0;bottom:${lblH+metaY}px;border-top:1px dashed var(--red);opacity:.7"></div>`:''}</div>`:''}
       ${x.nota?`<div style="font-size:10px;color:var(--muted);margin-top:4px">${esc(x.nota)}</div>`:''}
       ${(x.desglose||[]).length?`<table style="width:100%;font-size:11px;border-collapse:collapse;margin-top:8px"><thead><tr><th style="text-align:left;padding:3px 4px;cursor:default">Área</th><th style="text-align:right;padding:3px 4px;cursor:default">${K.periodo==='proyecto'?'Último proyecto':'Último mes'}</th><th style="text-align:right;padding:3px 4px;cursor:default">${K.periodo==='proyecto'?'Promedio (proyectos)':'Promedio'}</th></tr></thead>
@@ -19034,4 +19034,21 @@ async function adminSetTid(uname, tid){
   if(r.error){ toast(r.error,'er'); return; }
   if(_adminUsersData?.users?.[uname]) _adminUsersData.users[uname].tid = tid || null;
   toast(tid ? `${uname} ligado a la persona ${tid}` : `${uname} sin persona ligada`,'ok',3000);
+}
+
+
+// rev96: gráfica de pastel (Quote success rate): aceptadas / rechazadas / pendientes del año
+function kpiPieHTML(p){
+  const tot = p.emitidas || 0;
+  const seg = [['Aceptadas', p.aceptadas, '#16a34a'], ['Rechazadas', p.rechazadas, '#c8102e'], ['Pendientes', p.pendientes, '#94a3b8']];
+  if(!tot) return '<div style="font-size:11px;color:var(--muted);padding:18px 0;text-align:center">Sin cotizaciones emitidas en el año</div>';
+  const R = 44, C = 2*Math.PI*R; let off = 0;
+  const arcos = seg.filter(x=>x[1]>0).map(([n,v,c])=>{ const L = v/tot*C; const el = `<circle r="${R}" cx="60" cy="60" fill="none" stroke="${c}" stroke-width="22" stroke-dasharray="${L} ${C-L}" stroke-dashoffset="${-off}" transform="rotate(-90 60 60)"><title>${n}: ${v} (${(v/tot*100).toFixed(1)} %)</title></circle>`; off += L; return el; }).join('');
+  return `<div style="display:flex;align-items:center;gap:16px;margin-top:4px">
+    <svg viewBox="0 0 120 120" width="120" height="120" style="flex-shrink:0">${arcos}
+      <text x="60" y="56" text-anchor="middle" style="font-size:20px;font-weight:800;fill:var(--text)">${tot}</text>
+      <text x="60" y="73" text-anchor="middle" style="font-size:9px;fill:var(--muted)">emitidas</text></svg>
+    <div style="flex:1;font-size:12px">${seg.map(([n,v,c])=>`<div style="display:flex;align-items:center;gap:7px;margin:4px 0">
+      <span style="width:11px;height:11px;border-radius:3px;background:${c}"></span><span style="flex:1">${n}</span>
+      <b>${v}</b><span style="color:var(--muted);width:48px;text-align:right">${(v/tot*100).toFixed(1)} %</span></div>`).join('')}</div></div>`;
 }
