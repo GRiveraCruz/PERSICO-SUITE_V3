@@ -5796,8 +5796,8 @@ function ptRender() {
       <td>${esc(r.customer||'')}</td>
       <td>${esc(r.customer_program||'')}</td>
       <td style="font-size:11px;color:var(--muted2)">${esc(r.pm||'')}</td>
-      <td>${(r.jobs||[]).map(j=>`<span style="display:inline-block;background:rgba(200,16,46,.12);color:var(--red);border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace;font-size:11px;margin:1px">${esc(j)}</span>`).join(' ')}</td>
-      <td style="font-size:11px;color:var(--muted)">${esc(r.notes||'')}</td>
+      <td style="white-space:normal;max-width:340px;min-width:160px"><div style="display:flex;flex-wrap:wrap;gap:3px">${(r.jobs||[]).map(j=>`<span style="display:inline-block;background:rgba(200,16,46,.12);color:var(--red);border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace;font-size:11px;white-space:nowrap">${esc(j)}</span>`).join('')}</div></td>
+      <td style="font-size:11px;color:var(--muted);white-space:normal;max-width:260px">${esc(r.notes||'')}</td>
       <td><button class="btn-reload" style="font-size:10px;padding:3px 9px;white-space:nowrap" onclick="pcAbrirDesdeLista('PT','${esc(r.pt_number)}',event)" title="Abrir la configuración del proyecto">⚙ Configurar</button></td>
     </tr>`).join('');
   document.getElementById('pt-count').textContent = `${rows.length} PT Numbers`;
@@ -6789,8 +6789,8 @@ function svRender() {
       <td>${esc(r.customer||'')}</td>
       <td>${esc(r.customer_program||'')}</td>
       <td style="font-size:11px;color:var(--muted2)">${esc(r.pm||'')}</td>
-      <td>${(r.jobs||[]).map(j=>`<span style="display:inline-block;background:rgba(200,16,46,.12);color:var(--red);border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace;font-size:11px;margin:1px">${esc(j)}</span>`).join(' ')}</td>
-      <td style="font-size:11px;color:var(--muted)">${esc(r.notes||'')}</td>
+      <td style="white-space:normal;max-width:340px;min-width:160px"><div style="display:flex;flex-wrap:wrap;gap:3px">${(r.jobs||[]).map(j=>`<span style="display:inline-block;background:rgba(200,16,46,.12);color:var(--red);border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace;font-size:11px;white-space:nowrap">${esc(j)}</span>`).join('')}</div></td>
+      <td style="font-size:11px;color:var(--muted);white-space:normal;max-width:260px">${esc(r.notes||'')}</td>
     </tr>`).join('');
   document.getElementById('sv-count').textContent = `${rows.length} SV Numbers`;
 }
@@ -8414,8 +8414,8 @@ function svRender() {
       <td>${esc(r.customer||'')}</td>
       <td>${esc(r.customer_program||'')}</td>
       <td style="font-size:11px;color:var(--muted2)">${esc(r.pm||'')}</td>
-      <td>${(r.jobs||[]).map(j=>`<span style="display:inline-block;background:rgba(200,16,46,.12);color:var(--red);border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace;font-size:11px;margin:1px">${esc(j)}</span>`).join(' ')}</td>
-      <td style="font-size:11px;color:var(--muted)">${esc(r.notes||'')}</td>
+      <td style="white-space:normal;max-width:340px;min-width:160px"><div style="display:flex;flex-wrap:wrap;gap:3px">${(r.jobs||[]).map(j=>`<span style="display:inline-block;background:rgba(200,16,46,.12);color:var(--red);border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace;font-size:11px;white-space:nowrap">${esc(j)}</span>`).join('')}</div></td>
+      <td style="font-size:11px;color:var(--muted);white-space:normal;max-width:260px">${esc(r.notes||'')}</td>
       <td><button class="btn-reload" style="font-size:10px;padding:3px 9px;white-space:nowrap" onclick="pcAbrirDesdeLista('SV','${esc(r.sv_number)}',event)" title="Abrir la configuración del proyecto">⚙ Configurar</button></td>
     </tr>`).join('');
   document.getElementById('sv-count').textContent = `${rows.length} SV Numbers`;
