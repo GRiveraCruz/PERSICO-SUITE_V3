@@ -15214,6 +15214,19 @@ def api_gpo_modificar(po_number):
                 new_items = data.get("items",[])
                 if not new_items:
                     return jsonify({"error":"La nueva versión debe tener al menos un item"}), 400
+                # rev106: la nueva versión puede cambiar el esquema tributario
+                esq_anterior = rec.get("esquema_tributario")
+                folio = data.get("esquema_folio")
+                if folio is not None and folio != ((esq_anterior or {}).get("folio") or ""):
+                    if folio == "":
+                        rec["esquema_tributario"] = None; rec["iva_pct"] = 0
+                    else:
+                        e = next((x for x in esquemas_load() if x.get("folio") == folio), None)
+                        if not e: return jsonify({"error": f"Esquema tributario {folio} no encontrado"}), 400
+                        rec["esquema_tributario"] = {k: e.get(k) for k in ("folio", "nombre", "iva_trasladado", "isr_retenido", "iva_retenido", "ieps")}
+                        rec["iva_pct"] = float(e.get("iva_trasladado") or 0)
+                    rec.setdefault("historial_esquema", []).append({"de": (esq_anterior or {}).get("folio") or "", "a": folio,
+                                                                    "fecha": now, "usuario": user, "version": int(rec.get("version", 1)) + 1})
                 iva_pct  = float(rec.get("iva_pct",0) or 0)
                 moneda   = rec.get("moneda","USD")
                 fx_rate  = float(rec.get("fx_rate",1) or 1)
@@ -15256,6 +15269,7 @@ def api_gpo_modificar(po_number):
                     "items":    rec.get("items",[]),
                     "subtotal": rec.get("subtotal",0),
                     "total":    rec.get("total",0),
+                    "esquema_tributario": esq_anterior,
                     "archived_at": now,
                     "archived_by": user,
                 }]

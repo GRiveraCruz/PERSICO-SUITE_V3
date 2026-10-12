@@ -15922,6 +15922,7 @@ function gpoModSelectTipo(tipo) {
     document.getElementById('gpo-action-nueva-version').style.display = '';
     document.getElementById('gpo-mod-nota-nv').value = '';
     gpoModPopulateItems(gpoModRec.items || []);
+    gpoModCargarEsquemas();                                 // rev106
   }
 }
 
@@ -15977,7 +15978,38 @@ function gpoModRecalc() {
     const totEl = tr.querySelector('.gpo-mod-row-total');
     if(totEl) totEl.textContent = fmt(row);
   });
-  document.getElementById('gpo-mod-new-total').textContent = fmt(total);
+  // rev106: impuestos según el esquema elegido y total con impuestos
+  const sel = document.getElementById('gpo-mod-esquema');
+  const e = sel && _gpoModEsq.lista.find(x=>x.folio===sel.value);
+  const iva = e ? Number(e.iva_trasladado||0) : (sel && sel.value==='' ? 0 : Number(gpoModRec?.iva_pct||0));
+  const isr = e ? Number(e.isr_retenido||0) : 0, ivr = e ? Number(e.iva_retenido||0) : 0, ieps = e ? Number(e.ieps||0) : 0;
+  const r2 = v => Math.round(v*100)/100;
+  const tIva = r2(total*iva/100), tIsr = r2(total*isr/100), tIvr = r2(total*ivr/100), tIeps = r2(total*ieps/100);
+  const gran = r2(total + tIva - tIsr - tIvr + tIeps);
+  const des = document.getElementById('gpo-mod-desglose');
+  if(des) des.innerHTML = `<span>Subtotal <b>${fmt(total)}</b></span><span>IVA ${iva}% <b>${fmt(tIva)}</b></span>`
+    + (isr?`<span>ISR ret. ${isr}% <b>−${fmt(tIsr)}</b></span>`:'') + (ivr?`<span>IVA ret. ${ivr}% <b>−${fmt(tIvr)}</b></span>`:'') + (ieps?`<span>IEPS ${ieps}% <b>${fmt(tIeps)}</b></span>`:'');
+  document.getElementById('gpo-mod-new-total').textContent = fmt(gran);
+  const av = document.getElementById('gpo-mod-esq-aviso');
+  if(av && sel) av.innerHTML = sel.value !== _gpoModEsq.original ? '<b style="color:var(--amber)">⚠ Cambia el esquema tributario de la orden</b>' : '<span style="color:var(--muted)">Esquema actual de la orden</span>';
+}
+
+// rev106: esquemas para la nueva versión
+let _gpoModEsq = {original: '', lista: []};
+async function gpoModCargarEsquemas(){
+  const sel = document.getElementById('gpo-mod-esquema'); if(!sel) return;
+  _gpoModEsq = {original: ((gpoModRec.esquema_tributario||{}).folio) || '', lista: []};
+  sel.innerHTML = '<option value="">Cargando…</option>';
+  try{
+    const d = await fetch('/api/po/gpo-info/'+encodeURIComponent(gpoModRec.po_number)).then(r=>r.json());
+    if(d.error) throw new Error(d.error);
+    _gpoModEsq.lista = d.esquemas || [];
+  }catch(e){ toast('No se pudieron cargar los esquemas tributarios: '+e.message,'er'); }
+  const actualFuera = _gpoModEsq.original && !_gpoModEsq.lista.some(x=>x.folio===_gpoModEsq.original);
+  sel.innerHTML = '<option value="">— Sin esquema (sin impuestos) —</option>'
+    + (actualFuera ? `<option value="${esc(_gpoModEsq.original)}" selected>${esc(_gpoModEsq.original)} · ${esc((gpoModRec.esquema_tributario||{}).nombre||'')} (ya no existe en el catálogo)</option>` : '')
+    + _gpoModEsq.lista.map(e=>`<option value="${esc(e.folio)}" ${e.folio===_gpoModEsq.original?'selected':''}>${esc(e.folio)} · ${esc(e.nombre)} — IVA ${e.iva_trasladado||0}%${e.isr_retenido?` · ISR ret. ${e.isr_retenido}%`:''}${e.iva_retenido?` · IVA ret. ${e.iva_retenido}%`:''}</option>`).join('');
+  gpoModRecalc();
 }
 
 async function gpoModGuardar() {
@@ -16019,6 +16051,15 @@ async function gpoModGuardar() {
       if(!items.length){ toast('Agrega al menos un item','er'); return; }
       body.items = items;
       body.nota  = document.getElementById('gpo-mod-nota-nv')?.value?.trim()||'';
+      // rev106: cambio de esquema tributario → confirmación con advertencia
+      const nuevoEsq = document.getElementById('gpo-mod-esquema')?.value ?? _gpoModEsq.original;
+      if(nuevoEsq !== _gpoModEsq.original){
+        const nom = f => { const e=_gpoModEsq.lista.find(x=>x.folio===f); return e ? `${e.folio} · ${e.nombre}` : (f||'Sin esquema'); };
+        if(!confirm(`⚠ CAMBIO DE ESQUEMA TRIBUTARIO\n\nOrden ${gpoModRec.po_number}\nDe: ${nom(_gpoModEsq.original)}\nA:  ${nom(nuevoEsq)}\n\nSe recalcularán el IVA, las retenciones, el IEPS y el TOTAL de la orden en esta nueva versión, y el PDF mostrará los nuevos importes. Si la orden ya se envió al proveedor, habrá que enviarle la versión corregida.\n\n¿Confirmas el cambio?`)){
+          return;
+        }
+        body.esquema_folio = nuevoEsq;
+      }
     }
 
     const poNum = encodeURIComponent(gpoModRec.po_number);
@@ -16081,17 +16122,21 @@ function poOpenEdit(rowIdx) {
 let _poEsq = {original: null, lista: []};
 async function poEditCargarEsquema(r){
   const box = document.getElementById('po-edit-esq-box');
+  const sel0 = document.getElementById('po-edit-esquema'), info0 = document.getElementById('po-edit-esq-info');
   _poEsq = {original: null, lista: []};
-  if(!r.gpo_number){ box.style.display='none'; return; }
+  // rev106: en lugar de ocultar el campo, se explica por qué no se puede cambiar
+  const noDisponible = msg => { box.style.display=''; sel0.innerHTML='<option>—</option>'; sel0.disabled=true; info0.innerHTML = `<span style="color:var(--muted)">${msg}</span>`; };
+  sel0.disabled = false;
+  if(!r.gpo_number){ noDisponible('Este registro no viene de una orden generada en la Suite (importado de Excel): no tiene esquema tributario que cambiar.'); return; }
   try{
     const d = await fetch('/api/po/gpo-info/'+encodeURIComponent(r.gpo_number)).then(x=>x.json());
-    if(d.error){ box.style.display='none'; return; }
+    if(d.error){ noDisponible(`No se pudo leer la orden ${esc(r.gpo_number)}: ${esc(d.error)}. También puedes cambiar el esquema en Órdenes de Compra (GPO) ▸ Modificar ▸ Nueva Versión.`); return; }
     _poEsq = {original: (d.esquema && d.esquema.folio) || '', lista: d.esquemas || [], moneda: d.moneda};
     const sel = document.getElementById('po-edit-esquema');
     sel.innerHTML = '<option value="">— Sin esquema —</option>' + _poEsq.lista.map(e=>`<option value="${esc(e.folio)}" ${e.folio===_poEsq.original?'selected':''}>${esc(e.folio)} · ${esc(e.nombre)}</option>`).join('');
     box.style.display='';
     poEditEsqInfo();
-  }catch(e){ box.style.display='none'; }
+  }catch(e){ noDisponible('No se pudieron cargar los esquemas tributarios: '+esc(e.message)); }
 }
 function poEditEsqInfo(){
   const f = document.getElementById('po-edit-esquema').value, e = _poEsq.lista.find(x=>x.folio===f), el = document.getElementById('po-edit-esq-info');
@@ -16129,7 +16174,7 @@ async function poSaveEdit() {
     // rev103: cambio de esquema tributario → confirmación con advertencia
     if(poEditRecord.gpo_number && document.getElementById('po-edit-esq-box').style.display!=='none'){
       const nuevo = document.getElementById('po-edit-esquema').value;
-      if(nuevo !== _poEsq.original){
+      if(_poEsq.original !== null && !document.getElementById('po-edit-esquema').disabled && nuevo !== _poEsq.original){
         const nom = f => { const e=_poEsq.lista.find(x=>x.folio===f); return e ? `${e.folio} · ${e.nombre}` : 'Sin esquema'; };
         if(!confirm(`⚠ CAMBIO DE ESQUEMA TRIBUTARIO\n\nPO ${poEditRecord.gpo_number}\nDe: ${nom(_poEsq.original)}\nA:  ${nom(nuevo)}\n\nSe recalcularán el IVA, las retenciones, el IEPS y el TOTAL de toda la orden de compra, y el PDF mostrará los nuevos importes. Si la PO ya se envió al proveedor, habrá que enviarle la versión corregida.\n\n¿Confirmas el cambio?`)){
           btn.disabled=false; btn.textContent='💾 Guardar Cambios'; return;
