@@ -10052,6 +10052,7 @@ MODULES = [
     "proveedores",
     # Compras — Documentos
     "gpo", "po", "ivp", "reassign", "consig-reassign", "recovery", "compras-requisicion",
+    "fin-cpc",                                     # rev104: CPC (antes solo el administrador)
     # Almacenes
     "stock", "consignacion", "ingreso", "apartados", "manuf-stock", "salida",
     # Servicio
@@ -10541,7 +10542,8 @@ MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto
                    "projconfig-timing": "projconfig", "projconfig-abiertos": "projconfig",
                    "projconfig-cambios": "projconfig", "projconfig-documentos": "projconfig",
                    "personal-tipos-puesto": "personal-perfiles",
-                   "rrhh-kpis": "personal-listado"}
+                   "rrhh-kpis": "personal-listado",
+                   "fin-cpc": "fin-cpp"}           # rev104: CPC toma el nivel de CPP mientras no se fije
 
 def nivel_heredado(info, mod):
     """Nivel efectivo de un módulo de MODULOS_HEREDAN para el usuario `info`."""
@@ -15324,31 +15326,58 @@ def api_gpo_modificar(po_number):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _json_seguro(v):
+    """rev105: NaN / Infinito no son JSON válido (el navegador no puede leer la respuesta);
+    se cambian por None, en cualquier nivel."""
+    import math
+    if isinstance(v, float): return None if (math.isnan(v) or math.isinf(v)) else v
+    if isinstance(v, dict): return {k: _json_seguro(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)): return [_json_seguro(x) for x in v]
+    if isinstance(v, (datetime.date, datetime.datetime)): return v.isoformat()
+    return v
+
+def _num_seguro(v):
+    import math
+    try:
+        f = float(str(v).replace(",", "").replace("$", "").strip()) if v not in (None, "") else 0.0
+        return 0.0 if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return 0.0
+
+def _gpo_buscar(records, po_number):
+    """rev105: acepta PO-000000009, PO#000000009, PO_000000009, po-9 o 9."""
+    norm = lambda x: str(x or "").upper().strip().replace("PO#", "PO-").replace("PO_", "PO-").replace(" ", "")
+    q = norm(po_number)
+    rec = next((r for r in records if norm(r.get("po_number")) == q), None)
+    if rec is None:
+        dig = re.sub(r"\D", "", q)
+        if dig:
+            rec = next((r for r in records if re.sub(r"\D", "", norm(r.get("po_number"))).lstrip("0") == dig.lstrip("0")), None)
+    return rec
+
 @app.route("/api/gpo/<po_number>/lookup", methods=["GET"])
 def api_gpo_lookup(po_number):
     """Returns a single GPO record with delivered quantity info."""
     try:
         records = gpo_load()
-        rec = next((r for r in records
-            if str(r.get("po_number","")).upper() == po_number.upper()), None)
+        rec = _gpo_buscar(records, po_number)
         if not rec:
             return jsonify({"error":f"Orden {po_number} no encontrada"}), 404
-        # Calculate cierre breakdown
-        moneda  = rec.get("moneda","USD")
-        fx_rate = float(rec.get("fx_rate",1) or 1)
+        rec = dict(rec)
         delivered_total = 0.0
         pending_total   = 0.0
-        for it in rec.get("items",[]):
-            qty     = float(it.get("quantity",0) or 0)
-            qty_del = float(it.get("quantity_delivered",0) or 0)
-            up      = float(it.get("unit_price",0) or 0)
+        for it in rec.get("items") or []:
+            qty     = _num_seguro(it.get("quantity"))
+            qty_del = _num_seguro(it.get("quantity_delivered"))
+            up      = _num_seguro(it.get("unit_price"))
             delivered_total += qty_del * up
             pending_total   += (qty - qty_del) * up
         rec["_delivered_total"] = round(delivered_total, 2)
         rec["_pending_total"]   = round(pending_total, 2)
-        return jsonify({"record": rec})
+        return jsonify({"record": _json_seguro(rec)})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback; traceback.print_exc()
+        return jsonify({"error": f"No se pudo leer la orden: {e}"}), 500
 
 
 @app.route("/api/gpo/<po_number>/pdf")

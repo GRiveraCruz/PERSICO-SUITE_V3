@@ -5974,8 +5974,9 @@ let USER_PERMS = null;
 
 // rev77: módulos que heredan el nivel de otro mientras el administrador no les fije uno
 const MODULOS_HEREDAN = {'projconfig-dashboard':'projconfig','projconfig-presupuesto':'projconfig','projconfig-timing':'projconfig',
-  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado'};
+  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp'};
 const MODULE_LABELS = {
+  'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)',
   // Proyectos
   'jobs':'Job Register', 'pt':'PT Numbers', 'sv':'SV Numbers',
   'rates':'Hourly Rates', 'quotes':'Quote Register',
@@ -6027,17 +6028,32 @@ const MODULE_GROUPS = [
   { label: '🤝 Ventas',               mods: ['cpo'] },
   { label: '⚡ Catálogos',            mods: ['cat-electrico','cat-mecanico','cat-servicios'] },
   { label: '🏭 Proveedores',          mods: ['proveedores'] },
-  { label: '📄 Documentos de Compra', mods: ['gpo','po','ivp','reassign','consig-reassign','recovery'] },
+  { label: '📄 Documentos de Compra', mods: ['compras-requisicion','gpo','po','ivp','reassign','consig-reassign','recovery'] },
   { label: '🏬 Almacenes',            mods: ['stock','consignacion','ingreso','apartados','manuf-stock','salida'] },
   { label: '✈ Servicio',             mods: ['viaticos','gastos-viaje','envios'] },
-  { label: '📊 Reportes y Config',    mods: ['wh','report','multirpt','fx','projconfig','projconfig-dashboard','projconfig-presupuesto','projconfig-timing','projconfig-abiertos','projconfig-cambios','projconfig-documentos'] },
-  { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-pagos','fin-esquemas'] },
+  { label: '⚙ Configurar Proyecto',   mods: ['projconfig','projconfig-dashboard','projconfig-presupuesto','projconfig-timing','projconfig-abiertos','projconfig-cambios','projconfig-documentos'] },
+  { label: '📊 Control de Costo',     mods: ['wh','report','multirpt','fx'] },
+  { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-cpc','fin-pagos','fin-esquemas'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-tipos-puesto','personal-perfiles','personal-listado'] },
   { label: '📈 Management',          mods: ['rrhh-kpis'] },
   { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os'] },
 ];
 
 let _adminUsersData = null;
+function adminContarPestanas(){
+  document.querySelectorAll('.adm-pgrupo').forEach(t=>{
+    const sels = [...t.querySelectorAll('select')];
+    const con = sels.filter(x=> x.value==='inherit' ? !/sin acceso/i.test(x.options[x.selectedIndex].text) : x.value!=='none').length;
+    const b = document.querySelector(`.adm-ptab[data-i="${t.dataset.i}"] span`); if(b) b.textContent = `${con}/${sels.length}`;
+  });
+}
+let _adminPermTab = 0;                 // rev104: pestaña de permisos abierta (se conserva al cambiar de usuario)
+function adminPermTab(i){
+  _adminPermTab = i;
+  document.querySelectorAll('.adm-pgrupo').forEach(t=>{ t.style.display = String(t.dataset.i)===String(i) ? '' : 'none'; });
+  document.querySelectorAll('.adm-ptab').forEach(b=>{ const on = String(b.dataset.i)===String(i);
+    b.style.background = on ? 'var(--red)' : 'var(--card)'; b.style.color = on ? '#fff' : 'var(--text)'; b.style.borderColor = on ? 'var(--red)' : 'var(--border)'; });
+}
 
 function renderAdminUsers(d) {
   _adminUsersData = d;
@@ -6080,12 +6096,19 @@ function adminSelectUser(uname) {
   const pill = document.getElementById(`admin-pill-${uname}`);
   if(pill){ pill.style.background='rgba(200,16,46,.15)'; pill.style.borderColor='var(--red)'; pill.style.color='var(--red)'; }
 
-  const rows = MODULE_GROUPS.map(grp => {
-    const gm = grp.mods.filter(m => modules.includes(m));
-    if(!gm.length) return '';
-    const hdr = `<tr style="background:rgba(0,0,0,.035)"><td colspan="2"
-      style="padding:6px 10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--red);border-bottom:1px solid var(--border)">${grp.label}</td></tr>`;
-    return hdr + gm.map(mod => {
+  // rev104: una pestaña por grupo de módulos en lugar de una lista larga
+  const grupos = MODULE_GROUPS.map(g=>({...g, gm: g.mods.filter(m => modules.includes(m))})).filter(g=>g.gm.length);
+  if(_adminPermTab >= grupos.length) _adminPermTab = 0;
+  const nivelDe = mod => { const padre = MODULOS_HEREDAN[mod]; const expl = (info.perm_explicitos||[]).includes(mod) || (perms[mod] && perms[mod]!=='view');
+    return isAdmin ? 'full' : (padre && !expl ? (perms[padre]||'none') : (perms[mod]||'none')); };
+  const tabs = grupos.map((g,i)=>{ const con = g.gm.filter(m=>nivelDe(m)!=='none').length;
+    return `<button type="button" class="adm-ptab" data-i="${i}" onclick="adminPermTab(${i})"
+      style="border:1px solid ${i===_adminPermTab?'var(--red)':'var(--border)'};background:${i===_adminPermTab?'var(--red)':'var(--card)'};color:${i===_adminPermTab?'#fff':'var(--text)'};border-radius:16px;padding:5px 12px;font-size:11px;cursor:pointer;white-space:nowrap">
+      ${g.label} <span style="opacity:.75;font-size:10px">${con}/${g.gm.length}</span></button>`; }).join('');
+  const rows = grupos.map((grp, gi) => {
+    const gm = grp.gm;
+    const hdr = '';
+    return `<tbody class="adm-pgrupo" data-i="${gi}" style="${gi===_adminPermTab?'':'display:none'}">` + hdr + gm.map(mod => {
       // rev69/77: módulos que heredan el nivel de otro (pestañas de Configurar Proyecto,
       // Tipo de Puesto ← Perfiles de Trabajo). Solo cuenta el valor fijado por el administrador.
       const padre = MODULOS_HEREDAN[mod];
@@ -6103,7 +6126,7 @@ function adminSelectUser(uname) {
                  color:${clr};padding:5px 8px;font-size:11px;outline:none;cursor:${isAdmin?'not-allowed':'pointer'}">
           ${opts}</select></td>
       </tr>`;
-    }).join('');
+    }).join('') + '</tbody>';
   }).join('');
 
   const panel = document.getElementById('admin-user-panel');
@@ -6146,12 +6169,13 @@ function adminSelectUser(uname) {
         <div style="display:flex;flex-wrap:wrap;gap:6px 14px">${(d.pm_names||[]).map(n=>`<label style="font-size:11px;display:flex;gap:5px;align-items:center;cursor:pointer">
           <input type="checkbox" value="${esc(n)}" ${(info.pm_names||[]).includes(n)?'checked':''} onchange="adminSetPmNames('${esc(uname)}')">${esc(n)}</label>`).join('')||'<span style="font-size:11px;color:var(--muted)">Ningún Job tiene PM capturado</span>'}</div>
         <div style="font-size:10px;color:var(--muted);margin-top:6px">Se puede marcar más de uno si el mismo PM está escrito distinto en algunos Jobs.</div></div>`:''}
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${tabs}</div>
       <table style="width:100%;border-collapse:collapse">
         <thead><tr>
-          <th style="padding:4px 10px;text-align:left;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Módulo</th>
+          <th style="padding:4px 10px;text-align:left;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Apartado</th>
           <th style="padding:4px 10px;text-align:left;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Nivel de acceso</th>
         </tr></thead>
-        <tbody>${rows}</tbody>
+        ${rows}
       </table>
     </div>`;
 }
@@ -6176,6 +6200,7 @@ async function adminSetLevel(sel) {
   // Update color
   const colors = {full:'var(--green)',create:'var(--gold)',view:'var(--text)',none:'var(--muted)'};
   sel.style.color = colors[level]||'var(--text)';
+  adminContarPestanas();                                   // rev104: contadores de las pestañas
   try {
     const d = await fetch('/api/admin/users/'+uname, {
       method:'PUT', headers:{'Content-Type':'application/json'},
@@ -6254,6 +6279,8 @@ function applyPermsToDom(d) {
     'fin-recepciones':    ["switchMenu('fin-recepciones'"],
     'fin-procesarcompra': ["switchMenu('fin-procesarcompra'"],
     'fin-cpp':            ["switchMenu('fin-cpp'"],
+    'fin-cpc':            ["switchMenu('fin-cpc'"],
+    'compras-requisicion':["switchMenu('requisicion'"],
     'fin-pagos':          ["switchMenu('fin-pagos'"],
     'fin-esquemas':       ["switchMenu('fin-esquemas'"],
     'rrhh-asistencia':    ["switchMenu('rrhh-asistencia'"],
@@ -15685,12 +15712,18 @@ async function gpoModBuscar() {
   const poNum = 'PO-' + num.replace(/\D/g,'').padStart(9,'0');
   const errEl = document.getElementById('gpo-mod-err');
   errEl.style.display = 'none';
-  try {
-    const d = await fetch(`/api/gpo/${encodeURIComponent(poNum)}/lookup`).then(r=>r.json());
-    if(d.error){ gpoModShowErr(d.error); return; }
-    gpoModRec = d.record;
-    gpoModShowPO(gpoModRec);
-  } catch(e){ gpoModShowErr('Error conectando al servidor'); }
+  // rev105: se distingue conexión, respuesta inválida del servidor, sesión vencida y error al mostrar
+  let resp, d;
+  try { resp = await fetch(`/api/gpo/${encodeURIComponent(poNum)}/lookup`); }
+  catch(e){ gpoModShowErr('Error conectando al servidor: ' + e.message); return; }
+  const txt = await resp.text();
+  if(resp.redirected || /<html/i.test(txt.slice(0,200))){ gpoModShowErr('Tu sesión expiró. Vuelve a iniciar sesión.'); return; }
+  try { d = JSON.parse(txt); }
+  catch(e){ gpoModShowErr(`El servidor respondió ${resp.status} con datos que no se pudieron leer. Avisa a soporte (orden ${poNum}).`); console.error('lookup', poNum, txt.slice(0,500)); return; }
+  if(d.error){ gpoModShowErr(d.error); return; }
+  gpoModRec = d.record;
+  try { gpoModShowPO(gpoModRec); }
+  catch(e){ gpoModShowErr('No se pudo mostrar la orden: ' + e.message); console.error(e); }
 }
 
 function gpoModShowErr(msg) {
@@ -15711,7 +15744,7 @@ function gpoModShowPO(rec) {
     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-size:16px;font-weight:700;font-family:'DM Mono',monospace;color:var(--gold)">${esc(rec.po_number||'')}${version}${modBadge}</div>
-        <div style="font-size:12px;color:var(--muted2);margin-top:2px">${esc(rec.supplier_name||'—')} · ${esc(rec.job||rec.job_type||'—')} · ${rec.created_at?.slice(0,10)||''}</div>
+        <div style="font-size:12px;color:var(--muted2);margin-top:2px">${esc(rec.supplier_name||'—')} · ${esc(rec.job||rec.job_type||'—')} · ${esc(String(rec.created_at||'').slice(0,10))}</div>
       </div>
       <div style="text-align:right">
         <div style="font-size:10px;color:var(--muted)">TOTAL ${moneda}</div>
