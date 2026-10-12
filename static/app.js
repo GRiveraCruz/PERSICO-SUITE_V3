@@ -3877,11 +3877,11 @@ function poRender(){
     // Delete: use idx parameter so only this specific row is deleted
     const clave = r.clave || r.gpo_number || '';
     const delBtn = isAdm
-      ? `<button onclick="deleteIPORow(${poActiveYear},'${esc(clave)}',${sameClaveIdx})" class="fi-del" style="font-size:11px;margin-left:4px" title="Eliminar este registro">Eliminar este registro</button>`
+      ? `<button onclick="deleteIPORow(${poActiveYear},'${esc(clave)}',${sameClaveIdx})" class="fi-del" style="font-size:11px;margin-left:4px" title="Eliminar este registro">Eliminar</button>`
       : '';
 
     const rowIdx = poFiltered().indexOf(r);
-    const editBtn = `<button onclick="poOpenEdit(${rowIdx})" class="btn-reload" style="font-size:10px;padding:3px 8px;margin-left:4px" title="Editar registro">Editar registro</button>`;
+    const editBtn = `<button onclick="poOpenEdit(${rowIdx})" class="btn-reload" style="font-size:10px;padding:3px 8px;margin-left:4px" title="Editar registro">Editar</button>`;
     return`<tr>
       <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--red);font-weight:600;white-space:nowrap">${esc(String(poLabel))}</td>
       <td style="color:var(--muted2)">${poFmtDate(r.fecha_doc)}</td>
@@ -3899,7 +3899,7 @@ function poRender(){
       </td>
       <td><span class="badge" style="${estStyle}">${esc(r.estatus||'—')}</span></td>
       <td style="color:var(--muted2)">${poFmtDate(r.fecha_recepcion)}</td>
-      <td style="white-space:nowrap">${pdfBtn}${editBtn}${delBtn}</td>
+      <td style="min-width:120px"><div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">${pdfBtn}${editBtn}${delBtn}</div></td>
     </tr>`;
   }).join('')+moreRow;
 }
@@ -16041,6 +16041,33 @@ function poOpenEdit(rowIdx) {
   document.getElementById('po-edit-quantity').value        = r.quantity||'';
   document.getElementById('po-edit-unit-price').value      = r.unit_price||'';
   document.getElementById('mo-po-edit').classList.add('on');
+  poEditCargarEsquema(r);                                   // rev103
+}
+
+// rev103: esquema tributario de la PO generada (aplica a toda la PO)
+let _poEsq = {original: null, lista: []};
+async function poEditCargarEsquema(r){
+  const box = document.getElementById('po-edit-esq-box');
+  _poEsq = {original: null, lista: []};
+  if(!r.gpo_number){ box.style.display='none'; return; }
+  try{
+    const d = await fetch('/api/po/gpo-info/'+encodeURIComponent(r.gpo_number)).then(x=>x.json());
+    if(d.error){ box.style.display='none'; return; }
+    _poEsq = {original: (d.esquema && d.esquema.folio) || '', lista: d.esquemas || [], moneda: d.moneda};
+    const sel = document.getElementById('po-edit-esquema');
+    sel.innerHTML = '<option value="">— Sin esquema —</option>' + _poEsq.lista.map(e=>`<option value="${esc(e.folio)}" ${e.folio===_poEsq.original?'selected':''}>${esc(e.folio)} · ${esc(e.nombre)}</option>`).join('');
+    box.style.display='';
+    poEditEsqInfo();
+  }catch(e){ box.style.display='none'; }
+}
+function poEditEsqInfo(){
+  const f = document.getElementById('po-edit-esquema').value, e = _poEsq.lista.find(x=>x.folio===f), el = document.getElementById('po-edit-esq-info');
+  const txt = e ? `IVA ${e.iva_trasladado||0}% · ISR ret. ${e.isr_retenido||0}% · IVA ret. ${e.iva_retenido||0}% · IEPS ${e.ieps||0}%` : 'Sin impuestos (IVA 0%)';
+  el.innerHTML = txt + (f !== _poEsq.original ? ' · <b style="color:var(--amber)">⚠ cambia el esquema de toda la PO</b>' : '');
+}
+function poEditRecalc(){
+  const q = parseFloat(document.getElementById('po-edit-quantity').value), p = parseFloat(document.getElementById('po-edit-unit-price').value);
+  if(poEditRecord && poEditRecord.gpo_number && !isNaN(q) && !isNaN(p)) document.getElementById('po-edit-subtotal').value = round2(q*p);
 }
 
 async function poSaveEdit() {
@@ -16066,6 +16093,17 @@ async function poSaveEdit() {
     if(payload.moneda==='USD') payload.subtotal_usd = payload.subtotal;
     else payload.subtotal_usd = payload.tipo_cambio>0 ? round2(payload.subtotal/payload.tipo_cambio) : payload.subtotal;
 
+    // rev103: cambio de esquema tributario → confirmación con advertencia
+    if(poEditRecord.gpo_number && document.getElementById('po-edit-esq-box').style.display!=='none'){
+      const nuevo = document.getElementById('po-edit-esquema').value;
+      if(nuevo !== _poEsq.original){
+        const nom = f => { const e=_poEsq.lista.find(x=>x.folio===f); return e ? `${e.folio} · ${e.nombre}` : 'Sin esquema'; };
+        if(!confirm(`⚠ CAMBIO DE ESQUEMA TRIBUTARIO\n\nPO ${poEditRecord.gpo_number}\nDe: ${nom(_poEsq.original)}\nA:  ${nom(nuevo)}\n\nSe recalcularán el IVA, las retenciones, el IEPS y el TOTAL de toda la orden de compra, y el PDF mostrará los nuevos importes. Si la PO ya se envió al proveedor, habrá que enviarle la versión corregida.\n\n¿Confirmas el cambio?`)){
+          btn.disabled=false; btn.textContent='💾 Guardar Cambios'; return;
+        }
+        payload.esquema_folio = nuevo;
+      }
+    }
     const clave = poEditRecord.gpo_number||poEditRecord.clave;
     const d = await fetch(`/api/po/${poActiveYear}/edit`,{
       method:'POST',
@@ -16074,7 +16112,7 @@ async function poSaveEdit() {
     }).then(r=>r.json());
     if(d.error){toast(d.error,'er');return;}
     closeMo('mo-po-edit');
-    toast('Registro actualizado ✓','ok');
+    toast('Registro actualizado ✓' + (d.pdf_actualizado ? ' · PDF de la PO actualizado' : '') + (d.esquema_cambiado ? ' · esquema tributario cambiado' : ''),'ok',5000);
     await loadPO();
   } catch(e){toast('Error: '+e.message,'er');}
   finally{btn.disabled=false; btn.textContent='💾 Guardar Cambios';}
