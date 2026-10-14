@@ -18342,10 +18342,11 @@ function cpcRender(){
       <td style="color:var(--muted2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.customer||'—')}</td>
       <td>${esc(r.fecha_factura||'—')}</td>
       <td>${esc(r.fecha_vencimiento||'—')}</td>
-      <td style="text-align:right;font-family:'DM Mono',monospace;font-weight:600">${cpcFmt(r.total)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;font-weight:600">${cpcFmt(r.total)} <span style="font-size:10px;color:var(--muted)">${esc(r.moneda||'USD')}</span></td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--muted2)">${r.total_usd==null?'<span title="Sin tipo de cambio" style="color:var(--amber)">s/TC</span>':cpcFmt(r.total_usd)}</td>
       <td>${cpcEstatusBadge(r.estatus_efectivo)}</td>
       <td><button class="fi-del" style="font-size:13px" title="Ver PDF" onclick="event.stopPropagation();window.open('/api/cpc/${encodeURIComponent(r.id)}/pdf?year=${r.year}','_blank')">Ver PDF</button></td>
-      <td><button class="fi-del" style="font-size:13px" title="Eliminar" onclick="event.stopPropagation();cpcQuickDelete('${r.id}',${r.year})">Eliminar</button></td>
+      <td>${r.estatus==='Pagada'?'<span style="font-size:10px;color:var(--muted)" title="Las facturas pagadas no se eliminan: se cancelan">—</span>':`<button class="fi-del" style="font-size:13px" title="Eliminar" onclick="event.stopPropagation();cpcQuickDelete('${r.id}',${r.year})">Eliminar</button>`}</td>
     </tr>`).join('');
   document.getElementById('cpc-count').textContent=`${rows.length} de ${cpcRecords.length} registros`;
 
@@ -18353,8 +18354,11 @@ function cpcRender(){
     const ef=r.estatus_efectivo||r.estatus;
     return ef==='Pendiente'||ef==='Vencida';
   });
-  const total=pendientes.reduce((s,r)=>s+(r.total||0),0);
-  document.getElementById('cpc-total').textContent=cpcFmt(total);
+  // rev108: por cobrar separado por moneda, más el equivalente en USD
+  const porMon = {USD:0, MXN:0}; let usd = 0, sinTc = 0;
+  pendientes.forEach(r=>{ porMon[(r.moneda||'USD')] = (porMon[(r.moneda||'USD')]||0) + (r.total||0); if(r.total_usd==null) sinTc++; else usd += r.total_usd; });
+  document.getElementById('cpc-total').innerHTML = cpcFmt(usd) + ' <span style="font-size:11px;color:var(--muted)">USD equiv.</span>'
+    + `<div style="font-size:11px;color:var(--muted2);font-weight:400">USD ${cpcFmt(porMon.USD)} · MXN ${cpcFmt(porMon.MXN)}${sinTc?` · ${sinTc} sin TC`:''}</div>`;
 }
 
 // ── Nueva / Editar factura ──
@@ -18374,6 +18378,8 @@ function cpcOpenNew(){
   document.getElementById('cpc-isr-ret').value=0;
   document.getElementById('cpc-iva-ret').value=0;
   document.getElementById('cpc-fecha-factura').value=new Date().toISOString().slice(0,10);
+  document.getElementById('cpc-moneda').value='USD'; document.getElementById('cpc-tc').value=''; cpcOnMoneda();   // rev108
+  document.getElementById('cpc-hist-box').style.display='none';
   loadCpoSaldos();
   document.getElementById('mo-cpc-new').classList.add('on');
 }
@@ -18401,6 +18407,11 @@ function cpcOpenEdit(id){
   document.getElementById('cpc-isr-ret').value=r.isr_retenido||0;
   document.getElementById('cpc-iva-ret').value=r.iva_retenido||0;
   document.getElementById('cpc-total-input').value=r.total||0;
+  document.getElementById('cpc-moneda').value=r.moneda||'USD'; document.getElementById('cpc-tc').value=r.tipo_cambio||''; cpcOnMoneda();   // rev108
+  document.getElementById('btn-cpc-del').style.display = r.estatus==='Pagada' ? 'none' : '';
+  const hb = document.getElementById('cpc-hist-box'), hs = r.historial||[];
+  hb.style.display = hs.length ? '' : 'none';
+  document.getElementById('cpc-hist').innerHTML = hs.slice().reverse().map(h=>`<div style="border-top:1px solid var(--border);padding:3px 0"><b>${esc(h.accion)}</b> · ${esc(String(h.fecha).replace('T',' '))} · ${esc(h.usuario||'')}<div style="color:var(--muted2)">${esc(h.detalle||'')}</div></div>`).join('');
   document.getElementById('cpc-notas').value=r.notas||'';
   document.getElementById('cpc-estatus').value=r.estatus||'Pendiente';
   cpcOnEstatusChange();
@@ -18416,11 +18427,10 @@ function cpcToggleCpoMode(){
 
 async function loadCpoSaldos(preselectId){
   try{
-    const year=document.getElementById('cpc-fecha-factura').value ? document.getElementById('cpc-fecha-factura').value.slice(0,4) : new Date().getFullYear();
-    cpcCpoSaldos=await fetch('/api/cpo-saldos?year='+year).then(r=>r.json());
+    cpcCpoSaldos=await fetch('/api/cpo-saldos').then(r=>r.json());     // rev108: CPOs de todos los años
     const sel=document.getElementById('cpc-cpo-select');
     sel.innerHTML='<option value="">— Seleccionar —</option>'+cpcCpoSaldos.map(c=>
-      `<option value="${esc(c.id)}">${esc(c.id)} · ${esc(c.job)} · ${esc(c.customer||'')} (saldo ${cpcFmt(c.saldo)})</option>`).join('');
+      `<option value="${esc(c.id)}">${esc(c.id)} · ${esc(c.job)} · ${esc(c.customer||'')} · ${c.year||''} (saldo ${cpcFmt(c.saldo)} USD)</option>`).join('');
     if(preselectId){ sel.value=preselectId; cpcOnCpoSelect(); }
   }catch(e){}
 }
@@ -18428,7 +18438,7 @@ function cpcOnCpoSelect(){
   const id=document.getElementById('cpc-cpo-select').value;
   const cpo=cpcCpoSaldos.find(c=>c.id===id);
   if(!cpo){ document.getElementById('cpc-cpo-saldo-txt').textContent='—'; return; }
-  document.getElementById('cpc-cpo-saldo-txt').innerHTML=`Valor CPO: ${cpcFmt(cpo.value)} · Ya facturado: ${cpcFmt(cpo.facturado)} · <b style="color:${cpo.saldo<0?'var(--red)':'#1f8a4c'}">Saldo por facturar: ${cpcFmt(cpo.saldo)}</b>`;
+  document.getElementById('cpc-cpo-saldo-txt').innerHTML=`Valor CPO: ${cpcFmt(cpo.value)} · Ya facturado (sin IVA): ${cpcFmt(cpo.facturado)} · <b style="color:${cpo.saldo<0?'var(--red)':'#1f8a4c'}">Saldo por facturar: ${cpcFmt(cpo.saldo)}</b> <span style="color:var(--muted)">USD, sin IVA</span>`;
   document.getElementById('cpc-job').value=cpo.job||'';
   if(!document.getElementById('cpc-cliente').value) document.getElementById('cpc-cliente').value=cpo.customer||'';
 }
@@ -18481,9 +18491,13 @@ function cpcRenderCFDI(cfdi){
     matchEl.innerHTML='<span style="color:#1f8a4c">✓ CFDI válido, listo para usarse.</span>';
     document.getElementById('cpc-subtotal').value=cfdi.subtotal||0;
     document.getElementById('cpc-iva').value=cfdi.impuestos_trasladados||0;
-    document.getElementById('cpc-iva-ret').value=0;
-    document.getElementById('cpc-isr-ret').value=0;
+    document.getElementById('cpc-iva-ret').value=cfdi.iva_retenido||0;          // rev108: retenciones del XML
+    document.getElementById('cpc-isr-ret').value=cfdi.isr_retenido||0;
     document.getElementById('cpc-total-input').value=cfdi.total||0;
+    document.getElementById('cpc-moneda').value=(cfdi.moneda||'MXN').toUpperCase()==='USD'?'USD':'MXN';
+    if(cfdi.tipo_cambio) document.getElementById('cpc-tc').value=cfdi.tipo_cambio;
+    cpcOnMoneda();
+    if((cfdi._avisos||[]).length) matchEl.innerHTML += `<div style="color:var(--amber);font-size:11px;margin-top:3px">${cfdi._avisos.map(esc).join('<br>')}</div>`;
     if(!document.getElementById('cpc-cliente').value) document.getElementById('cpc-cliente').value=cfdi.nombre_receptor||'';
     if(cfdi.fecha) document.getElementById('cpc-fecha-factura').value=cfdi.fecha.slice(0,10);
   }
@@ -18508,15 +18522,23 @@ async function cpcSave(){
     total:document.getElementById('cpc-total-input').value,
     notas:document.getElementById('cpc-notas').value,
     cfdi:cpcCurrentCFDI,
+    moneda:document.getElementById('cpc-moneda').value,                      // rev108
+    tipo_cambio:document.getElementById('cpc-moneda').value==='MXN' ? (document.getElementById('cpc-tc').value||null) : null,
   };
   try{
     let r;
+    const enviar = () => cpcCurrentId ? apiCall('PUT','/cpc/'+cpcCurrentId,payload) : apiCall('POST','/cpc',payload);
     if(cpcCurrentId){
       payload.estatus=document.getElementById('cpc-estatus').value;
       payload.fecha_pago=document.getElementById('cpc-fecha-pago').value||null;
-      r=await apiCall('PUT','/cpc/'+cpcCurrentId,payload);
-    }else{
-      r=await apiCall('POST','/cpc',payload);
+    }
+    r = await enviar();
+    // rev108: sobre-facturación de la CPO → confirmar
+    if(r.sobre_facturacion){
+      const x = r.sobre_facturacion;
+      if(!confirm(`⚠ SOBRE-FACTURACIÓN\n\nCPO ${x.cpo}: valor ${cpcFmt(x.valor)} USD\nYa facturado (sin IVA): ${cpcFmt(x.facturado_previo)}\nEsta factura (sin IVA): ${cpcFmt(x.esta_factura)}\n\nQuedaría facturada de más por ${cpcFmt(x.exceso)} USD.\n\n¿Guardar de todos modos?`)) return;
+      payload.confirmar_sobrefacturacion = true;
+      r = await enviar();
     }
     if(r.error){ toast(r.error,'er'); return; }
     closeMo('mo-cpc-new');
@@ -18530,7 +18552,8 @@ async function cpcDelete(){
   const r=cpcRecords.find(x=>x.id===cpcCurrentId);
   if(!confirm('¿Eliminar la factura '+cpcCurrentId+'?'))return;
   try{
-    await apiCall('DELETE','/cpc/'+cpcCurrentId+'?year='+(r?r.year:new Date().getFullYear()));
+    const rr = await apiCall('DELETE','/cpc/'+cpcCurrentId+'?year='+(r?r.year:new Date().getFullYear()));
+    if(rr && rr.error){ toast(rr.error,'er'); return; }
     closeMo('mo-cpc-new');
     toast('Factura eliminada','if');
     await loadCPC();
@@ -18539,7 +18562,8 @@ async function cpcDelete(){
 async function cpcQuickDelete(id,year){
   if(!confirm('¿Eliminar la factura '+id+'?'))return;
   try{
-    await apiCall('DELETE','/cpc/'+id+'?year='+year);
+    const rr = await apiCall('DELETE','/cpc/'+id+'?year='+year);
+    if(rr && rr.error){ toast(rr.error,'er'); return; }
     toast('Factura eliminada','if');
     await loadCPC();
   }catch(e){ toast('Error: '+e,'er'); }
@@ -19374,4 +19398,12 @@ async function saeDuplicadosAbrir(){
       : '<div style="padding:16px;text-align:center;color:#1f8a4c">✓ No hay No. de PO de SAE repetidos en órdenes vigentes.</div>')
       + `<div style="font-size:11px;color:var(--muted);margin-top:8px">Se excluyen las órdenes canceladas. ${d.sin_sae} orden(es) vigente(s) no tienen No. de PO de SAE capturado (se puede capturar en Editar registro).</div>`;
   }catch(e){ box.innerHTML = `<div style="color:var(--red)">⚠ ${esc(e.message)}</div>`; }
+}
+
+
+// rev108: moneda de la factura CPC
+function cpcOnMoneda(){
+  const m = document.getElementById('cpc-moneda').value;
+  document.getElementById('cpc-tc-field').style.display = m==='MXN' ? '' : 'none';
+  document.querySelectorAll('#mo-cpc-new .cpc-mon').forEach(e=>e.textContent=m);
 }

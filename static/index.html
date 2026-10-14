@@ -5660,7 +5660,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <thead><tr>
           <th>CPC</th><th>Job</th><th>CPO</th><th>Cliente</th>
           <th>Fecha Factura</th><th>Vencimiento</th>
-          <th style="text-align:right">Total (USD)</th><th>Estatus</th><th>PDF</th><th>Acciones</th>
+          <th style="text-align:right">Total</th><th style="text-align:right">Equiv. USD</th><th>Estatus</th><th>PDF</th><th>Acciones</th>
         </tr></thead>
         <tbody id="cpc-tb"></tbody>
       </table>
@@ -5714,7 +5714,11 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <div class="fi"><label>Fecha de Vencimiento</label><input type="date" id="cpc-fecha-venc"></div>
       </div>
       <div class="fr">
-        <div class="fi"><label>Subtotal (USD)</label><input type="number" id="cpc-subtotal" step="0.01" oninput="cpcRecalcTotal()"></div>
+        <div class="fi"><label>Moneda</label><select id="cpc-moneda" onchange="cpcOnMoneda()"><option value="USD">USD</option><option value="MXN">MXN</option></select></div>
+        <div class="fi" id="cpc-tc-field" style="display:none"><label>Tipo de cambio (MXN por USD)</label><input type="number" id="cpc-tc" step="0.0001" placeholder="Del CFDI o de Finanzas ▸ Tipo de Cambio"></div>
+      </div>
+      <div class="fr">
+        <div class="fi"><label>Subtotal <span class="cpc-mon">USD</span></label><input type="number" id="cpc-subtotal" step="0.01" oninput="cpcRecalcTotal()"></div>
         <div class="fi"><label>IVA</label><input type="number" id="cpc-iva" step="0.01" oninput="cpcRecalcTotal()"></div>
       </div>
       <div class="fr">
@@ -5722,7 +5726,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <div class="fi"><label>IVA Retenido</label><input type="number" id="cpc-iva-ret" step="0.01" value="0" oninput="cpcRecalcTotal()"></div>
       </div>
       <div class="fr">
-        <div class="fi"><label>Total (USD)</label><input type="number" id="cpc-total-input" step="0.01" style="font-weight:700;color:var(--red)"></div>
+        <div class="fi"><label>Total <span class="cpc-mon">USD</span></label><input type="number" id="cpc-total-input" step="0.01" style="font-weight:700;color:var(--red)"></div>
         <div class="fi" id="cpc-estatus-field" style="display:none"><label>Estatus</label>
           <select id="cpc-estatus" onchange="cpcOnEstatusChange()">
             <option value="Pendiente">Pendiente</option>
@@ -5735,6 +5739,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <div class="fi"><label>Fecha de Pago</label><input type="date" id="cpc-fecha-pago"></div>
       </div>
       <div class="fr f1"><div class="fi"><label>Notas</label><textarea id="cpc-notas" rows="2"></textarea></div></div>
+      <details id="cpc-hist-box" style="display:none;margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--muted2)">Bitácora de cambios</summary><div id="cpc-hist" style="font-size:11px;margin-top:6px"></div></details>
     </div>
     <div class="mf">
       <button class="btn btn-d" id="btn-cpc-del" onclick="cpcDelete()" style="display:none">Eliminar</button>
