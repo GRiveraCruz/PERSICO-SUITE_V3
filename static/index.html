@@ -892,6 +892,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       <button class="btn-new" style="background:rgba(255,193,7,.1);border:1px solid var(--amber);color:var(--amber)" onclick="gpoModOpenModal()">Modificar Orden Existente</button>
       <button class="btn-new" style="background:rgba(72,199,142,.08);border:1px solid var(--green);color:var(--green)" onclick="gpoSplitOpenModal()">Dividir PO SAE</button>
       <button class="btn-new" onclick="poOpenImport()">Cargar Excel</button>
+      <button class="btn-sec" onclick="saeDuplicadosAbrir()" title="No. de PO de SAE registrados en más de una orden">🔎 Duplicados SAE</button>
       <button class="btn-sec btn-export" onclick="poExportCSV()">Exportar CSV</button>
     </div>
   </aside>
@@ -1849,6 +1850,14 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       </div>
       <div id="via-imp-result" style="margin-top:10px;font-size:12px;color:var(--green)"></div>
     </div>
+  </div>
+</div>
+
+<!-- ── Modal: Duplicados de PO SAE (rev107) -->
+<div class="mo" id="mo-sae-dup" style="z-index:150">
+  <div class="md" style="max-width:820px;width:calc(100% - 32px)">
+    <div class="mh"><h2>🔎 No. de PO de SAE duplicados</h2><button class="px" onclick="closeMo('mo-sae-dup')">Cerrar</button></div>
+    <div class="mb2" id="sae-dup-body"></div>
   </div>
 </div>
 
@@ -7366,6 +7375,14 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <select id="gpo-job-unico" onchange="gpoAutoFillCPO()" style="width:100%;background:var(--inp);border:1px solid var(--border);border-radius:var(--r);color:var(--gold);padding:8px 10px;font-size:12px;outline:none;margin-top:6px;font-family:'DM Mono',monospace"></select>
       </div>
 
+      <!-- ── rev107: No. de PO de SAE ── -->
+      <div>
+        <div class="sl">No. de PO de SAE</div>
+        <input type="text" id="gpo-po-sae" placeholder="Número de la orden en SAE" onblur="gpoSaeCheck()" oninput="this.value=this.value.toUpperCase()"
+          style="width:100%;background:var(--inp);border:1px solid var(--border);border-radius:var(--r);color:var(--text);padding:8px 10px;font-size:12px;outline:none;margin-top:6px;font-family:'DM Mono',monospace">
+        <div id="gpo-po-sae-aviso" style="font-size:11px;margin-top:4px"></div>
+      </div>
+
       <!-- ── NOTAS GENERALES ── -->
       <div>
         <div class="sl">Notas generales <span style="opacity:.5">(Opcional)</span></div>
@@ -7781,6 +7798,12 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
           </div>
           <div class="fi"><label>Precio Unitario</label>
             <input type="number" id="po-edit-unit-price" min="0" step="0.01" oninput="poEditRecalc()" style="width:100%;background:var(--inp);border:1px solid var(--border);border-radius:var(--r);color:var(--text);padding:8px 10px;font-size:12px;outline:none;margin-top:6px">
+          </div>
+        </div>
+        <!-- rev107: No. de PO de SAE de la orden generada -->
+        <div id="po-edit-sae-box" style="display:none;margin-top:6px">
+          <div class="fi"><label>No. de PO de SAE (de toda la PO)</label>
+            <input type="text" id="po-edit-sae" oninput="this.value=this.value.toUpperCase()" style="width:100%;background:var(--inp);border:1px solid var(--border);border-radius:var(--r);color:var(--text);padding:8px 10px;font-size:12px;outline:none;margin-top:6px;font-family:'DM Mono',monospace">
           </div>
         </div>
         <!-- rev103: esquema tributario de la PO generada -->

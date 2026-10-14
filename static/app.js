@@ -3802,7 +3802,7 @@ function poFiltered(){
     if(mon==='MXN' && r.tipo_cambio>1) return false;
     if(mon==='USD' && r.tipo_cambio<=1) return false;
     if(r.subtotal<minSub) return false;
-    if(gs && !((r.gpo_number||'')+(r.clave||'')+(r.nombre||'')+(r.entregar_a||'')+(r.estatus||'')).toString().toLowerCase().includes(gs)) return false;
+    if(gs && !((r.gpo_number||'')+(r.clave||'')+(r.nombre||'')+(r.entregar_a||'')+(r.estatus||'')+' '+(r.po_sae||'')).toString().toLowerCase().includes(gs)) return false;
     return true;
   }).sort((a,b)=>{
     const {key,dir}=sortState.po;
@@ -3883,7 +3883,7 @@ function poRender(){
     const rowIdx = poFiltered().indexOf(r);
     const editBtn = `<button onclick="poOpenEdit(${rowIdx})" class="btn-reload" style="font-size:10px;padding:3px 8px;margin-left:4px" title="Editar registro">Editar</button>`;
     return`<tr>
-      <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--red);font-weight:600;white-space:nowrap">${esc(String(poLabel))}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--red);font-weight:600;white-space:nowrap">${esc(String(poLabel))}${r.po_sae?`<div style="font-size:9.5px;color:var(--muted2);font-weight:400" title="No. de PO de SAE">SAE ${esc(r.po_sae)}</div>`:''}</td>
       <td style="color:var(--muted2)">${poFmtDate(r.fecha_doc)}</td>
       <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--amber)">${esc(r.entregar_a||'—')}</td>
       <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--gold)">${esc(r.cpo||'—')}</td>
@@ -10824,10 +10824,11 @@ async function openNewGPO() {
   // Reset supplier
   gpoClearSupplier();
   // Reset header fields
-  ['gpo-ptsv','gpo-cpo','gpo-notes','gpo-item-search',
+  ['gpo-ptsv','gpo-cpo','gpo-notes','gpo-po-sae','gpo-item-search',
    'gi-code','gi-brand','gi-pnum','gi-desc','gi-price','gi-label','gi-notes'].forEach(id=>{
     const el = document.getElementById(id); if(el) el.value='';
   });
+  { const sa=document.getElementById('gpo-po-sae-aviso'); if(sa) sa.innerHTML=''; }   // rev107
   gpoClearCPOSuggest();
   // Reset moneda to USD
   document.getElementById('gpo-mon-usd').checked = true;
@@ -11278,13 +11279,20 @@ async function saveGPO() {
                  (jobType in {Shopfloor:1,'Fix Asset':1}?jobType:''),
       items:     gpoItems,
       notes:     document.getElementById('gpo-notes').value.trim(),
+      po_sae:    (document.getElementById('gpo-po-sae')?.value||'').trim().toUpperCase(),   // rev107
       iva_pct:   parseFloat(esquemaSel?.iva_trasladado)||0,
       esquema_tributario: esquemaSel || null,
       moneda,
       fx_rate:   moneda==='MXN' ? (gpoCurrentFX||null) : null,
     };
-    const d = await fetch('/api/gpo',{method:'POST',headers:{'Content-Type':'application/json'},
+    let d = await fetch('/api/gpo',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload)}).then(r=>r.json());
+    // rev107: el No. de PO de SAE ya existe en otra orden → confirmar antes de emitir
+    if(d.duplicado_sae){
+      if(!confirm(saeTextoDuplicado(d.po_sae, d.duplicado_sae) + '\n\n¿Emitir esta orden de todos modos con el mismo No. de PO de SAE?')) return;
+      payload.confirmar_duplicado_sae = true;
+      d = await fetch('/api/gpo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(r=>r.json());
+    }
     if(d.en_stock && d.en_stock.length){
       const ids = new Set(d.en_stock.map(e=>String(e.item_id)));
       gpoItems = gpoItems.filter(i=>!ids.has(String(i.req_item_id))); gpoItems.forEach((i,n)=>i.line=n+1);
@@ -16116,6 +16124,8 @@ function poOpenEdit(rowIdx) {
   document.getElementById('po-edit-unit-price').value      = r.unit_price||'';
   document.getElementById('mo-po-edit').classList.add('on');
   poEditCargarEsquema(r);                                   // rev103
+  const sb = document.getElementById('po-edit-sae-box');   // rev107
+  if(sb){ sb.style.display = r.gpo_number ? '' : 'none'; document.getElementById('po-edit-sae').value = r.po_sae || ''; }
 }
 
 // rev103: esquema tributario de la PO generada (aplica a toda la PO)
@@ -16180,6 +16190,18 @@ async function poSaveEdit() {
           btn.disabled=false; btn.textContent='💾 Guardar Cambios'; return;
         }
         payload.esquema_folio = nuevo;
+      }
+    }
+    // rev107: No. de PO de SAE (se guarda en toda la orden; si ya existe en otra, se confirma)
+    if(poEditRecord.gpo_number){
+      const nuevoSae = (document.getElementById('po-edit-sae').value||'').trim().toUpperCase();
+      if(nuevoSae !== (poEditRecord.po_sae||'')){
+        let rs = await apiCall('PUT', `/gpo/${encodeURIComponent(poEditRecord.gpo_number)}/sae`, {po_sae: nuevoSae});
+        if(rs.duplicado_sae){
+          if(!confirm(saeTextoDuplicado(rs.po_sae, rs.duplicado_sae) + '\n\n¿Guardar de todos modos el mismo No. de PO de SAE?')){ btn.disabled=false; btn.textContent='💾 Guardar Cambios'; return; }
+          rs = await apiCall('PUT', `/gpo/${encodeURIComponent(poEditRecord.gpo_number)}/sae`, {po_sae: nuevoSae, confirmar_duplicado_sae: true});
+        }
+        if(rs.error){ toast(rs.error,'er'); btn.disabled=false; btn.textContent='💾 Guardar Cambios'; return; }
       }
     }
     const clave = poEditRecord.gpo_number||poEditRecord.clave;
@@ -19315,4 +19337,41 @@ function pcAbrirDesdeLista(tipo, num, ev){
   const r = src.find(x => (tipo==='PT' ? x.pt_number : x.sv_number) === num) || {};
   switchMenu('projconfig', 'ng-proyectos');
   setTimeout(()=>{ try{ pcSelectPTSV({label: num, type: tipo, jobs: r.jobs||[], customer: r.customer||''}); }catch(e){ pcLoadConfig(num); } }, 450);
+}
+
+
+// ════════════════════════════════════════════════════════
+//  rev107 — No. de PO de SAE: aviso de duplicados
+// ════════════════════════════════════════════════════════
+function saeTextoDuplicado(sae, dups){
+  return `⚠ No. DE PO DE SAE DUPLICADO\n\nEl No. de PO de SAE ${sae} ya está registrado en:\n\n` +
+    dups.map(d=>`• ${d.po_number} · ${d.fecha} · ${d.proveedor} · $${Number(d.total||0).toLocaleString('en-US',{minimumFractionDigits:2})} ${d.moneda||''} · ${d.status||''}`).join('\n') +
+    `\n\nPuede ser la misma orden subida dos veces.`;
+}
+async function gpoSaeCheck(){
+  const el = document.getElementById('gpo-po-sae'), av = document.getElementById('gpo-po-sae-aviso');
+  const v = (el.value||'').trim(); if(!v){ av.innerHTML=''; return; }
+  try{
+    const d = await fetch('/api/gpo/sae-check?sae='+encodeURIComponent(v)).then(r=>r.json());
+    if(d.duplicados && d.duplicados.length)
+      av.innerHTML = `<span style="color:var(--red);font-weight:600">⚠ Ya registrado en ${d.duplicados.map(x=>`${esc(x.po_number)} (${esc(x.fecha)} · ${esc(x.proveedor)})`).join(', ')}. ¿Es la misma orden?</span>`;
+    else av.innerHTML = '<span style="color:#1f8a4c">✓ No está registrado en otra orden</span>';
+  }catch(e){ av.innerHTML=''; }
+}
+async function saeDuplicadosAbrir(){
+  document.getElementById('mo-sae-dup').classList.add('on');
+  const box = document.getElementById('sae-dup-body');
+  box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">Buscando…</div>';
+  try{
+    const d = await fetch('/api/gpo/sae-duplicados').then(r=>r.json());
+    if(d.error) throw new Error(d.error);
+    const fmt = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2});
+    box.innerHTML = (d.duplicados.length ? d.duplicados.map(g=>`<div style="border:1px solid rgba(200,16,46,.3);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+        <div style="font-weight:700;font-family:'DM Mono',monospace;color:var(--red)">SAE ${esc(g.po_sae)} · ${g.ordenes.length} órdenes</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px">${g.ordenes.map(o=>`<tr style="border-top:1px solid var(--border)">
+          <td style="padding:4px 6px;font-family:'DM Mono',monospace"><a href="/api/gpo/${encodeURIComponent(o.po_number)}/pdf" target="_blank">${esc(o.po_number)}</a></td><td style="padding:4px 6px">${esc(o.fecha)}</td>
+          <td style="padding:4px 6px">${esc(o.proveedor)}</td><td style="padding:4px 6px;text-align:right">${fmt(o.total)} ${esc(o.moneda||'')}</td><td style="padding:4px 6px">${esc(o.status||'')}</td></tr>`).join('')}</table></div>`).join('')
+      : '<div style="padding:16px;text-align:center;color:#1f8a4c">✓ No hay No. de PO de SAE repetidos en órdenes vigentes.</div>')
+      + `<div style="font-size:11px;color:var(--muted);margin-top:8px">Se excluyen las órdenes canceladas. ${d.sin_sae} orden(es) vigente(s) no tienen No. de PO de SAE capturado (se puede capturar en Editar registro).</div>`;
+  }catch(e){ box.innerHTML = `<div style="color:var(--red)">⚠ ${esc(e.message)}</div>`; }
 }

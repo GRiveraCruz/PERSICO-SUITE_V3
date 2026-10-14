@@ -14895,6 +14895,74 @@ def api_get_gpo():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── rev107: No. de PO de SAE (para detectar órdenes subidas dos veces) ───────────
+def _sae_norm(v):
+    return re.sub(r"\s+", "", str(v or "")).upper()
+
+def _sae_duplicados(po_sae, excluir=None):
+    """Órdenes generadas (no canceladas) que ya tienen ese No. de PO de SAE."""
+    po_sae = _sae_norm(po_sae)
+    if not po_sae: return []
+    out = []
+    for g in gpo_load():
+        if _sae_norm(g.get("po_sae")) != po_sae: continue
+        if excluir and str(g.get("po_number") or "").upper() == str(excluir).upper(): continue
+        if g.get("status") == "Cancelada": continue
+        out.append({"po_number": g.get("po_number"), "fecha": str(g.get("created_at") or "")[:10],
+                    "proveedor": g.get("supplier_name") or "", "total": g.get("total"), "moneda": g.get("moneda"),
+                    "status": g.get("status"), "creado_por": g.get("created_by")})
+    return out
+
+@app.route("/api/gpo/sae-check", methods=["GET"])
+def api_gpo_sae_check():
+    """¿Ese No. de PO de SAE ya está en otra orden? (aviso mientras se captura)."""
+    if not (can("view", "gpo") or can("view", "po") or is_admin()): return jsonify({"error": "Sin permiso"}), 403
+    return jsonify({"po_sae": _sae_norm(request.args.get("sae")), "duplicados": _sae_duplicados(request.args.get("sae"), request.args.get("excluir"))})
+
+@app.route("/api/gpo/sae-duplicados", methods=["GET"])
+def api_gpo_sae_duplicados():
+    """Todos los No. de PO de SAE que aparecen en más de una orden (no canceladas)."""
+    if not (can("view", "gpo") or can("view", "po") or is_admin()): return jsonify({"error": "Sin permiso"}), 403
+    grupos = {}
+    for g in gpo_load():
+        k = _sae_norm(g.get("po_sae"))
+        if not k or g.get("status") == "Cancelada": continue
+        grupos.setdefault(k, []).append({"po_number": g.get("po_number"), "fecha": str(g.get("created_at") or "")[:10],
+                                         "proveedor": g.get("supplier_name") or "", "total": g.get("total"), "moneda": g.get("moneda"),
+                                         "status": g.get("status")})
+    dups = [{"po_sae": k, "ordenes": v} for k, v in sorted(grupos.items()) if len(v) > 1]
+    sin_sae = sum(1 for g in gpo_load() if not _sae_norm(g.get("po_sae")) and g.get("status") != "Cancelada")
+    return jsonify({"duplicados": dups, "sin_sae": sin_sae})
+
+@app.route("/api/gpo/<path:po_number>/sae", methods=["PUT"])
+def api_gpo_set_sae(po_number):
+    """Captura o corrige el No. de PO de SAE de una orden ya emitida (también en sus renglones)."""
+    if not (can("create", "po") or can("create", "gpo") or is_admin()): return jsonify({"error": "Sin permiso"}), 403
+    d = request.json or {}
+    po_sae = _sae_norm(d.get("po_sae"))
+    with lock:
+        gpos = gpo_load()
+        g = _gpo_buscar(gpos, po_number)
+        if not g: return jsonify({"error": "Orden no encontrada"}), 404
+        if po_sae and not d.get("confirmar_duplicado_sae"):
+            dups = _sae_duplicados(po_sae, excluir=g.get("po_number"))
+            if dups:
+                return jsonify({"duplicado_sae": dups, "po_sae": po_sae,
+                                "error": f"El No. de PO de SAE {po_sae} ya está registrado en {', '.join(x['po_number'] for x in dups)}"}), 409
+        anterior = g.get("po_sae") or ""
+        g["po_sae"] = po_sae
+        g.setdefault("historial_sae", []).append({"de": anterior, "a": po_sae, "fecha": datetime.datetime.now().isoformat(timespec="seconds"),
+                                                  "usuario": session.get("user", ""), "duplicado_confirmado": bool(d.get("confirmar_duplicado_sae"))})
+        gpo_save(gpos)
+        pn = str(g.get("po_number") or "").upper()
+        for y in {CURRENT_YEAR, int(str(g.get("created_at") or CURRENT_YEAR)[:4] or CURRENT_YEAR)}:
+            recs = po_load(y); cambio = False
+            for r in recs:
+                if str(r.get("gpo_number") or "").upper() == pn:
+                    r["po_sae"] = po_sae; cambio = True
+            if cambio: po_save(y, recs)
+    return jsonify({"ok": True, "po_sae": po_sae})
+
 @app.route("/api/gpo", methods=["POST"])
 def api_create_gpo():
     try:
@@ -14921,6 +14989,13 @@ def api_create_gpo():
             return jsonify({"error": "La PO debe tener al menos un item"}), 400
         if not esquema_tributario or not esquema_tributario.get("folio"):
             return jsonify({"error": "Debes seleccionar el Esquema Tributario antes de emitir la Orden de Compra"}), 400
+        # rev107: número de PO de SAE — si ya existe en otra orden, se avisa antes de emitir
+        po_sae = _sae_norm(data.get("po_sae"))
+        if po_sae and not data.get("confirmar_duplicado_sae"):
+            dups = _sae_duplicados(po_sae)
+            if dups:
+                return jsonify({"duplicado_sae": dups, "po_sae": po_sae,
+                                "error": f"El No. de PO de SAE {po_sae} ya está registrado en {', '.join(d['po_number'] for d in dups)}"}), 409
         # Renglones que vienen de Requisición de Compra: no se compra lo que hay en Stock
         # ni más de lo pendiente (pedido − reasignado − ya comprado).
         ligados = [it for it in items if it.get("req_item_id")]
@@ -15010,7 +15085,11 @@ def api_create_gpo():
                 "status":        "Emitida",
                 "created_by":    session.get("user",""),
                 "created_at":    now,
+                "po_sae":        po_sae,                                  # rev107
             }
+            if po_sae and data.get("confirmar_duplicado_sae"):
+                rec["po_sae_duplicado_confirmado"] = {"por": session.get("user", ""), "fecha": now,
+                                                      "con": [d["po_number"] for d in _sae_duplicados(po_sae)]}
             records = gpo_load()
             records.append(rec)
             gpo_save(records)
@@ -15037,6 +15116,7 @@ def api_create_gpo():
                     "gpo_number":           po_number,
                     "gpo_pdf":              i==0,
                     "cpo":                  cpo,
+                    "po_sae":               po_sae,                       # rev107
                     "part_number":          it["part_number"],
                     "description":          it["description"],
                     "quantity":             it["quantity"],
@@ -15485,6 +15565,7 @@ def api_gpo_pdf(po_number):
     <div class="po-num-label">Purchase Order</div>
     <div class="po-num">{rec['po_number'].replace('-','_')}</div>
     {f'<div class="po-num-label" style="color:#c8102e">{rev_txt}</div>' if rev_txt else ''}
+    {f'<div class="po-num-label">PO SAE: {_html.escape(str(rec.get("po_sae")))}</div>' if rec.get("po_sae") else ''}
     <div style="font-size:10px;color:#888;text-align:right;margin-top:4px">{rec['created_at'][:10]}</div>
     {f'<div style="font-size:10px;font-weight:700;text-align:right;color:#f5a623;margin-top:2px;letter-spacing:.5px">Versión {rec["version"]}</div>' if rec.get("version") and int(rec.get("version",1)) > 1 else '<div style="font-size:10px;color:#aaa;text-align:right;margin-top:2px">v1 — Original</div>'}
     <div class="barcode-wrap">
