@@ -18618,8 +18618,8 @@ def _cpc_campos(data, rec):
         if not fx: return "La factura es en MXN y no hay tipo de cambio registrado para su fecha: captúralo."
         rec["tipo_cambio"] = round(float(fx), 4)
     if rec["moneda"] == "USD": rec["tipo_cambio"] = None
-    if not rec.get("job") or not rec.get("customer") or not rec.get("fecha_factura"):
-        return "Completa Job, Cliente y Fecha de Factura"
+    if not rec.get("customer") or not rec.get("fecha_factura"):          # rev111: el Job es opcional
+        return "Completa Cliente y Fecha de Factura"
     try: datetime.date.fromisoformat(rec["fecha_factura"][:10])
     except ValueError: return "Fecha de factura inválida"
     return None

@@ -18517,7 +18517,7 @@ async function cpcSave(){
   const job=document.getElementById('cpc-job').value.trim();
   const cliente=document.getElementById('cpc-cliente').value.trim();
   const fechaFactura=document.getElementById('cpc-fecha-factura').value;
-  if(!job||!cliente||!fechaFactura){ toast('Completa Job, Cliente y Fecha de Factura','er'); return; }
+  if(!cliente||!fechaFactura){ toast('Completa Cliente y Fecha de Factura','er'); return; }   // rev111: Job opcional
   if(usarCpo && !cpoId){ toast('Selecciona una CPO','er'); return; }
 
   const payload={
