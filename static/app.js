@@ -6752,6 +6752,7 @@ async function dbRepararEsquema(){
 }
 
 async function loadAdminUsers() {
+  respaldoInfo();                                           // rev110
   try {
     const d = await fetch('/api/admin/users').then(r=>r.json());
     if (d.error) { toast(d.error,'er'); return; }
@@ -19517,4 +19518,30 @@ async function cpcRepAplicar(){
   closeMo('mo-cpc-rep');
   toast(`${r.aplicados.length} pago(s) registrados${r.omitidos.length?` · ${r.omitidos.length} omitido(s)`:''}`,'ok',5000);
   loadCPC();
+}
+
+
+// ════════════════════════════════════════════════════════
+//  rev110 — Respaldo de archivos del volumen
+// ════════════════════════════════════════════════════════
+function respaldoTam(b){ b=Number(b||0); if(b<1024) return b+' B'; if(b<1048576) return (b/1024).toFixed(1)+' KB'; if(b<1073741824) return (b/1048576).toFixed(1)+' MB'; return (b/1073741824).toFixed(2)+' GB'; }
+async function respaldoInfo(){
+  const box = document.getElementById('resp-info'); if(!box) return;
+  try{
+    const d = await fetch('/api/admin/respaldo-archivos/info').then(r=>r.json());
+    if(d.error){ box.innerHTML = `<span style="color:var(--muted)">${esc(d.error)}</span>`; return; }
+    const u = d.ultimo;
+    box.innerHTML = `<div style="margin-bottom:6px"><b>${d.archivos.toLocaleString('es-MX')}</b> archivo(s) · <b>${respaldoTam(d.bytes)}</b> en <code>${esc(d.data_dir)}</code>
+        ${d.disco?` · volumen: ${respaldoTam(d.disco.usado)} usados de ${respaldoTam(d.disco.total)} (${Math.round(d.disco.usado/d.disco.total*100)}%)`:''}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px">${d.grupos.map(g=>`<tr style="border-top:1px solid var(--border)">
+        <td style="padding:3px 4px">${esc(g.descripcion)}</td><td style="padding:3px 4px;text-align:right">${g.archivos.toLocaleString('es-MX')}</td>
+        <td style="padding:3px 4px;text-align:right;font-family:'DM Mono',monospace">${respaldoTam(g.bytes)}</td></tr>`).join('')}</table>
+      <div style="font-size:11px;color:var(--muted2);margin-top:6px">${u?`Último respaldo descargado: ${esc(String(u.fecha).replace('T',' ').slice(0,16))} por ${esc(u.usuario||'')} (${(u.archivos||0).toLocaleString('es-MX')} archivos${u.solo_documentos?', solo documentos':''})`:'Aún no se ha descargado ningún respaldo de archivos.'}</div>`;
+  }catch(e){ box.textContent = 'No se pudo leer el resumen: ' + e.message; }
+}
+function respaldoDescargar(solo){
+  toast('Preparando el ZIP… la descarga empezará en unos segundos (puede tardar si hay muchos archivos).','if',6000);
+  const a = document.createElement('a'); a.href = '/api/admin/respaldo-archivos' + (solo ? '?solo=' + solo : '');
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(respaldoInfo, 8000);
 }
