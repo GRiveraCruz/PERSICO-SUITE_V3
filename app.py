@@ -10900,6 +10900,110 @@ def api_migrar_db_estatus_general():
     return jsonify({"db_enabled": True, "conteos": conteos})
 
 # ── Permission routes
+# ══════════════════════════════════════════════════════════════════
+#  rev110 — Respaldo de los archivos del volumen (DATA_DIR) en un ZIP
+#  pg_dump respalda la base de datos; esto respalda lo que vive en disco: XML de CFDI,
+#  documentos de Jobs, cotizaciones, personal, perfiles, permisos, SV, proveedores y
+#  Configurar Proyecto (y los JSON de respaldo del modo sin base de datos).
+# ══════════════════════════════════════════════════════════════════
+_RESPALDO_EXCLUIR = {".flask_secret_key"}                 # nunca sale del servidor
+_RESPALDO_GRUPOS = [   # (carpeta relativa, descripción) — solo para el resumen
+    ("FINANZAS/cfdi_xml", "XML de CFDI (Recepciones, Procesar Compra, CPC)"),
+    ("JOBs", "Archivos de Jobs (y de cierre)"),
+    ("QUOTE_REG", "Archivos de cotizaciones"),
+    ("proyecto_docs", "Documentos de Configurar Proyecto"),
+    ("SV_DOCS", "Documentos de SV"),
+    ("PROV_DOCS", "Documentos de proveedores"),
+    ("PERSONAL", "Documentos de personal, perfiles y permisos"),
+]
+
+def _respaldo_archivos():
+    """[(ruta_absoluta, ruta_en_zip, bytes)] de todo DATA_DIR menos lo excluido."""
+    base = Path(_DATA)
+    out = []
+    if not base.exists(): return out
+    for p in sorted(base.rglob("*")):
+        if not p.is_file(): continue
+        rel = p.relative_to(base).as_posix()
+        if p.name in _RESPALDO_EXCLUIR or "__pycache__" in rel or rel.startswith("respaldos_tmp/"): continue
+        try: out.append((p, rel, p.stat().st_size))
+        except OSError: pass
+    return out
+
+def _respaldo_resumen(archivos):
+    grupos = []
+    usados = set()
+    for carpeta, desc in _RESPALDO_GRUPOS:
+        sel = [a for a in archivos if a[1].startswith(carpeta + "/") and a[1] not in usados]
+        usados.update(a[1] for a in sel)
+        grupos.append({"carpeta": carpeta, "descripcion": desc, "archivos": len(sel), "bytes": sum(a[2] for a in sel)})
+    resto = [a for a in archivos if a[1] not in usados]
+    grupos.append({"carpeta": "(otros)", "descripcion": "Datos JSON de respaldo y otros archivos", "archivos": len(resto), "bytes": sum(a[2] for a in resto)})
+    return grupos
+
+@app.route("/api/admin/respaldo-archivos/info", methods=["GET"])
+def api_respaldo_archivos_info():
+    if not is_admin(): return jsonify({"error": "Solo el administrador"}), 403
+    arch = _respaldo_archivos()
+    try:
+        import shutil as _sh
+        du = _sh.disk_usage(_DATA)
+        disco = {"total": du.total, "usado": du.used, "libre": du.free}
+    except Exception:
+        disco = None
+    return jsonify({"data_dir": _DATA, "archivos": len(arch), "bytes": sum(a[2] for a in arch),
+                    "grupos": _respaldo_resumen(arch), "disco": disco,
+                    "ultimo": (_kpi_snap_get("config:respaldo_archivos").get("config:respaldo_archivos") if (_orm and _orm.DB_ENABLED) else None)})
+
+@app.route("/api/admin/respaldo-archivos", methods=["GET"])
+def api_respaldo_archivos_zip():
+    """Descarga un ZIP con los archivos del volumen. Se arma en un archivo temporal (no en
+    memoria) y se borra al terminar de enviarlo."""
+    if not is_admin(): return jsonify({"error": "Solo el administrador"}), 403
+    import tempfile, zipfile, hashlib as _hl
+    arch = _respaldo_archivos()
+    solo_docs = request.args.get("solo") == "documentos"
+    if solo_docs:
+        pref = tuple(c + "/" for c, _d in _RESPALDO_GRUPOS)
+        arch = [a for a in arch if a[1].startswith(pref)]
+    ahora = datetime.datetime.now()
+    tmp = tempfile.NamedTemporaryFile(prefix="respaldo_archivos_", suffix=".zip", delete=False)
+    tmp.close()
+    manifiesto = [f"Respaldo de archivos — Persico Suite V2", f"Generado: {ahora:%Y-%m-%d %H:%M:%S} por {session.get('user', '')}",
+                  f"Carpeta: {_DATA}", f"Contenido: {'solo documentos' if solo_docs else 'todo'}", "", "ruta\tbytes\tsha1"]
+    errores = []
+    with zipfile.ZipFile(tmp.name, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        for p, rel, size in arch:
+            try:
+                h = _hl.sha1()
+                with open(p, "rb") as fh:
+                    for blk in iter(lambda: fh.read(1 << 20), b""): h.update(blk)
+                z.write(p, rel)
+                manifiesto.append(f"{rel}\t{size}\t{h.hexdigest()}")
+            except Exception as e:
+                errores.append(f"{rel}: {e}")
+        manifiesto += ["", f"Archivos: {len(arch) - len(errores)}", f"Bytes: {sum(a[2] for a in arch)}"]
+        if errores: manifiesto += ["", "NO SE PUDIERON INCLUIR:"] + errores
+        z.writestr("MANIFIESTO.txt", "\n".join(manifiesto))
+    try:
+        _kpi_snap_set("config:respaldo_archivos", {"fecha": ahora.isoformat(timespec="seconds"), "usuario": session.get("user", ""),
+                                                    "archivos": len(arch) - len(errores), "bytes": sum(a[2] for a in arch), "solo_documentos": solo_docs})
+    except Exception:
+        pass
+    print(f"[RESPALDO] {len(arch)} archivo(s) en ZIP por {session.get('user', '')}")
+    nombre = f"respaldo_archivos_persico_{ahora:%Y-%m-%d_%H%M}{'_documentos' if solo_docs else ''}.zip"
+    # se envía por partes y el temporal se borra al terminar (también si se corta la descarga)
+    tam = _os.path.getsize(tmp.name)
+    def _enviar(ruta=tmp.name):
+        try:
+            with open(ruta, "rb") as fh:
+                for blk in iter(lambda: fh.read(1 << 20), b""): yield blk
+        finally:
+            try: _os.remove(ruta)
+            except OSError: pass
+    return Response(_enviar(), mimetype="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{nombre}"', "Content-Length": str(tam)})
+
 @app.route("/api/admin/users", methods=["GET"])
 def api_admin_get_users():
     if not is_admin():
