@@ -8709,6 +8709,27 @@ def _piso_num(v, nombre):
     if f < 0: raise ValueError(f"{nombre} no puede ser negativo")
     return f
 
+# rev116: croquis — coordenadas por cuadrícula de 5 m: letras a lo LARGO (A=0–5 m, B=5–10 m…)
+# y números a lo ANCHO (1=0–5 m, 2=5–10 m…). La coordenada ubica la esquina inferior izquierda
+# de la máquina en la esquina inferior izquierda de esa celda (+ desplazamiento opcional).
+PISO_CELDA_M = 5.0
+
+def _piso_letras(n):
+    """0 → A, 25 → Z, 26 → AA…"""
+    s_ = ""; n += 1
+    while n > 0:
+        n, r = divmod(n - 1, 26); s_ = chr(65 + r) + s_
+    return s_
+
+def _piso_coord_xy(coord):
+    m = re.match(r"^\s*([A-Za-z]{1,2})\s*(\d{1,3})\s*$", str(coord or ""))
+    if not m: return None
+    letras, num = m.group(1).upper(), int(m.group(2))
+    if num < 1: return None
+    idx = 0
+    for ch in letras: idx = idx * 26 + (ord(ch) - 64)
+    return ((idx - 1) * PISO_CELDA_M, (num - 1) * PISO_CELDA_M)
+
 def _piso_area(it):
     if it.get("largo_m") and it.get("ancho_m"): return round(it["largo_m"] * it["ancho_m"], 2)
     return round(float(it.get("area_m2") or 0), 2)
@@ -8729,6 +8750,12 @@ def _piso_estado():
     jobs = {str(j.get("job_number") or "").upper(): j for j in scan_jobs()}
     for it in items:
         it["area_calc"] = _piso_area(it)
+        xy = _piso_coord_xy(it.get("coord"))                      # rev116: posición en el croquis
+        if xy and it.get("largo_m") and it.get("ancho_m"):
+            w, h = (it["ancho_m"], it["largo_m"]) if it.get("rot") else (it["largo_m"], it["ancho_m"])
+            it["pos"] = {"x": round(xy[0] + float(it.get("off_x") or 0), 3), "y": round(xy[1] + float(it.get("off_y") or 0), 3), "w": w, "h": h}
+        else:
+            it["pos"] = None
         jn = str(it.get("job") or "").upper()
         it["m2_config"] = cfg_m2.get(jn)
         j = jobs.get(jn) or {}
@@ -8795,6 +8822,14 @@ def api_piso_item():
             while f"PE-{n:04d}" in usados: n += 1
             it = {"pid": f"PE-{n:04d}", "creado": datetime.datetime.now().isoformat(timespec="minutes"), "creado_por": session.get("user", "")}
             recs.append(it)
+        coord = re.sub(r"\s+", "", str(d.get("coord") or "")).upper()
+        if coord and not _piso_coord_xy(coord):
+            return jsonify({"error": f"Coordenada inválida: {coord}. Usa letra(s) y número, ej. B3"}), 400
+        try:
+            off_x, off_y = _piso_num(d.get("off_x"), "El desplazamiento X"), _piso_num(d.get("off_y"), "El desplazamiento Y")
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        it.update(coord=coord or None, rot=bool(d.get("rot")), off_x=off_x, off_y=off_y)
         it.update(job=job, descripcion=desc, largo_m=largo, ancho_m=ancho, area_m2=area, en_piso=bool(d.get("en_piso", True)),
                   fecha_entrada=(d.get("fecha_entrada") or "")[:10] or None, fecha_salida=(d.get("fecha_salida") or "")[:10] or None,
                   notas=(d.get("notas") or "").strip()[:300],

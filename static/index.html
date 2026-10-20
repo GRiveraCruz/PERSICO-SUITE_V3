@@ -3581,6 +3581,18 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <div id="piso-cfg-info" style="font-size:10.5px;color:var(--muted);margin-top:6px"></div>
       </div>
 
+      <!-- rev116: croquis a escala -->
+      <div style="background:var(--card,#fff);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:18px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--red)">Croquis del piso</div>
+          <span style="font-size:11px;color:var(--muted)">Cuadrícula de 5 m · letras a lo largo, números a lo ancho · la coordenada ubica la esquina inferior izquierda de cada máquina</span>
+          <label style="margin-left:auto;font-size:11px;display:flex;gap:5px;align-items:center;text-transform:none;letter-spacing:0;font-weight:400"><input type="checkbox" id="piso-ver-fuera" onchange="pisoPlano()"> Mostrar también las que no están en piso</label>
+          <button class="btn-reload" onclick="pisoDescargarSVG()" style="font-size:11px;padding:4px 10px">⬇ SVG</button>
+        </div>
+        <div id="piso-plano" style="width:100%;overflow:auto"></div>
+        <div id="piso-avisos" style="font-size:11.5px;margin-top:8px"></div>
+      </div>
+
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--red)">Máquinas / Jobs en el piso</div>
         <span id="piso-sug" style="font-size:11px"></span>
@@ -3588,9 +3600,9 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       </div>
       <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
         <table class="tbl" style="width:100%;table-layout:fixed">
-          <colgroup><col style="width:10%"><col style="width:20%"><col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:7%"><col style="width:5%"><col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:3%"></colgroup>
+          <colgroup><col style="width:8%"><col style="width:15%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:6%"><col style="width:6%"><col style="width:4%"><col style="width:9%"><col style="width:4%"><col style="width:9%"><col style="width:9%"><col style="width:8%"><col style="width:3%"></colgroup>
           <thead><tr><th>Job</th><th>Máquina / descripción</th><th style="text-align:right">Largo (m)</th><th style="text-align:right">Ancho (m)</th>
-            <th style="text-align:right">Área (m²)</th><th style="text-align:right">m² en Config. Proyecto</th><th>En piso</th><th>Entrada</th><th>Salida</th><th>Notas</th><th></th></tr></thead>
+            <th style="text-align:right">Área (m²)</th><th style="text-align:right">m² en Config. Proyecto</th><th title="Celda de 5 m: letra (largo) + número (ancho)">Coordenada</th><th title="Girar 90°: el largo de la máquina queda a lo ancho de la planta">Girar</th><th title="Desplazamiento dentro de la celda, en metros (X a lo largo, Y a lo ancho)">Desp. X / Y (m)</th><th>En piso</th><th>Entrada</th><th>Salida</th><th>Notas</th><th></th></tr></thead>
           <tbody id="piso-tb"></tbody>
         </table>
       </div>
