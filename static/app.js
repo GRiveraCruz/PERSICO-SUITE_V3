@@ -120,6 +120,7 @@ function switchMenu(mod, groupId) {
   if(mod==='personal-perfiles') { setTimeout(loadPerfiles,100); }
   if(mod==='personal-tipos-puesto') { setTimeout(loadTiposPuesto,100); }
   if(mod==='rrhh-kpis') { setTimeout(kpiCargar,100); }
+  if(mod==='ops-piso') { setTimeout(pisoCargar,100); }
   if(mod==='personal-listado') { setTimeout(loadPersonal,100); }
   if(mod==='consignacion') { setTimeout(loadCsg,50); }
   if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
@@ -5974,7 +5975,7 @@ let USER_PERMS = null;
 
 // rev77: módulos que heredan el nivel de otro mientras el administrador no les fije uno
 const MODULOS_HEREDAN = {'projconfig-dashboard':'projconfig','projconfig-presupuesto':'projconfig','projconfig-timing':'projconfig',
-  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp'};
+  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad'};
 const MODULE_LABELS = {
   'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)',
   // Proyectos
@@ -6012,7 +6013,7 @@ const MODULE_LABELS = {
   'personal-tipos-puesto':'Control de Personal — Tipo de Puesto',
   'personal-listado':'Control de Personal — Listado de Trabajadores',
   // Operaciones
-  'ops-capacidad':'Operaciones — Capacidad', 'ops-ot':'Operaciones — Tareas Asignadas',
+  'ops-capacidad':'Operaciones — Capacidad', 'ops-ot':'Operaciones — Tareas Asignadas', 'ops-piso':'Operaciones — Piso de ensamble',
   'ops-op':'Operaciones — Órdenes de Producción', 'ops-os':'Operaciones — Órdenes de Servicio'
 };
 
@@ -6036,7 +6037,7 @@ const MODULE_GROUPS = [
   { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-cpc','fin-pagos','fin-esquemas'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-tipos-puesto','personal-perfiles','personal-listado'] },
   { label: '📈 Management',          mods: ['rrhh-kpis'] },
-  { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os'] },
+  { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os','ops-piso'] },
 ];
 
 let _adminUsersData = null;
@@ -6295,6 +6296,7 @@ function applyPermsToDom(d) {
     'personal-tipos-puesto': ["switchMenu('personal-tipos-puesto'"],
     'personal-listado':   ["switchMenu('personal-listado'"],
     'ops-capacidad':      ["switchMenu('ops-capacidad'"],
+    'ops-piso':           ["switchMenu('ops-piso'"],
     'ops-ot':             ["switchMenu('ops-ot'"],
     'ops-op':             ["switchMenu('ops-op'"],
     'ops-os':             ["switchMenu('ops-os'"],
@@ -19578,4 +19580,110 @@ function cpcFolioBuscar(){
       cpcRender();
     }catch(e){ toast('No se pudo buscar: '+e.message,'er'); }
   }, 350);
+}
+
+
+// ════════════════════════════════════════════════════════
+//  rev115 — Operaciones ▸ Piso de ensamble
+// ════════════════════════════════════════════════════════
+let _piso = null, _pisoJobs = null;
+const pisoN = (v,d=2) => v==null||v==='' ? '—' : Number(v).toLocaleString('es-MX',{maximumFractionDigits:d});
+async function pisoCargar(){
+  try{
+    const d = await fetch('/api/piso-ensamble').then(r=>r.json());
+    if(d.error) throw new Error(d.error);
+    _piso = d;
+    if(!_pisoJobs){
+      try{ const j = await fetch('/api/jobs').then(r=>r.json()); _pisoJobs = Array.isArray(j)?j:(j.jobs||j.records||[]); }catch(e){ _pisoJobs = []; }
+      if(!document.getElementById('piso-jobs-dl')){ const dl=document.createElement('datalist'); dl.id='piso-jobs-dl'; document.body.appendChild(dl); }
+      document.getElementById('piso-jobs-dl').innerHTML = _pisoJobs.map(j=>`<option value="${esc(j.job_number)}">${esc(j.customer||'')} · ${esc(j.description||'')}</option>`).join('');
+    }
+    pisoRender();
+  }catch(e){ document.getElementById('piso-tb').innerHTML = `<tr><td colspan="11" style="color:var(--red);padding:16px">⚠ ${esc(e.message)}</td></tr>`; }
+}
+function pisoRender(){
+  const d = _piso, r = d.resumen, c = d.config||{};
+  const puede = permCanCreate('ops-piso');
+  document.querySelectorAll('.piso-edit').forEach(b=>b.style.display = puede ? '' : 'none');
+  const dif = r.diferencia, falta = dif < 0;
+  const card = (t,v,sub,col) => `<div style="background:var(--card,#fff);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+      <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)">${t}</div>
+      <div style="font-size:26px;font-weight:800;color:${col||'var(--text)'};margin-top:4px">${v}</div><div style="font-size:11px;color:var(--muted2)">${sub||''}</div></div>`;
+  document.getElementById('piso-cards').innerHTML =
+    card('Espacio disponible', r.disponible ? `${pisoN(r.disponible)} m²` : '—', r.disponible ? (c.largo_m&&c.ancho_m?`${pisoN(c.largo_m)} × ${pisoN(c.ancho_m)} m`:'') : 'Captura el espacio de la planta')
+    + card('Espacio requerido', `${pisoN(r.requerido)} m²`, `${r.en_piso} de ${r.total} máquina(s)/Job(s) en piso`)
+    + card(falta ? 'Faltan' : 'Espacio libre', r.disponible ? `${pisoN(Math.abs(dif))} m²` : '—', r.disponible ? (falta ? '⚠ El espacio requerido supera al disponible' : 'Disponible − requerido') : '', !r.disponible ? null : falta ? 'var(--red)' : '#1f8a4c')
+    + card('Ocupación', r.ocupacion_pct==null ? '—' : `${pisoN(r.ocupacion_pct,1)} %`, '', r.ocupacion_pct==null ? null : r.ocupacion_pct>100 ? 'var(--red)' : r.ocupacion_pct>85 ? 'var(--amber)' : '#1f8a4c');
+  const pct = r.ocupacion_pct==null ? 0 : Math.min(100, r.ocupacion_pct);
+  document.getElementById('piso-barra').innerHTML = r.disponible ? `<div style="height:16px;border-radius:8px;background:rgba(0,0,0,.07);overflow:hidden;position:relative">
+      <div style="height:100%;width:${pct}%;background:${r.ocupacion_pct>100?'var(--red)':r.ocupacion_pct>85?'var(--amber)':'#1f8a4c'}"></div></div>` : '';
+  document.getElementById('piso-total').value = c.total_m2 ?? '';
+  document.getElementById('piso-largo').value = c.largo_m ?? '';
+  document.getElementById('piso-ancho').value = c.ancho_m ?? '';
+  document.getElementById('piso-notas').value = c.notas || '';
+  document.getElementById('piso-cfg-info').textContent = c.actualizado ? `Actualizado ${String(c.actualizado).replace('T',' ')} por ${c.actualizado_por||''}` : '';
+  document.getElementById('piso-sug').innerHTML = d.sugerencias.length && puede
+    ? `<a href="#" onclick="pisoImportar();return false" style="color:var(--red)">⬇ Importar ${d.sugerencias.length} Job(s) con espacio requerido en Configurar Proyecto</a>` : '';
+  const dis = puede ? '' : 'disabled';
+  const inp = (it, f, attrs='', st='') => `<input ${dis} data-f="${f}" value="${esc(it[f]??'')}" ${attrs} onchange="pisoCambio('${it.pid}', this)" style="width:100%;min-width:0;box-sizing:border-box;padding:4px 6px;border:1px solid var(--border);border-radius:5px;background:var(--inp);font-size:12px;${st}">`;
+  document.getElementById('piso-tb').innerHTML = d.items.map(it=>`<tr id="piso-${it.pid}" style="${it.en_piso===false?'opacity:.55':''}">
+      <td style="width:95px">${inp(it,'job','list="piso-jobs-dl"','font-family:DM Mono,monospace')}${it.job_info?`<div style="font-size:9.5px;color:var(--muted)">${esc(it.job_info.customer||'')} · ${esc(it.job_info.status||'')}</div>`:''}</td>
+      <td>${inp(it,'descripcion')}</td>
+      <td style="width:80px">${inp(it,'largo_m','type="number" min="0" step="0.01"','text-align:right')}</td>
+      <td style="width:80px">${inp(it,'ancho_m','type="number" min="0" step="0.01"','text-align:right')}</td>
+      <td style="width:95px">${it.largo_m&&it.ancho_m ? `<div style="text-align:right;font-weight:700" title="Largo × ancho">${pisoN(it.area_calc)}</div>` : inp(it,'area_m2','type="number" min="0" step="0.1"','text-align:right;font-weight:700')}</td>
+      <td style="text-align:right;color:${it.m2_config!=null && Math.abs(it.m2_config-it.area_calc)>0.01?'var(--amber)':'var(--muted2)'}" title="${it.m2_config!=null && Math.abs(it.m2_config-it.area_calc)>0.01?'Distinto al área de esta lista':''}">${pisoN(it.m2_config)}</td>
+      <td style="text-align:center"><input type="checkbox" ${dis} ${it.en_piso===false?'':'checked'} onchange="pisoCambio('${it.pid}', this, 'en_piso')"></td>
+      <td style="width:125px">${inp(it,'fecha_entrada','type="date"')}</td>
+      <td style="width:125px">${inp(it,'fecha_salida','type="date"')}</td>
+      <td>${inp(it,'notas')}</td>
+      <td>${permCanFullPiso() ? `<button class="fi-del" onclick="pisoEliminar('${it.pid}')">✕</button>` : ''}</td></tr>`).join('')
+    || '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:22px">Sin máquinas/Jobs registrados. Usa "+ Agregar máquina / Job".</td></tr>';
+}
+function permCanFullPiso(){ return !USER_PERMS || USER_PERMS.is_admin || ((USER_PERMS.permissions||{})['ops-piso']==='full'); }
+function pisoCalcTotal(){
+  const l = parseFloat(document.getElementById('piso-largo').value), a = parseFloat(document.getElementById('piso-ancho').value);
+  if(l>0 && a>0) document.getElementById('piso-total').value = Math.round(l*a*100)/100;
+}
+async function pisoGuardarConfig(){
+  const r = await apiCall('PUT','/piso-ensamble/config',{total_m2: document.getElementById('piso-total').value, largo_m: document.getElementById('piso-largo').value,
+    ancho_m: document.getElementById('piso-ancho').value, notas: document.getElementById('piso-notas').value});
+  if(r.error){ toast(r.error,'er'); return; }
+  _piso = r; pisoRender(); toast('Espacio disponible guardado','ok');
+}
+async function pisoGuardarItem(it){
+  const r = await apiCall('POST','/piso-ensamble/items', it);
+  if(r.error){ toast(r.error,'er'); pisoRender(); return null; }
+  _piso = r; pisoRender(); return r.item;
+}
+function pisoCambio(pid, el, campo){
+  const it = {...(_piso.items.find(x=>x.pid===pid)||{})};
+  const f = campo || el.dataset.f;
+  it[f] = f==='en_piso' ? el.checked : el.value;
+  if(f==='largo_m' || f==='ancho_m'){ /* el área se recalcula en el servidor */ }
+  pisoGuardarItem(it);
+}
+async function pisoNuevo(){
+  const job = prompt('Job de la máquina (puedes dejarlo vacío y escribir una descripción después):','');
+  if(job===null) return;
+  const area = prompt('Área en m² (o déjalo vacío para capturar largo y ancho después):','');
+  if(area===null) return;
+  const largo = area ? '' : prompt('Largo de la máquina (m):','');
+  const ancho = area ? '' : prompt('Ancho de la máquina (m):','');
+  const desc = job ? '' : prompt('Descripción de la máquina:','');
+  const it = await pisoGuardarItem({job, descripcion: desc||'', area_m2: area, largo_m: largo, ancho_m: ancho, en_piso: true});
+  if(it) toast('Agregado al piso','ok');
+}
+async function pisoEliminar(pid){
+  if(!confirm('¿Quitar esta máquina/Job de la lista del piso?')) return;
+  const r = await apiCall('DELETE','/piso-ensamble/items/'+encodeURIComponent(pid));
+  if(r.error){ toast(r.error,'er'); return; }
+  _piso = r; pisoRender();
+}
+async function pisoImportar(){
+  const s = _piso.sugerencias;
+  if(!confirm(`Se agregarán ${s.length} Job(s) con su espacio requerido de Configurar Proyecto:\n\n${s.map(x=>`• ${x.job} — ${x.m2} m²${x.customer?' · '+x.customer:''}`).join('\n')}\n\n¿Continuar?`)) return;
+  const r = await apiCall('POST','/piso-ensamble/importar-config',{});
+  if(r.error){ toast(r.error,'er'); return; }
+  _piso = r; pisoRender(); toast(`${r.agregados} Job(s) agregados`,'ok');
 }
