@@ -5757,6 +5757,65 @@ def api_get_po():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── rev117: reparar los renglones de POs generadas que se perdieron ───────────────
+def _ipo_reparar_gpo(aplicar=True):
+    """Para cada PO generada (no cancelada), revisa que la lista de Purchase Orders tenga
+    un renglón por partida. Agrega los que falten (no modifica los existentes).
+    Regresa [{po, year, agregados: [part_number…], subtotal_agregado}]."""
+    reporte = []
+    gpos = gpo_load()
+    por_anio = {}
+    for g in gpos:
+        if g.get("status") in ("Cancelada",): continue
+        try: y = int(str(g.get("created_at") or CURRENT_YEAR)[:4])
+        except ValueError: y = CURRENT_YEAR
+        por_anio.setdefault(y, []).append(g)
+    norm = lambda x: str(x or "").upper().replace("PO#", "PO-").replace("PO_", "PO-")
+    for y, lista in por_anio.items():
+        recs = po_load(y); cambio = False
+        for g in lista:
+            pn = norm(g.get("po_number"))
+            filas = [r for r in recs if norm(r.get("gpo_number") or r.get("clave")) == pn]
+            disponibles = [(str(r.get("part_number") or "").upper(), str(r.get("entregar_a") or "").upper()) for r in filas]
+            faltan = []
+            for it in g.get("items") or []:
+                k = (str(it.get("part_number") or "").upper(), str(it.get("job") or "").upper())
+                if k in disponibles: disponibles.remove(k)
+                else: faltan.append(it)
+            if not faltan: continue
+            moneda = g.get("moneda") or "USD"; fx = float(g.get("fx_rate") or 1) or 1
+            estatus = {"Entregada": "Recepcionada"}.get(g.get("status"), g.get("status") or "Emitida")
+            plantilla = filas[0] if filas else {}
+            agregados, sub_tot = [], 0.0
+            for it in faltan:
+                if g.get("status") == "Cierre Anticipado":
+                    sub = round(float(it.get("quantity_delivered") or 0) * float(it.get("unit_price") or 0), 2)
+                else:
+                    sub = round(float(it.get("total") or (float(it.get("quantity") or 0) * float(it.get("unit_price") or 0))), 2)
+                recs.append({
+                    "clave": pn, "fecha_doc": str(g.get("created_at") or "")[:10], "entregar_a": it.get("job") or g.get("job") or "",
+                    "nombre": g.get("supplier_name") or plantilla.get("nombre", ""), "subtotal": sub, "moneda": moneda,
+                    "tipo_cambio": fx if moneda == "MXN" else 1.0, "subtotal_mxn": sub if moneda == "MXN" else round(sub * float(plantilla.get("tipo_cambio") or 1), 2),
+                    "estatus": plantilla.get("estatus") or estatus, "descuento_financiero": 0, "pct_descuento": 0,
+                    "fecha_recepcion": plantilla.get("fecha_recepcion", ""), "gpo_number": pn, "gpo_pdf": not filas and not agregados,
+                    "cpo": g.get("cpo") or plantilla.get("cpo", ""), "po_sae": g.get("po_sae") or plantilla.get("po_sae"),
+                    "part_number": it.get("part_number"), "description": it.get("description"), "quantity": it.get("quantity"),
+                    "unit_price": it.get("unit_price"), "_reparado_rev117": datetime.datetime.now().isoformat(timespec="seconds")})
+                agregados.append(it.get("part_number")); sub_tot += sub; cambio = True
+            reporte.append({"po": pn, "year": y, "agregados": agregados, "subtotal_agregado": round(sub_tot, 2), "moneda": moneda})
+        if cambio and aplicar:
+            po_save(y, recs)
+    return reporte
+
+@app.route("/api/po/reparar-gpo", methods=["GET", "POST"])
+def api_po_reparar_gpo():
+    """GET: qué falta (sin cambiar nada). POST: agrega los renglones faltantes."""
+    if not is_admin(): return jsonify({"error": "Solo el administrador"}), 403
+    with lock:
+        rep_ = _ipo_reparar_gpo(aplicar=request.method == "POST")
+    return jsonify({"ok": True, "aplicado": request.method == "POST", "ordenes": rep_,
+                    "renglones": sum(len(r["agregados"]) for r in rep_)})
+
 @app.route("/api/po/template", methods=["GET"])
 def api_po_template():
     """rev114: plantilla de Excel para "Cargar Excel" de Purchase Orders, con los mismos
@@ -5910,18 +5969,20 @@ def api_import_po_excel():
             return jsonify({"error": "No se encontraron registros válidos en el archivo"}), 400
 
         with lock:
+            existing = po_load(year)
+            # rev117: los renglones de las POs generadas en la Suite (gpo_number) y los
+            # divididos (_split_origin) NUNCA se tocan desde el Excel. Antes, el modo
+            # Acumular indexaba por Clave y dejaba un solo renglón por PO generada con
+            # varios ítems (todas sus partidas comparten la Clave PO-…), y Reemplazar las
+            # borraba todas.
+            protegidos = [r for r in existing if r.get("gpo_number") or r.get("_split_origin")]
+            de_excel   = [r for r in existing if not (r.get("gpo_number") or r.get("_split_origin"))]
             if mode == "replace":
-                final = imported
+                final = imported + protegidos
             else:
-                existing = po_load(year)
-                # Preserve split records (they share a clave but are distinct)
-                # Merge: imported records update by clave, but don't touch _split_origin records
-                split_records  = [r for r in existing if r.get("_split_origin")]
-                normal_records = [r for r in existing if not r.get("_split_origin")]
-                existing_map   = {str(r["clave"]): r for r in normal_records}
-                for rec in imported:
-                    existing_map[str(rec["clave"])] = rec
-                final = list(existing_map.values()) + split_records
+                claves_nuevas = {str(rec["clave"]) for rec in imported}
+                conservados = [r for r in de_excel if str(r.get("clave")) not in claves_nuevas]
+                final = conservados + imported + protegidos
             po_save(year, final)
 
         return jsonify({
@@ -21554,6 +21615,15 @@ def _cpc_migrar_moneda():
     except Exception as e:
         print(f"[CPC] migración de moneda: {e}")
 _cpc_migrar_moneda()
+
+# rev117: renglones de POs generadas que el "Cargar Excel" había borrado
+try:
+    with lock:
+        _rep117 = _ipo_reparar_gpo(aplicar=True)
+    if _rep117:
+        print(f"[POs] Renglones restaurados en {len(_rep117)} PO(s) generada(s): " + ", ".join(f"{r['po']} (+{len(r['agregados'])})" for r in _rep117))
+except Exception as _e:
+    print(f"[POs] reparación de renglones: {_e}")
 
 # rev113: contadores de folios al día con los folios ya usados
 try:
