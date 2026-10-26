@@ -124,6 +124,7 @@ function switchMenu(mod, groupId) {
   if(mod==='fin-datos-fiscales') { setTimeout(dfCargar,100); }
   if(mod==='fin-ordenes-cobro') { setTimeout(ocCargar,100); }
   if(mod==='mgmt-income-forecast') { setTimeout(ifCargar,100); }
+  if(mod==='fin-prog-pagos') { setTimeout(ppCargar,100); }
   if(mod==='personal-listado') { setTimeout(loadPersonal,100); }
   if(mod==='consignacion') { setTimeout(loadCsg,50); }
   if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
@@ -5978,9 +5979,9 @@ let USER_PERMS = null;
 
 // rev77: módulos que heredan el nivel de otro mientras el administrador no les fije uno
 const MODULOS_HEREDAN = {'projconfig-dashboard':'projconfig','projconfig-presupuesto':'projconfig','projconfig-timing':'projconfig',
-  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc','mgmt-income-forecast':'fin-cpc'};
+  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc','mgmt-income-forecast':'fin-cpc','fin-prog-pagos':'fin-cpp'};
 const MODULE_LABELS = {
-  'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)', 'fin-datos-fiscales':'Datos fiscales', 'fin-ordenes-cobro':'Órdenes de cobro', 'mgmt-income-forecast':'Management — Income Forecast',
+  'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)', 'fin-datos-fiscales':'Datos fiscales', 'fin-ordenes-cobro':'Órdenes de cobro', 'mgmt-income-forecast':'Management — Income Forecast', 'fin-prog-pagos':'Programación de pagos',
   // Proyectos
   'jobs':'Job Register', 'pt':'PT Numbers', 'sv':'SV Numbers',
   'rates':'Hourly Rates', 'quotes':'Quote Register',
@@ -6037,7 +6038,7 @@ const MODULE_GROUPS = [
   { label: '✈ Servicio',             mods: ['viaticos','gastos-viaje','envios'] },
   { label: '⚙ Configurar Proyecto',   mods: ['projconfig','projconfig-dashboard','projconfig-presupuesto','projconfig-timing','projconfig-abiertos','projconfig-cambios','projconfig-documentos'] },
   { label: '📊 Control de Costo',     mods: ['wh','report','multirpt','fx'] },
-  { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-cpc','fin-ordenes-cobro','fin-pagos','fin-esquemas','fin-datos-fiscales'] },
+  { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-prog-pagos','fin-cpc','fin-ordenes-cobro','fin-pagos','fin-esquemas','fin-datos-fiscales'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-tipos-puesto','personal-perfiles','personal-listado'] },
   { label: '📈 Management',           mods: ['rrhh-kpis','mgmt-income-forecast'] },
   { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os','ops-piso'] },
@@ -6287,6 +6288,7 @@ function applyPermsToDom(d) {
     'fin-datos-fiscales': ["switchMenu('fin-datos-fiscales'"],
     'fin-ordenes-cobro':  ["switchMenu('fin-ordenes-cobro'"],
     'mgmt-income-forecast': ["switchMenu('mgmt-income-forecast'"],
+    'fin-prog-pagos':     ["switchMenu('fin-prog-pagos'"],
     'compras-requisicion':["switchMenu('requisicion'"],
     'fin-pagos':          ["switchMenu('fin-pagos'"],
     'fin-esquemas':       ["switchMenu('fin-esquemas'"],
@@ -10514,6 +10516,7 @@ function provOpenPanel(clave) {
   document.getElementById('pp-clas').textContent   = r.clasificacion||'—';
   document.getElementById('pp-fpago').textContent  = r.forma_pago||'—';
   document.getElementById('pp-tpago').textContent  = r.terminos_pago||'—';
+  document.getElementById('pp-dias').textContent   = r.dias_credito!=null && r.dias_credito!=='' ? `${r.dias_credito} días` : '—';
   document.getElementById('pp-moneda').textContent = r.moneda||'—';
   document.getElementById('pp-fult').textContent   = r.fecha_ultima_compra||'—';
   document.getElementById('prov-dp').textContent   = `Documentos — ${r.nombre}`;
@@ -10574,7 +10577,7 @@ function provOpenNew() {
   provEditClave = null;
   document.getElementById('prov-new-title').textContent = 'Nuevo Proveedor';
   document.getElementById('btn-prov-del').style.display = 'none';
-  ['pn-nombre','pn-rfc','pn-tel','pn-calle','pn-ni','pn-ne','pn-clas','pn-tpago'].forEach(id=>document.getElementById(id).value='');
+  ['pn-nombre','pn-rfc','pn-tel','pn-calle','pn-ni','pn-ne','pn-clas','pn-tpago','pn-dias'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('pn-clave').value  = '';
   document.getElementById('pn-fult').value   = '';
   document.getElementById('pn-est').value    = 'Activo';
@@ -10598,6 +10601,7 @@ function provOpenEdit(clave) {
   document.getElementById('pn-ne').value      = r.num_exterior||'';
   document.getElementById('pn-clas').value    = r.clasificacion||'';
   document.getElementById('pn-tpago').value   = r.terminos_pago||'';
+  document.getElementById('pn-dias').value    = r.dias_credito ?? '';                       // rev123
   document.getElementById('pn-fult').value    = r.fecha_ultima_compra||'';
   document.getElementById('pn-est').value     = r.estatus||'Activo';
   document.getElementById('pn-moneda').value  = r.moneda||'MXN';
@@ -10640,6 +10644,7 @@ async function saveProveedor() {
     fecha_ultima_compra:document.getElementById('pn-fult').value,
     forma_pago:  document.getElementById('pn-fpago').value,
     terminos_pago:document.getElementById('pn-tpago').value.trim(),
+    dias_credito: document.getElementById('pn-dias').value,                                 // rev123
     moneda:      document.getElementById('pn-moneda').value,
   };
   try {
@@ -17650,11 +17655,13 @@ function cppRender() {
       <td>${esc(r.factura||'—')}</td>
       <td style="color:var(--muted2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.supplier_name||'—')}</td>
       <td style="text-align:right;font-family:'DM Mono',monospace;color:${r.monto<0?'var(--red)':'var(--green)'}">${fmt(r.monto)}</td>
-      <td>${esc(r.fecha||'—')}</td>
+      <td>${esc(r.fecha_factura||r.fecha||'—')}</td>
+      <td title="${r.dias_credito_efectivo!=null?`${r.dias_credito_efectivo} días (${r.dias_origen==='CPP'?'de esta CPP':'del proveedor'})${r.fecha_vencimiento_manual?' · fecha manual':''}`:'Sin días de crédito'}" style="${r.estatus_pago==='Vencido'?'color:var(--red);font-weight:700':''}">${r.fecha_vencimiento||'<span style="color:var(--muted)">—</span>'}${r.estatus_pago==='Vencido'?`<div style="font-size:9.5px">${r.dias_vencido} d vencida</div>`:''}</td>
+      <td>${r.fecha_programada?`${esc(r.fecha_programada)}<div style="font-size:9.5px;color:var(--muted)">${esc(r.semana_programada||'')}</div>`:'<span style="color:var(--muted)">—</span>'}${!pagado && permCanCreate('fin-cpp')?` <button class="fi-del" style="font-size:10px;color:var(--muted2)" onclick="cppProgAbrir('${esc(r.cpp_number)}')">Programar</button>`:''}</td>
       <td style="color:var(--muted2)">${esc(r.usuario||'—')}</td>
       <td>${pagado
         ? '<span style="font-size:10px;color:var(--green);font-weight:700">✓ Pagado</span>'
-        : '<span style="font-size:10px;color:var(--amber)">Pendiente</span>'}</td>
+        : `<span style="font-size:10px;font-weight:700;color:${{'Vencido':'var(--red)','Programado':'#1d4ed8','Por vencer':'var(--amber)'}[r.estatus_pago]||'var(--muted2)'}">${esc(r.estatus_pago||'Pendiente')}</span>`}</td>
       <td><button class="fi-del" style="font-size:13px" title="Ver PDF" onclick="window.open('/api/cpp/${encodeURIComponent(r.cpp_number)}/pdf','_blank')">Ver PDF</button></td>
     </tr>`;
   }).join('');
@@ -20057,4 +20064,119 @@ function ifExportar(){
   const csv = ['Fecha esperada de cobro,Job,PT/SV,Cliente,Milestone,%,Fecha estimada,Dias vencimiento,Monto USD,Fuente,Estatus,Vencido,Orden de cobro,Factura CPC',
     ...L.map(r=>[r.fecha_cobro,r.job,r.ptsv,r.cliente,r.milestone,r.porcentaje,r.fecha_estimada,r.dias_vencimiento,r.monto,r.fuente,r.estatus,r.vencido?'SI':'NO',r.orden_cobro,r.cpc_id].map(q).join(','))].join('\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv'})); a.download = `income_forecast_${_if.hoy}.csv`; a.click();
+}
+
+
+// ════════════════════════════════════════════════════════
+//  rev123 — CPP: vencimiento y programación de pagos
+// ════════════════════════════════════════════════════════
+let _cpg = null;
+function cppProgAbrir(num){
+  const src = (typeof _pp!=='undefined' && _pp && _pp.records || []).concat(cppData||[]);
+  const r = src.find(x=>x.cpp_number===num); if(!r) return;
+  _cpg = r;
+  document.getElementById('cpg-num').textContent = num;
+  const f = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2});
+  document.getElementById('cpg-info').innerHTML = `<b>${esc(r.supplier_name||'')}</b> · Factura ${esc(r.factura||'—')} del ${esc(r.fecha_factura||'—')} · ${f(r.monto_abs ?? Math.abs(r.monto||0))} ${esc(r.moneda||'')}`;
+  document.getElementById('cpg-dias').value = r.dias_credito ?? '';
+  document.getElementById('cpg-dias').placeholder = r.dias_origen==='proveedor' ? `${r.dias_credito_efectivo} (del proveedor)` : 'sin dato';
+  const v = document.getElementById('cpg-venc'); v.value = r.fecha_vencimiento || ''; v.dataset.manual = r.fecha_vencimiento_manual ? '1' : '';
+  document.getElementById('cpg-prog').value = r.fecha_programada || '';
+  const hs = r.historial_programacion || [];
+  document.getElementById('cpg-hist-box').style.display = hs.length ? '' : 'none';
+  document.getElementById('cpg-hist').innerHTML = hs.slice().reverse().map(h=>`<div style="border-top:1px solid var(--border);padding:3px 0">${esc(String(h.fecha).replace('T',' '))} · ${esc(h.usuario||'')}<div style="color:var(--muted2)">${esc(h.detalle)}</div></div>`).join('');
+  cpgCalc(true);
+  document.getElementById('mo-cpp-prog').classList.add('on');
+}
+function cpgCalc(inicial){
+  const d = document.getElementById('cpg-dias').value, v = document.getElementById('cpg-venc');
+  const dias = d!=='' ? Number(d) : (_cpg.dias_origen==='proveedor' ? _cpg.dias_credito_efectivo : null);
+  if(!inicial && v.dataset.manual!=='1' && _cpg.fecha_factura && dias!=null){
+    const x = new Date(_cpg.fecha_factura+'T12:00:00'); x.setDate(x.getDate()+dias); v.value = x.toISOString().slice(0,10);
+  }
+  document.getElementById('cpg-hint').textContent = dias!=null ? `Vencimiento calculado = ${_cpg.fecha_factura||'fecha de factura'} + ${dias} días. Si cambias la fecha a mano, se respeta.` : 'Captura los días de crédito (o en el proveedor) para calcular el vencimiento.';
+}
+async function cpgGuardar(){
+  const v = document.getElementById('cpg-venc');
+  const body = { dias_credito: document.getElementById('cpg-dias').value, fecha_programada: document.getElementById('cpg-prog').value || null,
+                 fecha_vencimiento_manual: v.dataset.manual==='1' ? (v.value || null) : null };
+  const r = await apiCall('PUT', `/cpp/${encodeURIComponent(_cpg.cpp_number)}/programacion`, body);
+  if(r.error){ toast(r.error,'er'); return; }
+  closeMo('mo-cpp-prog'); toast('Programación guardada','ok');
+  if(document.getElementById('mod-fin-prog-pagos')?.classList.contains('on')) ppCargar(); else loadCPP();
+}
+
+let _pp = null;
+const ppFmt = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+async function ppCargar(){
+  try{ _pp = await fetch('/api/cpp/programacion').then(r=>r.json()); if(_pp.error) throw new Error(_pp.error); }
+  catch(e){ document.getElementById('pp-tb').innerHTML = `<tr><td colspan="13" style="color:var(--red);padding:16px">⚠ ${esc(e.message)}</td></tr>`; return; }
+  ppRender();
+}
+function ppFiltradas(){
+  const q=(document.getElementById('pp-q').value||'').toLowerCase(), est=document.getElementById('pp-est').value;
+  return _pp.records.filter(r => (!q || [r.cpp_number,r.supplier_name,r.factura,r.po_number,r.job].join(' ').toLowerCase().includes(q))
+    && (!est || (est==='sin-prog' ? !r.fecha_programada : r.estatus_pago===est)));
+}
+function ppRender(){
+  const a = _pp.aging, card = (t,v,col,sub) => `<div style="background:var(--card,#fff);border:1px solid var(--border);border-radius:10px;padding:10px 12px"><div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${t}</div><div style="font-size:19px;font-weight:800;color:${col||'var(--text)'};margin-top:2px">${ppFmt(v)}</div><div style="font-size:10.5px;color:var(--muted2)">${sub||''}</div></div>`;
+  const tot = Object.values(a).reduce((x,y)=>x+y,0);
+  document.getElementById('pp-aging').innerHTML = card('Total por pagar',tot,null,'USD equiv.'+(_pp.sin_tc?` · ${_pp.sin_tc} sin TC`:'')) + card('Por vencer',a['Por vencer'],'#1f8a4c')
+    + card('Vencido 1–30',a['1-30'],a['1-30']?'var(--amber)':null) + card('Vencido 31–60',a['31-60'],a['31-60']?'var(--red)':null)
+    + card('Vencido 61–90',a['61-90'],a['61-90']?'var(--red)':null) + card('Vencido 91+',a['91+'],a['91+']?'var(--red)':null)
+    + card('Sin vencimiento',a['Sin vencimiento'],a['Sin vencimiento']?'var(--amber)':null,'Falta días de crédito');
+  // pivote proveedor × semana (8 semanas desde la actual + sin programar)
+  const sems = [], d0 = new Date(_pp.hoy+'T12:00:00');
+  const isoW = d => { const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())); const day=t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-day); const y=t.getUTCFullYear(); const w=Math.ceil(((t-Date.UTC(y,0,1))/86400000+1)/7); return `${y}-W${String(w).padStart(2,'0')}`; };
+  for(let i=0;i<8;i++){ const d=new Date(d0); d.setDate(d.getDate()+7*i); sems.push(isoW(d)); }
+  const filas = {}, usd = r => r.monto_usd||0;
+  _pp.records.forEach(r=>{ const k=r.supplier_name||'—'; const f=filas[k]=filas[k]||{tot:0}; let col = r.semana_programada||'Sin programar';
+    if(r.semana_programada && r.semana_programada < sems[0]) col = 'Antes'; else if(r.semana_programada && !sems.includes(r.semana_programada)) col = 'Después';
+    f[col]=(f[col]||0)+usd(r); f.tot+=usd(r); });
+  const cols = ['Antes', ...sems, 'Después', 'Sin programar'].filter(c => Object.values(filas).some(f=>f[c]) || sems.includes(c));
+  const etiqueta = c => sems.includes(c) ? `Sem ${c.split('-W')[1]}${c===_pp.semana_actual?' (actual)':''}` : c==='Antes' ? 'Semanas pasadas' : c;
+  const prov = Object.entries(filas).sort((x,y)=>y[1].tot-x[1].tot);
+  const sumCol = c => prov.reduce((a,[,f])=>a+(f[c]||0),0);
+  const cel = v => v ? `<td style="text-align:right;font-family:'DM Mono',monospace;padding:4px 8px">${(v).toLocaleString('en-US',{maximumFractionDigits:0})}</td>` : '<td style="text-align:right;color:var(--muted);padding:4px 8px">·</td>';
+  document.getElementById('pp-pivot').innerHTML = prov.length ? `<table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr><th style="text-align:left;padding:4px 8px;cursor:default">Proveedor</th>${cols.map(c=>`<th style="text-align:right;padding:4px 8px;cursor:default;white-space:nowrap;${c==='Sin programar'?'color:var(--amber)':c==='Antes'?'color:var(--red)':''}">${etiqueta(c)}</th>`).join('')}<th style="text-align:right;padding:4px 8px;cursor:default">Total</th></tr></thead>
+    <tbody>${prov.map(([k,f])=>`<tr style="border-top:1px solid var(--border)"><td style="padding:4px 8px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis">${esc(k)}</td>${cols.map(c=>cel(f[c])).join('')}<td style="text-align:right;font-weight:700;font-family:'DM Mono',monospace;padding:4px 8px">${f.tot.toLocaleString('en-US',{maximumFractionDigits:0})}</td></tr>`).join('')}
+    <tr style="border-top:2px solid var(--border);font-weight:700"><td style="padding:5px 8px">Total</td>${cols.map(c=>cel(sumCol(c))).join('')}<td style="text-align:right;font-family:'DM Mono',monospace;padding:5px 8px">${prov.reduce((a,[,f])=>a+f.tot,0).toLocaleString('en-US',{maximumFractionDigits:0})}</td></tr></tbody></table>`
+    : '<div style="padding:14px;text-align:center;color:var(--muted)">Sin CPP pendientes</div>';
+  const L = ppFiltradas(), col = {'Vencido':'var(--red)','Programado':'#1d4ed8','Por vencer':'var(--amber)','Sin vencimiento':'var(--muted2)'};
+  document.getElementById('pp-tb').innerHTML = L.map(r=>`<tr style="${r.estatus_pago==='Vencido'?'background:rgba(200,16,46,.05)':''}">
+      <td><input type="checkbox" class="pp-chk" value="${esc(r.cpp_number)}" onchange="ppSelTxt()"></td>
+      <td style="font-family:'DM Mono',monospace;color:var(--gold);font-weight:700">${esc(r.cpp_number)}</td>
+      <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.supplier_name||'')}</td><td style="font-size:11px">${esc(r.factura||'—')}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:11px">${esc(r.po_number||'')}<div style="color:var(--amber)">${esc(r.job||'')}</div></td>
+      <td style="text-align:right;font-family:'DM Mono',monospace">${ppFmt(r.monto_abs)} <span style="font-size:10px;color:var(--muted)">${esc(r.moneda)}</span></td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--muted2)">${r.monto_usd==null?'<span style="color:var(--amber)">s/TC</span>':ppFmt(r.monto_usd)}</td>
+      <td style="font-size:11px">${esc(r.fecha_factura||'—')}</td>
+      <td style="font-size:11px" title="${r.dias_origen==='CPP'?'Capturado en esta CPP':r.dias_origen==='proveedor'?'Del proveedor':''}">${r.dias_credito_efectivo!=null?r.dias_credito_efectivo:'<span style="color:var(--amber)">—</span>'}${r.dias_origen==='CPP'?'*':''}</td>
+      <td style="font-size:11px;${r.estatus_pago==='Vencido'?'color:var(--red);font-weight:700':''}">${r.fecha_vencimiento||'—'}${r.dias_vencido?` <span style="font-size:9.5px">(${r.dias_vencido} d)</span>`:''}</td>
+      <td style="font-size:11px">${r.fecha_programada?`${esc(r.fecha_programada)} <span style="color:var(--muted)">${esc((r.semana_programada||'').replace('-W',' S'))}</span>`:'<span style="color:var(--amber)">sin programar</span>'}</td>
+      <td><span style="font-weight:700;font-size:11px;color:${col[r.estatus_pago]||'var(--text)'}">${esc(r.estatus_pago)}</span></td>
+      <td>${permCanCreate('fin-cpp')?`<button class="fi-del" style="font-size:11px;color:var(--muted2)" onclick="cppProgAbrir('${esc(r.cpp_number)}')">Editar</button>`:''}</td></tr>`).join('')
+    || '<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:22px">Sin CPP en el filtro.</td></tr>';
+  document.getElementById('pp-all').checked = false; ppSelTxt();
+}
+function ppTodas(v){ document.querySelectorAll('.pp-chk').forEach(c=>c.checked=v); ppSelTxt(); }
+function ppSelTxt(){
+  const sel = [...document.querySelectorAll('.pp-chk:checked')].map(c=>c.value);
+  const t = _pp.records.filter(r=>sel.includes(r.cpp_number)).reduce((a,r)=>a+(r.monto_usd||0),0);
+  document.getElementById('pp-sel-txt').textContent = sel.length ? `${sel.length} seleccionada(s) · ${ppFmt(t)} USD equiv.` : '';
+}
+async function ppProgramarSel(quitar){
+  const sel = [...document.querySelectorAll('.pp-chk:checked')].map(c=>c.value);
+  if(!sel.length){ toast('Selecciona al menos una CPP','er'); return; }
+  const f = quitar ? null : document.getElementById('pp-fecha').value;
+  if(!quitar && !f){ toast('Elige la fecha programada de pago','er'); return; }
+  const r = await apiCall('POST','/cpp/programar',{cpp_numbers: sel, fecha_programada: f});
+  if(r.error){ toast(r.error,'er'); return; }
+  toast(quitar ? `Programación quitada a ${r.actualizadas} CPP` : `${r.actualizadas} CPP programada(s) para el ${f}`,'ok'); ppCargar();
+}
+function ppExportar(){
+  const L = ppFiltradas(), q = v => `"${String(v??'').replace(/"/g,'""')}"`;
+  const csv = ['CPP,Proveedor,Factura,OC,Job,Monto,Moneda,USD equiv,Fecha factura,Dias credito,Vencimiento,Dias vencida,Fecha programada,Semana,Estatus',
+    ...L.map(r=>[r.cpp_number,r.supplier_name,r.factura,r.po_number,r.job,r.monto_abs,r.moneda,r.monto_usd,r.fecha_factura,r.dias_credito_efectivo,r.fecha_vencimiento,r.dias_vencido,r.fecha_programada,r.semana_programada,r.estatus_pago].map(q).join(','))].join('\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv'})); a.download = `programacion_pagos_${_pp.hoy}.csv`; a.click();
 }

@@ -13258,6 +13258,7 @@ def api_create_proveedor():
                 "clasificacion":     str(data.get("clasificacion","")).strip(),
                 "forma_pago":        str(data.get("forma_pago","Transferencia")),
                 "terminos_pago":     str(data.get("terminos_pago","")).strip(),
+                "dias_credito":      _dias_credito_num(data.get("dias_credito"), data.get("terminos_pago")),   # rev123
                 "moneda":            str(data.get("moneda","MXN")),
                 "fecha_ultima_compra": str(data.get("fecha_ultima_compra","")).strip(),
                 "created_at":        datetime.datetime.now().isoformat(),
@@ -13279,6 +13280,8 @@ def api_update_proveedor(clave):
             for k in ["estatus","nombre","rfc","calle","num_interior","num_exterior",
                       "telefono","clasificacion","forma_pago","terminos_pago","moneda","fecha_ultima_compra"]:
                 if k in data: rec[k] = str(data[k]).strip()
+            if "dias_credito" in data or "terminos_pago" in data:            # rev123
+                rec["dias_credito"] = _dias_credito_num(data.get("dias_credito", rec.get("dias_credito")), rec.get("terminos_pago"))
             rec["nombre"] = rec["nombre"].upper()
             rec["rfc"]    = rec["rfc"].upper()
             rec["updated_at"] = datetime.datetime.now().isoformat()
@@ -19475,6 +19478,153 @@ def api_cpc_pdf(cpc_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ══════════════════════════════════════════════════════════════════
+#  rev123 — CPP: fecha de vencimiento y programación de pagos
+#  · Días de crédito del proveedor (campo numérico; si no se capturó, se interpreta su
+#    texto "Términos de pago": "30 días", "NET 60", "contado"…).
+#  · Vencimiento = fecha de la factura (CFDI) + días de crédito (naturales), editable.
+#  · Fecha programada de pago (semana) que asigna Finanzas, individual o masiva.
+# ══════════════════════════════════════════════════════════════════
+def _dias_credito_num(v, texto=None):
+    try:
+        if v not in (None, ""):
+            n = int(float(v))
+            return n if 0 <= n <= 365 else None
+    except (TypeError, ValueError):
+        pass
+    t = str(texto or "").lower()
+    if not t: return None
+    if re.search(r"contado|inmediat|anticipad|prepago|cash", t): return 0
+    m = re.search(r"(\d{1,3})", t)
+    return int(m.group(1)) if m and int(m.group(1)) <= 365 else None
+
+def _cpp_enriquecer(cpps):
+    """Agrega a cada CPP (sin guardarlo) su fecha de factura, moneda, días de crédito,
+    vencimiento, semana programada y estatus de pago."""
+    purs = {p.get("pur_number"): p for p in pur_load()}
+    provs = {str(pv.get("nombre") or "").strip().upper(): pv for pv in prov_load()}
+    gpos = {str(g.get("po_number") or "").upper(): g for g in gpo_load()}
+    fx_all = None
+    hoy = datetime.date.today()
+    for c in cpps:
+        pur = purs.get(c.get("pur_number")) or {}
+        cf = pur.get("cfdi") or {}
+        f_fac = str(cf.get("fecha") or "")[:10] or str(c.get("fecha") or "")[:10]
+        c["fecha_factura"] = f_fac
+        g = gpos.get(str(c.get("po_number") or "").upper()) or {}
+        moneda = (cf.get("moneda") or g.get("moneda") or "MXN").upper()
+        c["moneda"] = "USD" if moneda == "USD" else "MXN"
+        tc = cf.get("tipo_cambio") or (g.get("fx_rate") if c["moneda"] == "MXN" and g.get("fx_rate") not in (None, 1, 1.0) else None)
+        if c["moneda"] == "MXN" and not tc:
+            if fx_all is None: fx_all = fx_load_all()
+            tc = fx_rate_for_date(f_fac or hoy.isoformat(), fx_all)
+        c["tipo_cambio"] = float(tc) if tc else None
+        monto = abs(float(c.get("monto") or 0))
+        c["monto_abs"] = round(monto, 2)
+        c["monto_usd"] = (round(monto / c["tipo_cambio"], 2) if c.get("tipo_cambio") else None) if c["moneda"] == "MXN" else round(monto, 2)
+        pv = provs.get(str(c.get("supplier_name") or "").strip().upper()) or {}
+        dias_prov = _dias_credito_num(pv.get("dias_credito"), pv.get("terminos_pago"))
+        dias = c.get("dias_credito") if c.get("dias_credito") is not None else dias_prov
+        c["dias_credito_efectivo"] = dias
+        c["dias_origen"] = "CPP" if c.get("dias_credito") is not None else ("proveedor" if dias_prov is not None else None)
+        if c.get("fecha_vencimiento_manual"):
+            c["fecha_vencimiento"] = c["fecha_vencimiento_manual"]
+        else:
+            try:
+                c["fecha_vencimiento"] = (datetime.date.fromisoformat(f_fac) + datetime.timedelta(days=int(dias))).isoformat() if f_fac and dias is not None else None
+            except ValueError:
+                c["fecha_vencimiento"] = None
+        prog = c.get("fecha_programada"); c["semana_programada"] = None
+        if prog:
+            try:
+                y, w, _d = datetime.date.fromisoformat(prog).isocalendar(); c["semana_programada"] = f"{y}-W{w:02d}"
+            except ValueError:
+                pass
+        pagado = (c.get("estatus") or "Pendiente") == "Pagado"
+        venc = c.get("fecha_vencimiento")
+        if pagado: est = "Pagado"
+        elif venc and venc < hoy.isoformat(): est = "Vencido"
+        elif prog: est = "Programado"
+        elif not venc: est = "Sin vencimiento"
+        else: est = "Por vencer"
+        c["estatus_pago"] = est
+        c["dias_vencido"] = (hoy - datetime.date.fromisoformat(venc)).days if (venc and not pagado and venc < hoy.isoformat()) else 0
+    return cpps
+
+@app.route("/api/cpp/<cpp_number>/programacion", methods=["PUT"])
+def api_cpp_programacion(cpp_number):
+    """Días de crédito / vencimiento manual / fecha programada de una CPP."""
+    if not can("create", "fin-cpp"): return jsonify({"error": "Sin permiso"}), 403
+    d = request.json or {}
+    with lock:
+        cpps = cpp_load()
+        c = next((x for x in cpps if str(x.get("cpp_number") or "").upper() == cpp_number.upper()), None)
+        if not c: return jsonify({"error": "CPP no encontrada"}), 404
+        if (c.get("estatus") or "") == "Pagado": return jsonify({"error": "La CPP ya está pagada"}), 400
+        antes = {k: c.get(k) for k in ("dias_credito", "fecha_vencimiento_manual", "fecha_programada")}
+        if "dias_credito" in d:
+            if d.get("dias_credito") in (None, ""): c["dias_credito"] = None
+            else:
+                c["dias_credito"] = _dias_credito_num(d.get("dias_credito"))
+                if c["dias_credito"] is None: return jsonify({"error": "Los días de crédito deben ser un número entre 0 y 365"}), 400
+        for k in ("fecha_vencimiento_manual", "fecha_programada"):
+            if k in d:
+                v = str(d.get(k) or "")[:10] or None
+                if v:
+                    try: datetime.date.fromisoformat(v)
+                    except ValueError: return jsonify({"error": "Fecha inválida"}), 400
+                c[k] = v
+        cambios = [f"{k}: {antes[k]} → {c.get(k)}" for k in antes if antes[k] != c.get(k)]
+        if cambios:
+            c.setdefault("historial_programacion", []).append({"fecha": datetime.datetime.now().isoformat(timespec="seconds"),
+                                                               "usuario": session.get("user", ""), "detalle": "; ".join(cambios)})
+        cpp_save(cpps)
+    return jsonify({"ok": True, "record": _cpp_enriquecer([dict(c)])[0]})
+
+@app.route("/api/cpp/programar", methods=["POST"])
+def api_cpp_programar_masivo():
+    """Asigna la misma fecha programada de pago a varias CPP (o la quita con fecha vacía)."""
+    if not can("create", "fin-cpp"): return jsonify({"error": "Sin permiso"}), 403
+    d = request.json or {}
+    nums = {str(x).upper() for x in d.get("cpp_numbers") or []}
+    f = str(d.get("fecha_programada") or "")[:10] or None
+    if f:
+        try: datetime.date.fromisoformat(f)
+        except ValueError: return jsonify({"error": "Fecha inválida"}), 400
+    if not nums: return jsonify({"error": "Selecciona al menos una CPP"}), 400
+    n = 0
+    with lock:
+        cpps = cpp_load()
+        for c in cpps:
+            if str(c.get("cpp_number") or "").upper() in nums and (c.get("estatus") or "") != "Pagado" and c.get("fecha_programada") != f:
+                c.setdefault("historial_programacion", []).append({"fecha": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "usuario": session.get("user", ""), "detalle": f"fecha_programada: {c.get('fecha_programada')} → {f}"})
+                c["fecha_programada"] = f; n += 1
+        cpp_save(cpps)
+    return jsonify({"ok": True, "actualizadas": n})
+
+@app.route("/api/cpp/programacion", methods=["GET"])
+def api_cpp_programacion_resumen():
+    """CPP pendientes con vencimiento/programación, resumen por semana y antigüedad (aging)."""
+    if not can("view", "fin-cpp"): return jsonify({"error": "Sin permiso"}), 403
+    pend = _cpp_enriquecer([c for c in cpp_load() if (c.get("estatus") or "Pendiente") != "Pagado"])
+    hoy = datetime.date.today()
+    usd = lambda c: c.get("monto_usd") if c.get("monto_usd") is not None else 0.0
+    aging = {"Por vencer": 0.0, "1-30": 0.0, "31-60": 0.0, "61-90": 0.0, "91+": 0.0, "Sin vencimiento": 0.0}
+    for c in pend:
+        dv = c["dias_vencido"]
+        k = "Sin vencimiento" if not c.get("fecha_vencimiento") else ("Por vencer" if dv <= 0 else "1-30" if dv <= 30 else "31-60" if dv <= 60 else "61-90" if dv <= 90 else "91+")
+        aging[k] = round(aging[k] + usd(c), 2)
+    semanas = {}
+    for c in pend:
+        k = c.get("semana_programada") or "Sin programar"
+        s_ = semanas.setdefault(k, {"usd": 0.0, "MXN": 0.0, "USD": 0.0, "n": 0})
+        s_["usd"] = round(s_["usd"] + usd(c), 2); s_[c["moneda"]] = round(s_[c["moneda"]] + c["monto_abs"], 2); s_["n"] += 1
+    y, w, _ = hoy.isocalendar()
+    return jsonify({"records": sorted(pend, key=lambda c: (c.get("fecha_programada") or "9999", c.get("fecha_vencimiento") or "9999")),
+                    "aging": aging, "semanas": semanas, "semana_actual": f"{y}-W{w:02d}", "hoy": hoy.isoformat(),
+                    "sin_tc": sum(1 for c in pend if c.get("monto_usd") is None)})
+
 @app.route("/api/cpp", methods=["GET"])
 def api_get_cpp():
     if not can("view", "fin-cpp"): return jsonify({"error":"Sin permiso"}), 403
@@ -19491,6 +19641,7 @@ def api_get_cpp():
                 q in (r.get("factura","")).lower() or
                 q in (r.get("supplier_name","")).lower()]
         records = sorted(records, key=lambda r: r.get("created_at",""), reverse=True)
+        _cpp_enriquecer(records)                                          # rev123: vencimiento y programación
         return jsonify({"records": records, "total": len(records)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -19517,6 +19668,7 @@ def api_cpp_pendientes():
         if q:
             cpps = [c for c in cpps if q in (c.get("supplier_name","")).lower()]
         cpps = sorted(cpps, key=lambda c: c.get("created_at",""))
+        _cpp_enriquecer(cpps)                                             # rev123
         return jsonify({"records": cpps, "total": len(cpps)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
