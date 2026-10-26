@@ -2240,10 +2240,10 @@ def _catalog_path(name):
     return p / f"{name}.json"
 
 _CATALOG_MODEL = {"areas": ("nombre", "nombre"), "perfiles": ("pid", "pid"), "tipos_puesto": ("tpid", "tpid"),
-                  "kpi_asignaciones": ("kid", "kid"), "piso_ensamble": ("pid", "pid")}  # name -> (campo_json, columna_modelo)
+                  "kpi_asignaciones": ("kid", "kid"), "piso_ensamble": ("pid", "pid"), "ordenes_cobro": ("oid", "oid")}  # name -> (campo_json, columna_modelo)
 def _catalog_modelo(name):
     return {"areas": _orm.Area, "perfiles": _orm.Perfil, "tipos_puesto": _orm.TipoPuesto,
-            "kpi_asignaciones": _orm.KpiAsignacion, "piso_ensamble": _orm.PisoEnsamble}[name]
+            "kpi_asignaciones": _orm.KpiAsignacion, "piso_ensamble": _orm.PisoEnsamble, "ordenes_cobro": _orm.OrdenCobro}[name]
 
 def _load_catalog(name):
     if _orm and _orm.DB_ENABLED and name in _CATALOG_MODEL:
@@ -10413,7 +10413,7 @@ MODULES = [
     "projconfig-dashboard", "projconfig-presupuesto", "projconfig-timing",
     "projconfig-abiertos", "projconfig-cambios", "projconfig-documentos",
     # Finanzas
-    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales",
+    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales", "fin-ordenes-cobro",
     # Recursos Humanos
     "rrhh-asistencia", "rrhh-vacaciones", "rrhh-permisos", "rrhh-salario", "rrhh-sueldos", "rrhh-nomina",
     "personal-areas", "personal-tipos-puesto", "personal-perfiles", "personal-listado",
@@ -10893,7 +10893,8 @@ MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto
                    "personal-tipos-puesto": "personal-perfiles",
                    "rrhh-kpis": "personal-listado",
                    "ops-piso": "ops-capacidad",
-                   "fin-datos-fiscales": "fin-esquemas",   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
+                   "fin-datos-fiscales": "fin-esquemas",
+                   "fin-ordenes-cobro": "fin-cpc",          # rev121: Órdenes de cobro toma el nivel de CPC   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
                    "fin-cpc": "fin-cpp"}           # rev104: CPC toma el nivel de CPP mientras no se fije
 
 def nivel_heredado(info, mod):
@@ -11260,6 +11261,7 @@ _RESPALDO_GRUPOS = [   # (carpeta relativa, descripción) — solo para el resum
     ("SV_DOCS", "Documentos de SV"),
     ("PROV_DOCS", "Documentos de proveedores"),
     ("PERSONAL", "Documentos de personal, perfiles y permisos"),
+    ("FINANZAS/ordenes_cobro", "Evidencias de órdenes de cobro"),
 ]
 
 def _respaldo_archivos():
@@ -16009,6 +16011,144 @@ def api_datos_fiscales_put():
     _df_cache.update(t=0, v=None)
     return jsonify({"ok": True, "datos": d})
 
+# ══════════════════════════════════════════════════════════════════
+#  rev121 — HITOS DE PAGO (Configurar Proyecto) y ÓRDENES DE COBRO (Finanzas)
+# ══════════════════════════════════════════════════════════════════
+OC_EVID_DIR = Path(_DATA) / "FINANZAS" / "ordenes_cobro"
+
+def _oc_cpos_de_job(job):
+    """CPOs de revenue del Job (todas las de cualquier año)."""
+    jn = str(job or "").strip().upper(); out = []
+    for y in (cpo_available_years() or [CURRENT_YEAR]):
+        for c in cpo_load(y):
+            if str(c.get("job") or "").strip().upper() == jn and "REVENUE" in str(c.get("type_name") or "01_REVENUE").upper():
+                out.append({"id": c.get("id"), "po_number": c.get("po_number"), "value": float(c.get("value") or 0),
+                            "customer": c.get("customer"), "date": c.get("date"), "year": y,
+                            "tbd": "TBD" in str(c.get("po_number") or "").upper()})
+    return out
+
+def _oc_buscar_hito(ptsv, job, mid):
+    recs = projcfg_load()
+    cfg = next((r for r in recs if str(r.get("ptsv") or "").upper() == str(ptsv or "").upper()), None)
+    if not cfg: return recs, None, None, None
+    j = next((x for x in cfg.get("jobs") or [] if str(x.get("job_number") or "").upper() == str(job or "").upper()), None)
+    if not j: return recs, cfg, None, None
+    m = next((x for x in j.get("terminos_pago") or [] if x.get("mid") == mid), None)
+    return recs, cfg, j, m
+
+@app.route("/api/ordenes-cobro/cpos", methods=["GET"])
+def api_oc_cpos():
+    if not session.get("user"): return jsonify({"error": "No autenticado"}), 401
+    return jsonify(_oc_cpos_de_job(request.args.get("job")))
+
+@app.route("/api/ordenes-cobro", methods=["GET"])
+def api_oc_list():
+    if not can("view", "fin-ordenes-cobro"): return jsonify({"error": "Sin permiso"}), 403
+    recs = sorted(_load_catalog("ordenes_cobro") or [], key=lambda r: r.get("creado") or "", reverse=True)
+    return jsonify(recs)
+
+@app.route("/api/ordenes-cobro", methods=["POST"])
+def api_oc_crear():
+    """Genera la orden de cobro de un hito cumplido. multipart: ptsv, job, mid, cpo_id,
+    requiere_iva (si/no), notas, archivo (evidencia de aceptación o entrega)."""
+    if not (can("create", "fin-ordenes-cobro") or pc_tab_can("create", "presupuesto")):
+        return jsonify({"error": "Sin permiso para generar órdenes de cobro"}), 403
+    f = request.files.get("archivo")
+    ptsv, job, mid = request.form.get("ptsv"), request.form.get("job"), request.form.get("mid")
+    cpo_id = (request.form.get("cpo_id") or "").strip()
+    req_iva = str(request.form.get("requiere_iva") or "").lower() in ("1", "si", "sí", "true", "yes")
+    if not f or not f.filename: return jsonify({"error": "Adjunta la evidencia de aceptación o entrega"}), 400
+    if request.form.get("requiere_iva") in (None, ""): return jsonify({"error": "Indica si la factura requiere IVA"}), 400
+    raw = f.read()
+    if len(raw) > 25 * 1024 * 1024: return jsonify({"error": "La evidencia no debe pasar de 25 MB"}), 400
+    cpos = {c["id"]: c for c in _oc_cpos_de_job(job)}
+    if cpo_id not in cpos: return jsonify({"error": "Selecciona la CPO del Job"}), 400
+    cpo = cpos[cpo_id]
+    with lock:
+        recs, cfg, j, m = _oc_buscar_hito(ptsv, job, mid)
+        if not m: return jsonify({"error": "No se encontró el hito. Guarda la configuración del proyecto primero."}), 404
+        if m.get("orden_cobro"): return jsonify({"error": f"Este hito ya tiene la orden de cobro {m['orden_cobro']}"}), 409
+        if not m.get("cumplido"): return jsonify({"error": "Marca el hito como cumplido (y guarda) antes de generar la orden"}), 400
+        try: pct = float(m.get("porcentaje") or 0)
+        except (TypeError, ValueError): pct = 0
+        if pct <= 0: return jsonify({"error": "El hito no tiene porcentaje de cobro"}), 400
+        ordenes = _load_catalog("ordenes_cobro") or []
+        oid = _folio_libre("ODC", {o.get("oid") for o in ordenes})
+        subtotal = round(cpo["value"] * pct / 100, 2)
+        iva = round(subtotal * 0.16, 2) if req_iva else 0.0
+        nombre_arch = re.sub(r"[^\w.\- ]", "_", f.filename)[:120]
+        d = OC_EVID_DIR / oid; d.mkdir(parents=True, exist_ok=True)
+        (d / nombre_arch).write_bytes(raw)
+        ahora = datetime.datetime.now().isoformat(timespec="seconds")
+        orden = {"oid": oid, "estatus": "Por facturar", "ptsv": cfg.get("ptsv"), "job": j.get("job_number"),
+                 "cpo_id": cpo_id, "cpo_po_number": cpo.get("po_number"), "cliente": cpo.get("customer"), "cpo_valor": cpo["value"],
+                 "moneda": "USD", "hito": {"mid": mid, "nombre": m.get("nombre"), "porcentaje": pct, "fecha_estimada": m.get("fecha_estimada"),
+                                          "fecha_cumplido": m.get("fecha_cumplido") or ahora[:10]},
+                 "subtotal": subtotal, "requiere_iva": req_iva, "iva": iva, "total": round(subtotal + iva, 2),
+                 "evidencia": {"nombre": nombre_arch, "bytes": len(raw), "sha1": hashlib.sha1(raw).hexdigest()},
+                 "notas": (request.form.get("notas") or "").strip()[:500], "cpc_id": None,
+                 "creado": ahora, "creado_por": session.get("user", ""),
+                 "historial": [{"fecha": ahora, "usuario": session.get("user", ""), "accion": "Generada", "detalle": f"{m.get('nombre')} · {pct:g} %"}]}
+        if cpo.get("tbd"): orden["aviso"] = "La CPO tiene número TBD (pedido sin PO formal)."
+        ordenes.append(orden); _save_catalog("ordenes_cobro", ordenes)
+        m["orden_cobro"] = oid; m["cumplido"] = True; m["fecha_cumplido"] = m.get("fecha_cumplido") or ahora[:10]
+        projcfg_save(recs)
+    return jsonify({"ok": True, "orden": orden})
+
+@app.route("/api/ordenes-cobro/<oid>/evidencia", methods=["GET"])
+def api_oc_evidencia(oid):
+    if not (can("view", "fin-ordenes-cobro") or pc_tab_can("view", "presupuesto")): return jsonify({"error": "Sin permiso"}), 403
+    o = next((x for x in _load_catalog("ordenes_cobro") or [] if x.get("oid") == oid), None)
+    if not o: return jsonify({"error": "Orden no encontrada"}), 404
+    p_ = OC_EVID_DIR / oid / (o.get("evidencia") or {}).get("nombre", "")
+    if not p_.is_file(): return jsonify({"error": "No se encontró el archivo de evidencia en el servidor"}), 404
+    return send_file(str(p_), as_attachment=False, download_name=p_.name)
+
+@app.route("/api/ordenes-cobro/<oid>", methods=["PUT"])
+def api_oc_actualizar(oid):
+    """Cambiar estatus (Facturada con cpc_id / Cancelada) o notas."""
+    if not can("create", "fin-ordenes-cobro"): return jsonify({"error": "Sin permiso"}), 403
+    d = request.json or {}
+    with lock:
+        ordenes = _load_catalog("ordenes_cobro") or []
+        o = next((x for x in ordenes if x.get("oid") == oid), None)
+        if not o: return jsonify({"error": "Orden no encontrada"}), 404
+        ahora = datetime.datetime.now().isoformat(timespec="seconds")
+        if "notas" in d: o["notas"] = str(d.get("notas") or "").strip()[:500]
+        est = d.get("estatus")
+        if est and est != o.get("estatus"):
+            if est not in ("Por facturar", "Facturada", "Cancelada"): return jsonify({"error": "Estatus inválido"}), 400
+            if est == "Facturada":
+                o["cpc_id"] = (d.get("cpc_id") or o.get("cpc_id") or "").strip() or None
+                if not o["cpc_id"]: return jsonify({"error": "Indica la factura (CPC) con la que se facturó"}), 400
+            if est == "Cancelada":
+                if not (can("delete", "fin-ordenes-cobro")): return jsonify({"error": "Cancelar requiere permiso de Control total"}), 403
+                if o.get("estatus") == "Facturada":
+                    return jsonify({"error": f"La orden ya está facturada ({o.get('cpc_id')}); cancela primero la factura en CPC"}), 400
+                recs, cfg, j, m = _oc_buscar_hito(o.get("ptsv"), o.get("job"), (o.get("hito") or {}).get("mid"))
+                if m and m.get("orden_cobro") == oid:   # el hito queda libre para generar otra orden
+                    m["orden_cobro"] = None; projcfg_save(recs)
+            o["historial"] = (o.get("historial") or []) + [{"fecha": ahora, "usuario": session.get("user", ""), "accion": est,
+                                                          "detalle": (f"CPC {o.get('cpc_id')}" if est == "Facturada" else (d.get("motivo") or ""))}]
+            o["estatus"] = est
+        _save_catalog("ordenes_cobro", ordenes)
+    return jsonify({"ok": True, "orden": o})
+
+@app.route("/api/ordenes-cobro/<oid>/pdf", methods=["GET"])
+def api_oc_pdf(oid):
+    if not (can("view", "fin-ordenes-cobro") or pc_tab_can("view", "presupuesto")): return jsonify({"error": "Sin permiso"}), 403
+    o = next((x for x in _load_catalog("ordenes_cobro") or [] if x.get("oid") == oid), None)
+    if not o: return jsonify({"error": "Orden no encontrada"}), 404
+    h = o.get("hito") or {}
+    meta = [("Cliente", o.get("cliente") or ""), ("CPO", f"{o.get('cpo_id')} · PO {o.get('cpo_po_number') or ''}"), ("Job", o.get("job") or ""),
+            ("PT / SV", o.get("ptsv") or ""), ("Hito de pago", f"{h.get('nombre') or ''} ({h.get('porcentaje', 0):g} %)"),
+            ("Fecha de cumplimiento", h.get("fecha_cumplido") or ""), ("Valor de la CPO", f"${o.get('cpo_valor', 0):,.2f} {o.get('moneda')}"),
+            ("Subtotal", f"${o.get('subtotal', 0):,.2f}"), ("IVA", f"${o.get('iva', 0):,.2f}" if o.get("requiere_iva") else "No aplica"),
+            ("Evidencia", (o.get("evidencia") or {}).get("nombre", "")), ("Estatus", o.get("estatus") or ""),
+            ("Notas", o.get("notas") or "")]
+    html = _ledger_pdf_html("Orden de cobro", oid, str(o.get("creado") or "")[:10], meta, o.get("total", 0), f"Generada por {o.get('creado_por') or ''}")
+    return Response(html, mimetype="text/html")
+
 @app.route("/api/gpo/<po_number>/pdf")
 def api_gpo_pdf(po_number):
     try:
@@ -16386,6 +16526,25 @@ def api_create_projconfig():
                     else:
                         for f in PROJCONFIG_FULL_ONLY_JOB_FIELDS:
                             j[f] = 0
+
+            # rev121: los hitos de pago con orden de cobro los controla el servidor: se conserva
+            # su orden (y no se pueden borrar ni cambiar su % mientras la orden exista)
+            if existing:
+                prev_jobs = {str(j.get("job_number") or "").upper(): j for j in existing.get("jobs", [])}
+                for j in jobs_in:
+                    pj = prev_jobs.get(str(j.get("job_number") or "").upper())
+                    if not pj: continue
+                    prev_ms = {m.get("mid"): m for m in pj.get("terminos_pago") or [] if m.get("mid")}
+                    nuevos = list(j.get("terminos_pago") or [])
+                    ids = {m.get("mid") for m in nuevos}
+                    for m in nuevos:
+                        pm = prev_ms.get(m.get("mid"))
+                        if pm and pm.get("orden_cobro"):
+                            m.update(orden_cobro=pm["orden_cobro"], cumplido=True, porcentaje=pm.get("porcentaje"),
+                                     fecha_cumplido=pm.get("fecha_cumplido"))
+                    for mid, pm in prev_ms.items():
+                        if pm.get("orden_cobro") and mid not in ids: nuevos.append(pm)
+                    j["terminos_pago"] = nuevos
 
             # Remove existing config for same PT/SV (overwrite)
             records = [r for r in records if _n(r.get("ptsv")) != _n(ptsv)]
@@ -19123,9 +19282,22 @@ def api_create_cpc():
             if sobre and not data.get("confirmar_sobrefacturacion"):
                 return jsonify({"sobre_facturacion": sobre, "error": f"Con esta factura, la CPO {sobre['cpo']} quedaría facturada de más por ${sobre['exceso']:,.2f} USD"}), 409
             rec["id"] = _doc_next_number("CPC"); rec["year"] = year
+            if data.get("orden_cobro_id"): rec["orden_cobro_id"] = str(data["orden_cobro_id"])          # rev121
             if cfdi and cfdi.get("_sat"): rec["sat"] = cfdi.pop("_sat")              # rev109
             _cpc_hist(rec, "Alta", f"{rec['moneda']} {rec['total']:,.2f}" + (f" · sobre-facturación confirmada (+${sobre['exceso']:,.2f} USD)" if sobre else ""))
             records = cpc_load(year); records.append(rec); cpc_save(year, records)
+        if rec.get("orden_cobro_id"):     # rev121: la orden de cobro queda Facturada con esta CPC
+            try:
+                with lock:
+                    ordenes = _load_catalog("ordenes_cobro") or []
+                    o = next((x for x in ordenes if x.get("oid") == rec["orden_cobro_id"]), None)
+                    if o and o.get("estatus") == "Por facturar":
+                        o["estatus"] = "Facturada"; o["cpc_id"] = rec["id"]
+                        o["historial"] = (o.get("historial") or []) + [{"fecha": datetime.datetime.now().isoformat(timespec="seconds"),
+                                         "usuario": session.get("user", ""), "accion": "Facturada", "detalle": f"CPC {rec['id']}"}]
+                        _save_catalog("ordenes_cobro", ordenes)
+            except Exception as e:
+                print(f"[ORDEN DE COBRO] {e}")
         return jsonify({"ok": True, "record": rec})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
