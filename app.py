@@ -10413,7 +10413,7 @@ MODULES = [
     "projconfig-dashboard", "projconfig-presupuesto", "projconfig-timing",
     "projconfig-abiertos", "projconfig-cambios", "projconfig-documentos",
     # Finanzas
-    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales", "fin-ordenes-cobro",
+    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales", "fin-ordenes-cobro", "mgmt-income-forecast",
     # Recursos Humanos
     "rrhh-asistencia", "rrhh-vacaciones", "rrhh-permisos", "rrhh-salario", "rrhh-sueldos", "rrhh-nomina",
     "personal-areas", "personal-tipos-puesto", "personal-perfiles", "personal-listado",
@@ -10894,7 +10894,8 @@ MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto
                    "rrhh-kpis": "personal-listado",
                    "ops-piso": "ops-capacidad",
                    "fin-datos-fiscales": "fin-esquemas",
-                   "fin-ordenes-cobro": "fin-cpc",          # rev121: Órdenes de cobro toma el nivel de CPC   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
+                   "fin-ordenes-cobro": "fin-cpc",
+                   "mgmt-income-forecast": "fin-cpc",      # rev122: Income forecast toma el nivel de CPC          # rev121: Órdenes de cobro toma el nivel de CPC   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
                    "fin-cpc": "fin-cpp"}           # rev104: CPC toma el nivel de CPP mientras no se fije
 
 def nivel_heredado(info, mod):
@@ -16083,6 +16084,7 @@ def api_oc_crear():
         orden = {"oid": oid, "estatus": "Por facturar", "ptsv": cfg.get("ptsv"), "job": j.get("job_number"),
                  "cpo_id": cpo_id, "cpo_po_number": cpo.get("po_number"), "cliente": cpo.get("customer"), "cpo_valor": cpo["value"],
                  "moneda": "USD", "hito": {"mid": mid, "nombre": m.get("nombre"), "porcentaje": pct, "fecha_estimada": m.get("fecha_estimada"),
+                                          "dias_vencimiento": m.get("dias_vencimiento"),
                                           "fecha_cumplido": m.get("fecha_cumplido") or ahora[:10]},
                  "subtotal": subtotal, "requiere_iva": req_iva, "iva": iva, "total": round(subtotal + iva, 2),
                  "evidencia": {"nombre": nombre_arch, "bytes": len(raw), "sha1": hashlib.sha1(raw).hexdigest()},
@@ -16094,6 +16096,65 @@ def api_oc_crear():
         m["orden_cobro"] = oid; m["cumplido"] = True; m["fecha_cumplido"] = m.get("fecha_cumplido") or ahora[:10]
         projcfg_save(recs)
     return jsonify({"ok": True, "orden": orden})
+
+# ── rev122: MANAGEMENT ▸ INCOME FORECAST ───────────────────────────────────────
+#  Cobros esperados a partir de los milestones de pago de todos los proyectos.
+#  Fecha esperada de cobro = fecha estimada del milestone + días de vencimiento (naturales).
+#  Monto: si ya hay orden de cobro, su total (con IVA, si aplica) o el saldo de su factura;
+#  si no, el % del milestone sobre el revenue del Job (sin IVA, todavía no se sabe).
+@app.route("/api/income-forecast", methods=["GET"])
+def api_income_forecast():
+    if not can("view", "mgmt-income-forecast"): return jsonify({"error": "Sin permiso"}), 403
+    hoy = datetime.date.today()
+    ordenes = {o.get("oid"): o for o in (_load_catalog("ordenes_cobro") or [])}
+    cpcs = {c.get("id"): c for c in cpc_all_records()}
+    revenue_cache, filas = {}, []
+    for cfg in projcfg_load():
+        for j in cfg.get("jobs") or []:
+            jn = str(j.get("job_number") or "").upper()
+            for m in j.get("terminos_pago") or []:
+                try: pct = float(m.get("porcentaje") or 0)
+                except (TypeError, ValueError): pct = 0
+                if pct <= 0: continue
+                if jn not in revenue_cache:
+                    cps = _oc_cpos_de_job(jn)
+                    revenue_cache[jn] = (sum(c["value"] for c in cps), (cps[0].get("customer") if cps else "") or "")
+                rev, cliente = revenue_cache[jn]
+                dias = m.get("dias_vencimiento")
+                f_est = (m.get("fecha_estimada") or "")[:10]
+                base_fecha = (m.get("fecha_cumplido") or "")[:10] if m.get("cumplido") and m.get("fecha_cumplido") else f_est
+                try:
+                    f_cobro = (datetime.date.fromisoformat(f_est) + datetime.timedelta(days=int(dias or 0))).isoformat() if f_est else None
+                except ValueError:
+                    f_cobro = None
+                o = ordenes.get(m.get("orden_cobro")) if m.get("orden_cobro") else None
+                monto = round(rev * pct / 100, 2); fuente = "Estimado (% del revenue del Job, sin IVA)"; estatus = "Por cumplir"
+                cpc_id = None; cobrado = 0.0
+                if m.get("cumplido") and not o: estatus = "Cumplido · sin orden"
+                if o and o.get("estatus") != "Cancelada":
+                    monto = float(o.get("total") or 0); fuente = f"Orden {o.get('oid')}"; estatus = "Orden por facturar"
+                    if o.get("estatus") == "Facturada" and o.get("cpc_id") in cpcs:
+                        c = cpcs[o["cpc_id"]]; cpc_id = c.get("id")
+                        saldo = _cpc_saldo(c); tc = float(c.get("tipo_cambio") or 0)
+                        saldo_usd = (saldo / tc if tc > 0 else saldo) if (c.get("moneda") or "USD") == "MXN" else saldo
+                        cobrado = round(max(0.0, monto - saldo_usd), 2)
+                        if c.get("estatus") == "Cancelada": estatus = "Factura cancelada"
+                        elif saldo <= 0.01: estatus = "Cobrado"; monto = round(monto, 2)
+                        else: estatus = "Facturado"; fuente = f"Factura {cpc_id} (saldo)"; monto = round(saldo_usd, 2)
+                        if c.get("fecha_vencimiento") and estatus == "Facturado": f_cobro = c["fecha_vencimiento"][:10]
+                vencido = bool(f_cobro and estatus not in ("Cobrado",) and f_cobro < hoy.isoformat())
+                filas.append({"ptsv": cfg.get("ptsv"), "job": jn, "cliente": cliente, "milestone": m.get("nombre"), "porcentaje": pct,
+                              "fecha_estimada": f_est or None, "dias_vencimiento": dias, "fecha_cobro": f_cobro,
+                              "monto": monto, "fuente": fuente, "estatus": estatus, "vencido": vencido,
+                              "orden_cobro": o.get("oid") if o else None, "cpc_id": cpc_id, "cobrado": cobrado, "revenue_job": rev})
+    filas.sort(key=lambda r: (r["fecha_cobro"] or "9999", r["job"]))
+    meses = {}
+    for r in filas:
+        if r["estatus"] in ("Cobrado", "Factura cancelada") or not r["fecha_cobro"]: continue
+        k = "Vencido" if r["vencido"] else r["fecha_cobro"][:7]
+        meses[k] = round(meses.get(k, 0) + r["monto"], 2)
+    sin_fecha = round(sum(r["monto"] for r in filas if not r["fecha_cobro"] and r["estatus"] not in ("Cobrado", "Factura cancelada")), 2)
+    return jsonify({"filas": filas, "por_mes": meses, "sin_fecha": sin_fecha, "hoy": hoy.isoformat()})
 
 @app.route("/api/ordenes-cobro/<oid>/evidencia", methods=["GET"])
 def api_oc_evidencia(oid):
@@ -16142,7 +16203,8 @@ def api_oc_pdf(oid):
     h = o.get("hito") or {}
     meta = [("Cliente", o.get("cliente") or ""), ("CPO", f"{o.get('cpo_id')} · PO {o.get('cpo_po_number') or ''}"), ("Job", o.get("job") or ""),
             ("PT / SV", o.get("ptsv") or ""), ("Hito de pago", f"{h.get('nombre') or ''} ({h.get('porcentaje', 0):g} %)"),
-            ("Fecha de cumplimiento", h.get("fecha_cumplido") or ""), ("Valor de la CPO", f"${o.get('cpo_valor', 0):,.2f} {o.get('moneda')}"),
+            ("Fecha de cumplimiento", h.get("fecha_cumplido") or ""),
+            ("Vencimiento del pago", f"NET{h.get('dias_vencimiento')}" if h.get("dias_vencimiento") is not None else "—"), ("Valor de la CPO", f"${o.get('cpo_valor', 0):,.2f} {o.get('moneda')}"),
             ("Subtotal", f"${o.get('subtotal', 0):,.2f}"), ("IVA", f"${o.get('iva', 0):,.2f}" if o.get("requiere_iva") else "No aplica"),
             ("Evidencia", (o.get("evidencia") or {}).get("nombre", "")), ("Estatus", o.get("estatus") or ""),
             ("Notas", o.get("notas") or "")]
@@ -16526,6 +16588,22 @@ def api_create_projconfig():
                     else:
                         for f in PROJCONFIG_FULL_ONLY_JOB_FIELDS:
                             j[f] = 0
+
+            # rev122: los porcentajes de los milestones de un Job no pueden pasar del 100 %
+            for j in jobs_in:
+                tp = j.get("terminos_pago") or []
+                suma = 0.0
+                for m in tp:
+                    try: suma += float(m.get("porcentaje") or 0)
+                    except (TypeError, ValueError): pass
+                    try:
+                        dv = m.get("dias_vencimiento")
+                        m["dias_vencimiento"] = int(float(dv)) if dv not in (None, "") else None
+                        if m["dias_vencimiento"] is not None and not (0 <= m["dias_vencimiento"] <= 365): raise ValueError
+                    except (TypeError, ValueError):
+                        return jsonify({"error": f"Job {j.get('job_number')}: los días de vencimiento deben ser un número entre 0 y 365"}), 400
+                if suma > 100.0001:
+                    return jsonify({"error": f"Job {j.get('job_number')}: la suma de los milestones de pago es {suma:g} % y no puede pasar del 100 %"}), 400
 
             # rev121: los hitos de pago con orden de cobro los controla el servidor: se conserva
             # su orden (y no se pueden borrar ni cambiar su % mientras la orden exista)

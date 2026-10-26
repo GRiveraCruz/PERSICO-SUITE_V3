@@ -123,6 +123,7 @@ function switchMenu(mod, groupId) {
   if(mod==='ops-piso') { setTimeout(pisoCargar,100); }
   if(mod==='fin-datos-fiscales') { setTimeout(dfCargar,100); }
   if(mod==='fin-ordenes-cobro') { setTimeout(ocCargar,100); }
+  if(mod==='mgmt-income-forecast') { setTimeout(ifCargar,100); }
   if(mod==='personal-listado') { setTimeout(loadPersonal,100); }
   if(mod==='consignacion') { setTimeout(loadCsg,50); }
   if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
@@ -5977,9 +5978,9 @@ let USER_PERMS = null;
 
 // rev77: módulos que heredan el nivel de otro mientras el administrador no les fije uno
 const MODULOS_HEREDAN = {'projconfig-dashboard':'projconfig','projconfig-presupuesto':'projconfig','projconfig-timing':'projconfig',
-  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc'};
+  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc','mgmt-income-forecast':'fin-cpc'};
 const MODULE_LABELS = {
-  'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)', 'fin-datos-fiscales':'Datos fiscales', 'fin-ordenes-cobro':'Órdenes de cobro',
+  'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)', 'fin-datos-fiscales':'Datos fiscales', 'fin-ordenes-cobro':'Órdenes de cobro', 'mgmt-income-forecast':'Management — Income Forecast',
   // Proyectos
   'jobs':'Job Register', 'pt':'PT Numbers', 'sv':'SV Numbers',
   'rates':'Hourly Rates', 'quotes':'Quote Register',
@@ -6038,7 +6039,7 @@ const MODULE_GROUPS = [
   { label: '📊 Control de Costo',     mods: ['wh','report','multirpt','fx'] },
   { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-cpc','fin-ordenes-cobro','fin-pagos','fin-esquemas','fin-datos-fiscales'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-tipos-puesto','personal-perfiles','personal-listado'] },
-  { label: '📈 Management',          mods: ['rrhh-kpis'] },
+  { label: '📈 Management',           mods: ['rrhh-kpis','mgmt-income-forecast'] },
   { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os','ops-piso'] },
 ];
 
@@ -6285,6 +6286,7 @@ function applyPermsToDom(d) {
     'fin-cpc':            ["switchMenu('fin-cpc'"],
     'fin-datos-fiscales': ["switchMenu('fin-datos-fiscales'"],
     'fin-ordenes-cobro':  ["switchMenu('fin-ordenes-cobro'"],
+    'mgmt-income-forecast': ["switchMenu('mgmt-income-forecast'"],
     'compras-requisicion':["switchMenu('requisicion'"],
     'fin-pagos':          ["switchMenu('fin-pagos'"],
     'fin-esquemas':       ["switchMenu('fin-esquemas'"],
@@ -11816,6 +11818,12 @@ function pcRenderResumenAreas() {
 
 async function pcSave() {
   if(!pcCurrentPTSV) return;
+  // rev122: los milestones de pago de cada Job no pueden pasar del 100 %
+  const _exceso = pcJobRows.map((j,idx)=>({job:j.job_number, suma: pcTerminosLeer(idx).reduce((a,m)=>a+(Number(m.porcentaje)||0),0), idx})).filter(x=>x.suma>100.0001);
+  if(_exceso.length){
+    toast(`La suma de los términos de pago pasa del 100 %: ${_exceso.map(x=>`${x.job} (${x.suma.toLocaleString('es-MX',{maximumFractionDigits:2})} %)`).join(', ')}. Corrígelo para guardar.`,'er',7000);
+    pcSwitchTab('presupuesto'); if(typeof pcJobTabSel==='function') pcJobTabSel(_exceso[0].idx); return;
+  }
   const _malas = pcFechasInvalidasTiming();
   if(_malas.length && !confirm(`El Timing tiene ${_malas.length} fecha(s) no válida(s):\n\n${_malas.map(m=>`• ${m.actividad} — ${m.campo}: ${m.valor}`).join('\n')}\n\nRevisa el año (4 dígitos). ¿Guardar de todos modos?`)) { pcSwitchTab('timing'); return; }
   const jobsData = pcJobRows.map((j,idx) => {
@@ -19829,6 +19837,7 @@ function pcTerminosPagoHTML(j, saved, idx){
       <thead><tr style="background:rgba(0,0,0,.035)">
         <th style="text-align:left;padding:5px 6px;cursor:default">Milestone</th><th style="text-align:right;padding:5px 6px;width:90px;cursor:default">% de cobro</th>
         <th style="text-align:right;padding:5px 6px;width:120px;cursor:default" title="% × revenue del Job. La orden de cobro calcula el monto sobre la CPO que se elija">Monto estimado</th><th style="padding:5px 6px;width:140px;cursor:default">Fecha estimada</th>
+        <th style="padding:5px 6px;width:110px;cursor:default" title="Días naturales de crédito del pago después del milestone (NET30, NET60, NET90…)">Vencimiento (días)</th>
         <th style="padding:5px 6px;width:90px;text-align:center;cursor:default">Cumplido</th><th style="padding:5px 6px;width:230px;cursor:default">Orden de cobro</th><th style="width:30px"></th></tr></thead>
       <tbody>${ms.map(m=>pcTerminoFila(idx, m)).join('')}</tbody>
     </table>
@@ -19844,6 +19853,7 @@ function pcTerminoFila(idx, m){
     <td style="padding:3px 6px"><input class="pc-tp-f" data-k="porcentaje" type="number" min="0" max="100" step="0.01" value="${m.porcentaje ?? ''}" ${dis} oninput="pcTerminosTotales(${idx})" style="${inp};text-align:right"></td>
     <td class="pc-tp-monto" style="padding:3px 6px;text-align:right;font-family:'DM Mono',monospace">—</td>
     <td style="padding:3px 6px"><input class="pc-tp-f" data-k="fecha_estimada" type="date" value="${esc(m.fecha_estimada||'')}" style="${inp}"></td>
+    <td style="padding:3px 6px"><div style="display:flex;align-items:center;gap:4px"><span style="font-size:10px;color:var(--muted)">NET</span><input class="pc-tp-f" data-k="dias_vencimiento" type="number" min="0" max="365" step="1" value="${m.dias_vencimiento ?? ''}" placeholder="30" ${dis} style="${inp};text-align:right"></div></td>
     <td style="padding:3px 6px;text-align:center"><input class="pc-tp-f" data-k="cumplido" type="checkbox" ${m.cumplido?'checked':''} ${dis} onchange="pcTerminoCumplido(this, ${idx})"></td>
     <td style="padding:3px 6px">${tieneOrden
       ? `<a href="/api/ordenes-cobro/${encodeURIComponent(m.orden_cobro)}/pdf" target="_blank" style="font-family:'DM Mono',monospace;color:var(--gold);font-weight:700">${esc(m.orden_cobro)}</a> <span style="font-size:10px;color:var(--muted)">generada</span>`
@@ -19865,7 +19875,9 @@ function pcTerminosLeer(idx){
   return [...document.querySelectorAll(`#pc-tp-tb-${idx} tbody tr`)].map(tr=>{
     const g = k => tr.querySelector(`.pc-tp-f[data-k="${k}"]`);
     const pct = parseFloat(g('porcentaje').value);
+    const dv = parseInt(g('dias_vencimiento').value, 10);
     return { mid: tr.dataset.mid, nombre: g('nombre').value.trim(), porcentaje: isNaN(pct) ? null : pct, fecha_estimada: g('fecha_estimada').value || null,
+             dias_vencimiento: isNaN(dv) ? null : dv,
              cumplido: g('cumplido').checked, fecha_cumplido: tr.dataset.fcumplido || null, orden_cobro: tr.dataset.orden || null };
   }).filter(m => m.nombre || m.porcentaje != null);
 }
@@ -19874,8 +19886,9 @@ function pcTerminosTotales(idx){
   const rev = Number(tb.dataset.revenue||0); let tot = 0;
   tb.querySelectorAll('tbody tr').forEach(tr=>{ const p = parseFloat(tr.querySelector('.pc-tp-f[data-k="porcentaje"]').value)||0; tot += p;
     tr.querySelector('.pc-tp-monto').textContent = rev ? '$' + (rev*p/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'; });
+  tb.querySelectorAll('.pc-tp-f[data-k="porcentaje"]').forEach(i=>{ i.style.borderColor = tot>100.0001 ? 'var(--red)' : ''; i.style.background = tot>100.0001 ? 'rgba(200,16,46,.07)' : ''; });
   const el = document.getElementById(`pc-tp-suma-${idx}`);
-  if(el) el.innerHTML = tot ? `Suma <b style="color:${Math.abs(tot-100)<0.01?'#1f8a4c':tot>100?'var(--red)':'var(--amber)'}">${tot.toLocaleString('es-MX',{maximumFractionDigits:2})} %</b>${Math.abs(tot-100)<0.01?'':tot>100?' · ⚠ pasa del 100 %':' · falta '+(100-tot).toLocaleString('es-MX',{maximumFractionDigits:2})+' %'}` : '';
+  if(el) el.innerHTML = tot ? `Suma <b style="color:${Math.abs(tot-100)<0.01?'#1f8a4c':tot>100?'var(--red)':'var(--amber)'}">${tot.toLocaleString('es-MX',{maximumFractionDigits:2})} %</b>${Math.abs(tot-100)<0.01?'':tot>100?' · ⛔ pasa del 100 %: no se podrá guardar':' · falta '+(100-tot).toLocaleString('es-MX',{maximumFractionDigits:2})+' %'}` : '';
 }
 // ── Modal: generar orden de cobro ──
 let _ocCtx = null;
@@ -19890,11 +19903,11 @@ async function pcOrdenCobroAbrir(idx, btn){
   if(!mg || !mg.cumplido){ toast('Primero guarda la configuración del proyecto con el milestone marcado como cumplido','er',5000); return; }
   const cpos = await fetch('/api/ordenes-cobro/cpos?job='+encodeURIComponent(job)).then(r=>r.json());
   if(!Array.isArray(cpos) || !cpos.length){ toast(`El Job ${job} no tiene una CPO de revenue registrada`,'er',5000); return; }
-  _ocCtx = {idx, tr, job, ptsv, mid: tr.dataset.mid, nombre, pct, cpos};
+  _ocCtx = {idx, tr, job, ptsv, mid: tr.dataset.mid, nombre, pct, cpos, dias: mg.dias_vencimiento};
   const sel = document.getElementById('oc-cpo');
   sel.innerHTML = cpos.map(c=>`<option value="${esc(c.id)}">${esc(c.id)} · PO ${esc(c.po_number||'')} · $${Number(c.value).toLocaleString('en-US',{minimumFractionDigits:2})}${c.tbd?' · ⚠ TBD':''}</option>`).join('');
   document.getElementById('oc-job').textContent = job;
-  document.getElementById('oc-hito').textContent = `${nombre} · ${pct.toLocaleString('es-MX',{maximumFractionDigits:2})} %`;
+  document.getElementById('oc-hito').textContent = `${nombre} · ${pct.toLocaleString('es-MX',{maximumFractionDigits:2})} %` + (mg.dias_vencimiento!=null ? ` · NET${mg.dias_vencimiento}` : ' · sin días de vencimiento');
   document.getElementById('oc-archivo').value = '';
   document.querySelectorAll('input[name="oc-iva"]').forEach(r=>r.checked=false);
   document.getElementById('oc-notas').value = '';
@@ -19923,7 +19936,7 @@ async function ocGenerar(){
     if(!r.ok) throw new Error(d.error||'No se pudo generar');
     // el renglón queda ligado a la orden (para que un guardado posterior la conserve)
     _ocCtx.tr.dataset.orden = d.orden.oid;
-    _ocCtx.tr.outerHTML = pcTerminoFila(_ocCtx.idx, {..._ocCtx, nombre:_ocCtx.nombre, porcentaje:_ocCtx.pct, cumplido:true, orden_cobro:d.orden.oid,
+    _ocCtx.tr.outerHTML = pcTerminoFila(_ocCtx.idx, {..._ocCtx, nombre:_ocCtx.nombre, porcentaje:_ocCtx.pct, cumplido:true, orden_cobro:d.orden.oid, dias_vencimiento:_ocCtx.dias,
       fecha_estimada: _ocCtx.tr.querySelector('.pc-tp-f[data-k="fecha_estimada"]').value, fecha_cumplido: d.orden.hito.fecha_cumplido});
     pcTerminosTotales(_ocCtx.idx);
     closeMo('mo-orden-cobro');
@@ -19973,7 +19986,10 @@ async function ocFacturar(oid){
     const chk = document.getElementById('cpc-usar-cpo'); if(chk && !chk.checked){ chk.checked = true; cpcToggleCpoMode(); }
     setTimeout(()=>{ const sel=document.getElementById('cpc-cpo-select'); if(sel){ sel.value=o.cpo_id; cpcOnCpoSelect(); }
       set('cpc-subtotal', o.subtotal); set('cpc-iva', o.iva); cpcRecalcTotal && cpcRecalcTotal();
-      set('cpc-notas', `Orden de cobro ${o.oid} · ${(o.hito||{}).nombre||''} (${(o.hito||{}).porcentaje}%)`); }, 900);
+      set('cpc-notas', `Orden de cobro ${o.oid} · ${(o.hito||{}).nombre||''} (${(o.hito||{}).porcentaje}%)`);
+      const dv = (o.hito||{}).dias_vencimiento;                                   // rev122: vencimiento = fecha de factura + NET
+      if(dv!=null){ const ff = document.getElementById('cpc-fecha-factura').value || new Date().toISOString().slice(0,10);
+        const d = new Date(ff+'T12:00:00'); d.setDate(d.getDate()+Number(dv)); set('cpc-fecha-venc', d.toISOString().slice(0,10)); } }, 900);
     toast(`Factura para la orden ${oid}: completa la serie/folio o carga el XML y guarda`,'if',6000);
   }, 400);
 }
@@ -19982,4 +19998,63 @@ async function ocCancelar(oid){
   const r = await apiCall('PUT','/ordenes-cobro/'+encodeURIComponent(oid), {estatus:'Cancelada', motivo});
   if(r.error){ toast(r.error,'er'); return; }
   toast('Orden cancelada','if'); ocCargar();
+}
+
+
+// ════════════════════════════════════════════════════════
+//  rev122 — Management ▸ Income Forecast
+// ════════════════════════════════════════════════════════
+let _if = null;
+const ifFmt = v => '$' + Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+async function ifCargar(){
+  try{ _if = await fetch('/api/income-forecast').then(r=>r.json()); if(_if.error) throw new Error(_if.error); }
+  catch(e){ document.getElementById('if-tb').innerHTML = `<tr><td colspan="11" style="color:var(--red);padding:16px">⚠ ${esc(e.message)}</td></tr>`; return; }
+  ifRender();
+}
+function ifFiltradas(){
+  const q=(document.getElementById('if-q').value||'').toLowerCase(), est=document.getElementById('if-est').value;
+  const de=document.getElementById('if-desde').value, ha=document.getElementById('if-hasta').value;
+  return _if.filas.filter(r => (!q || [r.job,r.ptsv,r.cliente,r.milestone,r.orden_cobro,r.cpc_id].join(' ').toLowerCase().includes(q))
+    && (est==='' ? !['Cobrado','Factura cancelada'].includes(r.estatus) : est==='Vencido' ? r.vencido : est==='Todos' ? true : r.estatus===est)
+    && (!de || (r.fecha_cobro||'') >= de) && (!ha || (r.fecha_cobro||'9999') <= ha));
+}
+function ifRender(){
+  const L = ifFiltradas(), hoy = _if.hoy, abiertos = _if.filas.filter(r=>!['Cobrado','Factura cancelada'].includes(r.estatus));
+  const dias = n => { const d=new Date(hoy+'T12:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+  const suma = arr => arr.reduce((a,r)=>a+r.monto,0);
+  const card = (t,v,sub,col) => `<div style="background:var(--card,#fff);border:1px solid var(--border);border-radius:10px;padding:12px 14px"><div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)">${t}</div><div style="font-size:22px;font-weight:800;color:${col||'var(--text)'};margin-top:3px">${v}</div><div style="font-size:11px;color:var(--muted2)">${sub||''}</div></div>`;
+  const venc = abiertos.filter(r=>r.vencido), d30 = abiertos.filter(r=>!r.vencido && r.fecha_cobro && r.fecha_cobro<=dias(30)),
+        d90 = abiertos.filter(r=>!r.vencido && r.fecha_cobro && r.fecha_cobro<=dias(90));
+  document.getElementById('if-cards').innerHTML = card('Total esperado', ifFmt(suma(abiertos)), `${abiertos.length} cobro(s) pendiente(s)`)
+    + card('Vencido', ifFmt(suma(venc)), `${venc.length} con fecha pasada`, venc.length?'var(--red)':null)
+    + card('Próximos 30 días', ifFmt(suma(d30)), `${d30.length} cobro(s)`, '#1f8a4c')
+    + card('Próximos 90 días', ifFmt(suma(d90)), `${d90.length} cobro(s)`)
+    + card('Sin fecha', ifFmt(_if.sin_fecha), 'Milestones sin fecha estimada', _if.sin_fecha?'var(--amber)':null);
+  const meses = Object.entries(_if.por_mes).sort((a,b)=> a[0]==='Vencido' ? -1 : b[0]==='Vencido' ? 1 : a[0].localeCompare(b[0]));
+  const max = Math.max(1, ...meses.map(m=>m[1]));
+  const nom = k => k==='Vencido' ? 'Vencido' : new Date(k+'-15T12:00:00').toLocaleDateString('es-MX',{month:'short',year:'2-digit'});
+  document.getElementById('if-chart').innerHTML = meses.length ? `<div style="display:flex;align-items:flex-end;gap:10px;height:170px;padding:0 4px;border-bottom:1px solid var(--border)">${meses.map(([k,v])=>`
+      <div style="flex:1;min-width:38px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%" title="${nom(k)}: ${ifFmt(v)}">
+        <div style="font-size:10px;color:var(--muted2);margin-bottom:3px;white-space:nowrap">${(v/1000).toLocaleString('en-US',{maximumFractionDigits:0})}k</div>
+        <div style="width:70%;height:${Math.max(3, v/max*130)}px;border-radius:5px 5px 0 0;background:${k==='Vencido'?'var(--red)':'#1f3864'}"></div></div>`).join('')}</div>
+    <div style="display:flex;gap:10px;padding:4px">${meses.map(([k])=>`<div style="flex:1;min-width:38px;text-align:center;font-size:10.5px;color:${k==='Vencido'?'var(--red)':'var(--muted2)'};font-weight:${k==='Vencido'?700:400}">${nom(k)}</div>`).join('')}</div>`
+    : '<div style="padding:18px;text-align:center;color:var(--muted)">Sin cobros esperados con fecha. Captura los términos de pago en Configurar Proyecto.</div>';
+  const col = {'Por cumplir':'var(--muted2)','Cumplido · sin orden':'var(--amber)','Orden por facturar':'#b45309','Facturado':'#1d4ed8','Cobrado':'#1f8a4c','Factura cancelada':'var(--muted)'};
+  document.getElementById('if-tb').innerHTML = L.map(r=>`<tr style="${r.vencido?'background:rgba(200,16,46,.05)':''}">
+      <td style="font-weight:700;${r.vencido?'color:var(--red)':''}">${r.fecha_cobro ? new Date(r.fecha_cobro+'T12:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '<span style="color:var(--amber)">sin fecha</span>'}${r.vencido?' <span style="font-size:10px">VENCIDO</span>':''}</td>
+      <td style="font-family:'DM Mono',monospace">${esc(r.job)}</td><td style="font-family:'DM Mono',monospace;font-size:11px">${esc(r.ptsv||'')}</td><td>${esc(r.cliente||'')}</td>
+      <td>${esc(r.milestone||'')} <span style="color:var(--muted)">${r.porcentaje} %</span></td>
+      <td style="font-size:11px">${r.fecha_estimada||'—'}</td><td style="font-size:11px">${r.dias_vencimiento!=null?'NET'+r.dias_vencimiento:'—'}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;font-weight:700">${ifFmt(r.monto)}</td>
+      <td style="font-size:10.5px;color:var(--muted2)">${esc(r.fuente)}</td>
+      <td><span style="font-weight:700;color:${col[r.estatus]||'var(--text)'}">${esc(r.estatus)}</span></td>
+      <td style="font-size:11px">${r.orden_cobro?`<a href="/api/ordenes-cobro/${encodeURIComponent(r.orden_cobro)}/pdf" target="_blank">${esc(r.orden_cobro)}</a>`:''}${r.cpc_id?`<div>${esc(r.cpc_id)}</div>`:''}</td></tr>`).join('')
+    || '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:22px">Sin cobros en el filtro.</td></tr>';
+  document.getElementById('if-count').textContent = `${L.length} renglón(es) · ${ifFmt(suma(L))}`;
+}
+function ifExportar(){
+  const L = ifFiltradas(), q = v => `"${String(v??'').replace(/"/g,'""')}"`;
+  const csv = ['Fecha esperada de cobro,Job,PT/SV,Cliente,Milestone,%,Fecha estimada,Dias vencimiento,Monto USD,Fuente,Estatus,Vencido,Orden de cobro,Factura CPC',
+    ...L.map(r=>[r.fecha_cobro,r.job,r.ptsv,r.cliente,r.milestone,r.porcentaje,r.fecha_estimada,r.dias_vencimiento,r.monto,r.fuente,r.estatus,r.vencido?'SI':'NO',r.orden_cobro,r.cpc_id].map(q).join(','))].join('\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv'})); a.download = `income_forecast_${_if.hoy}.csv`; a.click();
 }
