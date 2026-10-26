@@ -18805,8 +18805,8 @@ function pagosRender() {
       <td>${esc(r.fecha||'—')}</td>
       <td style="color:var(--muted2)">${esc(r.usuario||'—')}</td>
       <td>${r.confirmado
-        ? '<span style="font-size:10px;color:var(--green);font-weight:700">✓ Confirmado</span>'
-        : `<button class="btn btn-s" style="font-size:10px;padding:5px 10px" onclick="pagoConfirmar('${esc(r.pago_number)}')">Confirmar Pago</button>`}</td>
+        ? `<span style="font-size:10px;color:var(--green);font-weight:700">✓ Confirmado</span>${r.fecha_pago?`<div style="font-size:9.5px;color:var(--muted)">pagado ${esc(r.fecha_pago)}</div>`:''}`
+        : `${r.programado?`<div style="font-size:10px;color:#1d4ed8;font-weight:700;margin-bottom:3px">📅 Programado ${esc(r.fecha_programada||'')}</div>`:''}<button class="btn btn-s" style="font-size:10px;padding:5px 10px" onclick="pagoConfirmar('${esc(r.pago_number)}')">Confirmar Pago</button>`}</td>
       <td><button class="fi-del" style="font-size:13px" title="Ver PDF" onclick="window.open('/api/pagos/${encodeURIComponent(r.pago_number)}/pdf','_blank')">Ver PDF</button></td>
     </tr>`).join('');
   document.getElementById('pag-count').textContent = `${rows.length} de ${pagosData.length} registros`;
@@ -20037,10 +20037,10 @@ function ifRender(){
     + card('Próximos 30 días', ifFmt(suma(d30)), `${d30.length} cobro(s)`, '#1f8a4c')
     + card('Próximos 90 días', ifFmt(suma(d90)), `${d90.length} cobro(s)`)
     + card('Sin fecha', ifFmt(_if.sin_fecha), 'Milestones sin fecha estimada', _if.sin_fecha?'var(--amber)':null);
-  const meses = Object.entries(_if.por_mes).sort((a,b)=> a[0]==='Vencido' ? -1 : b[0]==='Vencido' ? 1 : a[0].localeCompare(b[0]));
-  const max = Math.max(1, ...meses.map(m=>m[1]));
-  const nom = k => k==='Vencido' ? 'Vencido' : new Date(k+'-15T12:00:00').toLocaleDateString('es-MX',{month:'short',year:'2-digit'});
-  document.getElementById('if-chart').innerHTML = meses.length ? `<div style="display:flex;align-items:flex-end;gap:10px;height:170px;padding:0 4px;border-bottom:1px solid var(--border)">${meses.map(([k,v])=>`
+  ifSemanal();
+  const meses = [];
+  const max = 1, nom = k => k;
+  if(false) document.getElementById('if-chart').innerHTML = meses.length ? `<div style="display:flex;align-items:flex-end;gap:10px;height:170px;padding:0 4px;border-bottom:1px solid var(--border)">${meses.map(([k,v])=>`
       <div style="flex:1;min-width:38px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%" title="${nom(k)}: ${ifFmt(v)}">
         <div style="font-size:10px;color:var(--muted2);margin-bottom:3px;white-space:nowrap">${(v/1000).toLocaleString('en-US',{maximumFractionDigits:0})}k</div>
         <div style="width:70%;height:${Math.max(3, v/max*130)}px;border-radius:5px 5px 0 0;background:${k==='Vencido'?'var(--red)':'#1f3864'}"></div></div>`).join('')}</div>
@@ -20102,7 +20102,7 @@ async function cpgGuardar(){
                  fecha_vencimiento_manual: v.dataset.manual==='1' ? (v.value || null) : null };
   const r = await apiCall('PUT', `/cpp/${encodeURIComponent(_cpg.cpp_number)}/programacion`, body);
   if(r.error){ toast(r.error,'er'); return; }
-  closeMo('mo-cpp-prog'); toast('Programación guardada','ok');
+  closeMo('mo-cpp-prog'); toast(body.fecha_programada ? 'Pago programado — registrado en PAGOS por confirmar' : 'Programación guardada','ok',5000);
   if(document.getElementById('mod-fin-prog-pagos')?.classList.contains('on')) ppCargar(); else loadCPP();
 }
 
@@ -20172,11 +20172,40 @@ async function ppProgramarSel(quitar){
   if(!quitar && !f){ toast('Elige la fecha programada de pago','er'); return; }
   const r = await apiCall('POST','/cpp/programar',{cpp_numbers: sel, fecha_programada: f});
   if(r.error){ toast(r.error,'er'); return; }
-  toast(quitar ? `Programación quitada a ${r.actualizadas} CPP` : `${r.actualizadas} CPP programada(s) para el ${f}`,'ok'); ppCargar();
+  toast(quitar ? `Programación quitada: los pagos programados se eliminaron de PAGOS y las CPP regresaron a Pendiente` : `${sel.length} CPP programada(s) para el ${f} — registradas en PAGOS (${(r.pagos||[]).length}) por confirmar`,'ok',6000); ppCargar();
 }
 function ppExportar(){
   const L = ppFiltradas(), q = v => `"${String(v??'').replace(/"/g,'""')}"`;
   const csv = ['CPP,Proveedor,Factura,OC,Job,Monto,Moneda,USD equiv,Fecha factura,Dias credito,Vencimiento,Dias vencida,Fecha programada,Semana,Estatus',
     ...L.map(r=>[r.cpp_number,r.supplier_name,r.factura,r.po_number,r.job,r.monto_abs,r.moneda,r.monto_usd,r.fecha_factura,r.dias_credito_efectivo,r.fecha_vencimiento,r.dias_vencido,r.fecha_programada,r.semana_programada,r.estatus_pago].map(q).join(','))].join('\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv'})); a.download = `programacion_pagos_${_pp.hoy}.csv`; a.click();
+}
+
+
+// rev124: gráfica semana a semana — ingreso esperado vs gasto comprometido
+function ifSemanal(){
+  const S = _if.semanas || {}, act = _if.semana_actual;
+  const isoW = d => { const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())); const day=t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-day); const y=t.getUTCFullYear(); const w=Math.ceil(((t-Date.UTC(y,0,1))/86400000+1)/7); return `${y}-W${String(w).padStart(2,'0')}`; };
+  const lunes = k => { const [y,w] = k.split('-W').map(Number); const d = new Date(Date.UTC(y,0,4)); const day = d.getUTCDay()||7; d.setUTCDate(d.getUTCDate()-day+1+(w-1)*7); return d; };
+  const N = 13, sems = []; const d0 = new Date(_if.hoy+'T12:00:00');
+  for(let i=0;i<N;i++){ const d=new Date(d0); d.setDate(d.getDate()+7*i); sems.push(isoW(d)); }
+  const despues = {ingreso:0, gasto:0};
+  Object.entries(S).forEach(([k,v])=>{ if(k!=='Vencido' && k > sems[sems.length-1]){ despues.ingreso+=v.ingreso; despues.gasto+=v.gasto; } });
+  const cols = [['Vencido', S['Vencido']||{ingreso:0,gasto:0}], ...sems.map(k=>[k, S[k]||{ingreso:0,gasto:0}]), ['Después', despues]];
+  const max = Math.max(1, ...cols.map(([,v])=>Math.max(v.ingreso, v.gasto)));
+  const k$ = v => v>=1000 ? (v/1000).toLocaleString('en-US',{maximumFractionDigits:0})+'k' : v ? Math.round(v).toString() : '';
+  const etq = k => k==='Vencido' ? 'Vencido' : k==='Después' ? 'Después' : `S${k.split('-W')[1]}<div style="font-size:9px;color:var(--muted)">${lunes(k).toLocaleDateString('es-MX',{day:'2-digit',month:'short',timeZone:'UTC'})}</div>`;
+  let acum = 0;
+  const totI = cols.reduce((a,[,v])=>a+v.ingreso,0), totG = cols.reduce((a,[,v])=>a+v.gasto,0);
+  document.getElementById('if-chart-title').innerHTML = `Ingreso esperado vs gasto comprometido · semana a semana (USD) <span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted2);margin-left:8px"><span style="display:inline-block;width:10px;height:10px;background:#1f8a4c;border-radius:2px"></span> Ingreso ${ifFmt(totI)} &nbsp; <span style="display:inline-block;width:10px;height:10px;background:var(--red);border-radius:2px"></span> Gasto ${ifFmt(totG)}</span>`;
+  document.getElementById('if-chart').innerHTML = `<div style="overflow-x:auto"><div style="min-width:${cols.length*62}px">
+    <div style="display:flex;align-items:flex-end;gap:6px;height:190px;border-bottom:1px solid var(--border);padding:0 2px">${cols.map(([k,v])=>`
+      <div style="flex:1;display:flex;align-items:flex-end;justify-content:center;gap:2px;height:100%;${k===act?'background:rgba(31,56,100,.05);border-radius:6px 6px 0 0':''}" title="${k}: ingreso ${ifFmt(v.ingreso)} · gasto ${ifFmt(v.gasto)} · neto ${ifFmt(v.ingreso-v.gasto)}">
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;width:42%"><div style="font-size:9px;color:#1f8a4c;white-space:nowrap">${k$(v.ingreso)}</div><div style="width:100%;height:${v.ingreso?Math.max(2,v.ingreso/max*150):0}px;background:#1f8a4c;border-radius:3px 3px 0 0;opacity:${k==='Vencido'?.55:1}"></div></div>
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;width:42%"><div style="font-size:9px;color:var(--red);white-space:nowrap">${k$(v.gasto)}</div><div style="width:100%;height:${v.gasto?Math.max(2,v.gasto/max*150):0}px;background:var(--red);border-radius:3px 3px 0 0;opacity:${k==='Vencido'?.55:1}"></div></div>
+      </div>`).join('')}</div>
+    <div style="display:flex;gap:6px;padding:3px 2px">${cols.map(([k])=>`<div style="flex:1;text-align:center;font-size:10.5px;color:${k==='Vencido'?'var(--red)':k===act?'#1f3864':'var(--muted2)'};font-weight:${k===act||k==='Vencido'?700:400}">${etq(k)}</div>`).join('')}</div>
+    <div style="display:flex;gap:6px;padding:2px;border-top:1px dashed var(--border)">${cols.map(([k,v])=>{ const n=v.ingreso-v.gasto; acum+=n; return `<div style="flex:1;text-align:center;font-size:10px;font-family:'DM Mono',monospace" title="Neto de la semana / acumulado"><div style="color:${n<0?'var(--red)':n>0?'#1f8a4c':'var(--muted)'}">${n?(n<0?'−':'+')+k$(Math.abs(n)):'·'}</div><div style="color:${acum<0?'var(--red)':'var(--muted2)'};font-size:9px">${k$(Math.abs(acum))?(acum<0?'−':'')+k$(Math.abs(acum)):''}</div></div>`; }).join('')}</div>
+    </div></div>
+    <div style="font-size:10.5px;color:var(--muted);margin-top:6px">Ingreso: milestones de pago (orden de cobro / factura). Gasto comprometido: CPP por pagar en su fecha programada de pago o, si no tiene, en su vencimiento. Fila inferior: neto de la semana y acumulado.${_if.gastos_sin_fecha?` · CPP sin vencimiento: ${ifFmt(_if.gastos_sin_fecha)}`:''}${_if.gastos_sin_tc?` · ${_if.gastos_sin_tc} CPP sin tipo de cambio (no incluidas)`:''}</div>`;
 }

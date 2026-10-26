@@ -16157,7 +16157,34 @@ def api_income_forecast():
         k = "Vencido" if r["vencido"] else r["fecha_cobro"][:7]
         meses[k] = round(meses.get(k, 0) + r["monto"], 2)
     sin_fecha = round(sum(r["monto"] for r in filas if not r["fecha_cobro"] and r["estatus"] not in ("Cobrado", "Factura cancelada")), 2)
-    return jsonify({"filas": filas, "por_mes": meses, "sin_fecha": sin_fecha, "hoy": hoy.isoformat()})
+    # rev124: semana a semana — ingreso esperado vs gasto comprometido (CPP por pagar:
+    # fecha programada de pago o, si no tiene, su vencimiento)
+    def semana(fiso):
+        try:
+            y, w, _ = datetime.date.fromisoformat(fiso).isocalendar(); return f"{y}-W{w:02d}"
+        except (TypeError, ValueError):
+            return None
+    sem_hoy = semana(hoy.isoformat())
+    semanas = {}
+    def sumar(k, campo, v):
+        b = semanas.setdefault(k, {"ingreso": 0.0, "gasto": 0.0}); b[campo] = round(b[campo] + v, 2)
+    for r in filas:
+        if r["estatus"] in ("Cobrado", "Factura cancelada") or not r["fecha_cobro"]: continue
+        k = semana(r["fecha_cobro"])
+        sumar("Vencido" if (k and k < sem_hoy) else k, "ingreso", r["monto"])
+    gastos_sin_fecha = 0.0; gastos_sin_tc = 0
+    try:
+        for c in _cpp_enriquecer([c for c in cpp_load() if (c.get("estatus") or "Pendiente") != "Pagado"]):
+            f = c.get("fecha_programada") or c.get("fecha_vencimiento")
+            v = c.get("monto_usd")
+            if v is None: gastos_sin_tc += 1; continue
+            if not f: gastos_sin_fecha = round(gastos_sin_fecha + v, 2); continue
+            k = semana(f)
+            sumar("Vencido" if (k and k < sem_hoy) else k, "gasto", v)
+    except Exception as e:
+        print(f"[FORECAST] gastos: {e}")
+    return jsonify({"filas": filas, "por_mes": meses, "sin_fecha": sin_fecha, "hoy": hoy.isoformat(),
+                    "semanas": semanas, "semana_actual": sem_hoy, "gastos_sin_fecha": gastos_sin_fecha, "gastos_sin_tc": gastos_sin_tc})
 
 @app.route("/api/ordenes-cobro/<oid>/evidencia", methods=["GET"])
 def api_oc_evidencia(oid):
@@ -19543,13 +19570,36 @@ def _cpp_enriquecer(cpps):
         pagado = (c.get("estatus") or "Pendiente") == "Pagado"
         venc = c.get("fecha_vencimiento")
         if pagado: est = "Pagado"
+        elif prog or c.get("estatus") == "Programado": est = "Programado"
         elif venc and venc < hoy.isoformat(): est = "Vencido"
-        elif prog: est = "Programado"
         elif not venc: est = "Sin vencimiento"
         else: est = "Por vencer"
         c["estatus_pago"] = est
         c["dias_vencido"] = (hoy - datetime.date.fromisoformat(venc)).days if (venc and not pagado and venc < hoy.isoformat()) else 0
     return cpps
+
+# rev124: programar un pago = registrarlo en PAGOS (por confirmar) y CPP → "Programado".
+#  Confirmar el pago en PAGOS lo deja "Pagado". Quitar la programación borra el pago
+#  programado (solo si no está confirmado) y regresa la CPP a "Pendiente".
+def _pago_programar(cpp, pagos, fecha, usuario):
+    p = next((x for x in pagos if x.get("cpp_number") == cpp.get("cpp_number") and not x.get("confirmado")), None)
+    ahora = datetime.datetime.now().isoformat()
+    if p is None:
+        p = {"pago_number": _doc_next_number("PAY"), "cpp_number": cpp["cpp_number"], "pur_number": cpp.get("pur_number", ""),
+             "rec_number": cpp.get("rec_number", ""), "po_number": cpp.get("po_number", ""), "job": cpp.get("job", ""),
+             "cpo": cpp.get("cpo", ""), "factura": cpp.get("factura", ""), "monto": cpp.get("monto", 0),
+             "supplier_name": cpp.get("supplier_name", ""), "confirmado": False, "usuario": usuario, "created_at": ahora}
+        pagos.append(p)
+    p.update(programado=True, fecha_programada=fecha, fecha=fecha, actualizado=ahora)
+    cpp["estatus"] = "Programado"; cpp["pago_number"] = p["pago_number"]
+    return p
+
+def _pago_desprogramar(cpp, pagos):
+    antes = len(pagos)
+    pagos[:] = [x for x in pagos if not (x.get("cpp_number") == cpp.get("cpp_number") and not x.get("confirmado") and x.get("programado"))]
+    if cpp.get("estatus") == "Programado": cpp["estatus"] = "Pendiente"
+    cpp.pop("pago_number", None)
+    return antes - len(pagos)
 
 @app.route("/api/cpp/<cpp_number>/programacion", methods=["PUT"])
 def api_cpp_programacion(cpp_number):
@@ -19578,6 +19628,11 @@ def api_cpp_programacion(cpp_number):
         if cambios:
             c.setdefault("historial_programacion", []).append({"fecha": datetime.datetime.now().isoformat(timespec="seconds"),
                                                                "usuario": session.get("user", ""), "detalle": "; ".join(cambios)})
+        if "fecha_programada" in d:                                           # rev124: PAGOS al día
+            pagos = pago_load()
+            if c.get("fecha_programada"): _pago_programar(c, pagos, c["fecha_programada"], session.get("user", ""))
+            else: _pago_desprogramar(c, pagos)
+            pago_save(pagos)
         cpp_save(cpps)
     return jsonify({"ok": True, "record": _cpp_enriquecer([dict(c)])[0]})
 
@@ -19592,16 +19647,19 @@ def api_cpp_programar_masivo():
         try: datetime.date.fromisoformat(f)
         except ValueError: return jsonify({"error": "Fecha inválida"}), 400
     if not nums: return jsonify({"error": "Selecciona al menos una CPP"}), 400
-    n = 0
+    n = 0; pagos_creados = []
     with lock:
-        cpps = cpp_load()
+        cpps = cpp_load(); pagos = pago_load()
         for c in cpps:
-            if str(c.get("cpp_number") or "").upper() in nums and (c.get("estatus") or "") != "Pagado" and c.get("fecha_programada") != f:
-                c.setdefault("historial_programacion", []).append({"fecha": datetime.datetime.now().isoformat(timespec="seconds"),
-                    "usuario": session.get("user", ""), "detalle": f"fecha_programada: {c.get('fecha_programada')} → {f}"})
-                c["fecha_programada"] = f; n += 1
-        cpp_save(cpps)
-    return jsonify({"ok": True, "actualizadas": n})
+            if str(c.get("cpp_number") or "").upper() in nums and (c.get("estatus") or "") != "Pagado":
+                if c.get("fecha_programada") != f:
+                    c.setdefault("historial_programacion", []).append({"fecha": datetime.datetime.now().isoformat(timespec="seconds"),
+                        "usuario": session.get("user", ""), "detalle": f"fecha_programada: {c.get('fecha_programada')} → {f}"})
+                    c["fecha_programada"] = f; n += 1
+                if f: pagos_creados.append(_pago_programar(c, pagos, f, session.get("user", ""))["pago_number"])   # rev124
+                else: _pago_desprogramar(c, pagos)
+        pago_save(pagos); cpp_save(cpps)
+    return jsonify({"ok": True, "actualizadas": n, "pagos": pagos_creados})
 
 @app.route("/api/cpp/programacion", methods=["GET"])
 def api_cpp_programacion_resumen():
@@ -19797,6 +19855,13 @@ def api_procesar_pago():
                 if cpp.get("estatus","Pendiente") == "Pagado":
                     return jsonify({"error": f"La CPP {cpp_number} ya tiene un pago registrado"}), 400
 
+                # rev124: si ya tenía un pago programado, ese pago es el que se procesa (sin duplicar)
+                prog = next((x for x in pagos if x.get("cpp_number") == cpp.get("cpp_number") and not x.get("confirmado")), None)
+                if prog:
+                    prog.update(programado=False, fecha=now[:10], usuario=usuario)
+                    cpp["estatus"] = "Pagado"; creados.append(prog)
+                    continue
+
                 cpp["estatus"] = "Pagado"
 
                 pago = {
@@ -19839,6 +19904,11 @@ def api_confirmar_pago(pago_number):
             pago["confirmado"] = True
             pago["confirmado_por"] = session.get("user","")
             pago["confirmado_at"] = datetime.datetime.now().isoformat()
+            if pago.get("programado"): pago["fecha_pago"] = datetime.date.today().isoformat()   # rev124
+            cpps = cpp_load()
+            c = next((x for x in cpps if x.get("cpp_number") == pago.get("cpp_number")), None)
+            if c and c.get("estatus") != "Pagado":
+                c["estatus"] = "Pagado"; cpp_save(cpps)
             pago_save(pagos)
         return jsonify({"ok": True, "record": pago})
     except Exception as e:
