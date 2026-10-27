@@ -22913,8 +22913,10 @@ def api_reporte_gerencial():
         return (f'<div class="kpis"><div><small>Proyectos en WIP</small><b>{len(wip)}</b></div><div><small>Revenue en WIP</small><b>{m(tot_rev)}</b></div>'
                 f'<div><small>Con fecha de envío vencida</small><b class="{"bad" if atrasados else ""}">{atrasados}</b></div>'
                 f'<div><small>Margen promedio al día</small><b>{pct((res.get("margen_proyectos") or {}).get("wip", {}).get("promedio") if (res.get("margen_proyectos") or {}).get("wip") else None)}</b></div></div>'
-                '<table><tr><th>Job</th><th>Cliente</th><th>Descripción</th><th>PM</th><th class="r">Revenue</th><th class="r">Margen al día</th><th>Fecha de envío</th></tr>'
-                + ("".join(filas) or '<tr><td colspan="7" class="muted">Sin proyectos en WIP</td></tr>') + '</table>')
+                # rev130: al generarlo desde el botón, esta tabla se sustituye por las tarjetas del
+                # dashboard de inicio (mismo formato); la tabla queda si se abre el enlace directo
+                '<div id="rg-wip-tabla"><table><tr><th>Job</th><th>Cliente</th><th>Descripción</th><th>PM</th><th class="r">Revenue</th><th class="r">Margen al día</th><th>Fecha de envío</th></tr>'
+                + ("".join(filas) or '<tr><td colspan="7" class="muted">Sin proyectos en WIP</td></tr>') + '</table></div><!--/rg-wip-tabla-->')
 
     def s3():
         mg = res.get("margen_proyectos") or {}; et = res.get("entrega_tiempo") or {}

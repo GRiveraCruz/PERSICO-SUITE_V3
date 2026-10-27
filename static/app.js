@@ -20514,6 +20514,30 @@ async function rgGenerar(){
     if(r.error){ msg.textContent = r.error; w && w.close(); return; }
   }
   const url = '/api/reporte-gerencial?anio=' + encodeURIComponent(anio);
-  if(w) w.location = url; else window.open(url, '_blank');
   closeMo('mo-rg');
+  if(w) w.document.write('<p style="font-family:Arial;padding:30px;color:#666">Generando el reporte gerencial…</p>');
+  try{
+    // rev130: los proyectos en WIP se muestran con las mismas tarjetas del dashboard de inicio
+    const [html, ing, om] = await Promise.all([
+      fetch(url).then(r=>r.text()),
+      fetch('/api/dashboard/engineering').then(r=>r.json()).catch(e=>({error:e.message})),
+      fetch('/api/dashboard/operation-manager').then(r=>r.json()).catch(e=>({error:e.message})),
+    ]);
+    let out = html;
+    if(ing && !ing.error && Array.isArray(ing.cards)){
+      const fin = Object.fromEntries(((om && om.jobs) || []).map(j=>[j.job_number, j]));
+      const wip = ing.cards.filter(c=>String(c.status||'WIP').toUpperCase()==='WIP').sort((a,b)=>(a.tiempo?a.tiempo.restantes:1e9)-(b.tiempo?b.tiempo.restantes:1e9));
+      const cards = wip.map(c=>ingCardHTML(c, ing, om && !om.error ? (fin[c.job_number]||{error:'Sin datos'}) : null)).join('').replace(/<button[\s\S]*?<\/button>/g,'');
+      const bloque = wip.length ? `<div class="rg-cards">${cards}</div><p class="muted">Resultado operativo = Internal Target (o revenue) − costo actual. Costo actual = mano de obra + compras + servicios + reasignaciones − recuperaciones, de toda la vida del Job.</p>`
+                                : '<p class="muted">Sin proyectos en WIP.</p>';
+      out = out.replace(/<div id="rg-wip-tabla">[\s\S]*?<\/div><!--\/rg-wip-tabla-->/, bloque);
+    }
+    // variables de color de la Suite que usan las tarjetas
+    const cs = getComputedStyle(document.documentElement);
+    const vars = ['--muted','--muted2','--text','--red','--border','--border2','--amber','--green','--gold','--card','--inp'].map(v=>`${v}:${cs.getPropertyValue(v).trim()||'#888'}`).join(';');
+    out = out.replace('</style>', `:root{${vars}} .rg-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:stretch;margin-top:8px}
+      .rg-cards > div{box-shadow:none!important;border:1px solid #e3e3e3;page-break-inside:avoid;break-inside:avoid} .badge{display:inline-block;padding:1px 6px;border-radius:8px;background:#eee}
+      @media print{.rg-cards{grid-template-columns:repeat(3,1fr)}}</style>`);
+    if(w){ w.document.open(); w.document.write(out); w.document.close(); } else window.open(url, '_blank');
+  }catch(e){ if(w) w.location = url; else window.open(url, '_blank'); }
 }
