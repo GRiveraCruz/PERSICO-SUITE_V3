@@ -20495,3 +20495,25 @@ function cfExportar(){
   const csv = [['USD', ...cols].map(q).join(','), linea('Saldo inicial', R.saldo_inicial), ...CF_FILAS.map(([f,l])=>linea(l, d.filas[f])), linea('Flujo neto', R.neto), linea('Saldo final', R.saldo_final)].join('\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv'})); a.download = `cash_flow_forecast_${new Date().toISOString().slice(0,10)}.csv`; a.click();
 }
+
+
+// rev129 — Reporte gerencial (Management ▸ KPIs)
+function rgAbrir(){
+  const y = new Date().getFullYear(), sel = document.getElementById('rg-anio'), act = document.getElementById('kpi-anio')?.value || y;
+  sel.innerHTML = [y+1, y, y-1, y-2].map(a=>`<option ${String(a)===String(act)?'selected':''}>${a}</option>`).join('');
+  document.getElementById('rg-msg').textContent = ''; document.getElementById('rg-pw').value = '';
+  document.getElementById('mo-rg').classList.add('on');
+}
+async function rgGenerar(){
+  const anio = document.getElementById('rg-anio').value, msg = document.getElementById('rg-msg');
+  const w = window.open('about:blank', '_blank');            // se abre antes del await para que el navegador no la bloquee
+  if(document.getElementById('rg-nomina').checked){
+    const pw = document.getElementById('rg-pw').value;
+    if(!pw){ msg.textContent = 'Escribe tu contraseña o desmarca la nómina por área'; w && w.close(); return; }
+    const r = await fetch('/api/costo-mano-obra/desbloquear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(r=>r.json()).catch(e=>({error:e.message}));
+    if(r.error){ msg.textContent = r.error; w && w.close(); return; }
+  }
+  const url = '/api/reporte-gerencial?anio=' + encodeURIComponent(anio);
+  if(w) w.location = url; else window.open(url, '_blank');
+  closeMo('mo-rg');
+}
