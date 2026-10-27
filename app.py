@@ -2822,6 +2822,195 @@ def _costo_por_hora_sueldo(salario_mensual, anios, uma, isn_pct, prima_vac_pct):
     costo_mensual_total = salario_mensual + prestaciones_mes + cargas_sociales_mes + isn_mes
     return round(costo_mensual_total / (4 * jornada_semanal), 2)
 
+# ══════════════════════════════════════════════════════════════════
+#  rev127 — UMA automática + MANAGEMENT ▸ COSTO DE MANO DE OBRA
+# ══════════════════════════════════════════════════════════════════
+# UMA: la publica el INEGI cada enero y entra en vigor el 1 de febrero. Se guarda un
+# historial (año → valor diario) y se elige la vigente para cada fecha. La actualización
+# automática consulta el sitio del INEGI; si no responde, se conserva el último valor y
+# se puede capturar a mano.
+UMA_PRECARGA = [  # valores diarios publicados (MXN); se pueden corregir desde la pantalla
+    {"anio": 2023, "diario": 103.74}, {"anio": 2024, "diario": 108.57},
+    {"anio": 2025, "diario": 113.14}, {"anio": 2026, "diario": 117.31, "verificar": True},
+]
+UMA_URL = _os.environ.get("UMA_URL", "https://www.inegi.org.mx/temas/uma/")
+_UMA_ARCHIVO = Path(_DATA) / "FINANZAS" / "uma.json"
+_uma_cache = {"t": 0, "v": None}
+
+def _uma_cargar():
+    import time as _t
+    if _uma_cache["v"] is not None and _t.time() - _uma_cache["t"] < 60: return _uma_cache["v"]
+    d = None
+    try:
+        if _orm and _orm.DB_ENABLED: d = _kpi_snap_get("config:uma").get("config:uma")
+        elif _UMA_ARCHIVO.exists(): d = json.loads(_UMA_ARCHIVO.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[UMA] {e}")
+    if not d:
+        d = {"valores": [dict(v, fuente="precarga") for v in UMA_PRECARGA], "ultima_revision": None}
+    _uma_cache.update(t=_t.time(), v=d)
+    return d
+
+def _uma_guardar(d):
+    if _orm and _orm.DB_ENABLED: _kpi_snap_set("config:uma", d)
+    else:
+        _UMA_ARCHIVO.parent.mkdir(parents=True, exist_ok=True); _UMA_ARCHIVO.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    _uma_cache.update(t=0, v=None)
+
+def _uma_vigente(fecha=None):
+    """UMA diaria vigente en la fecha (vigencia: 1-feb del año al 31-ene del siguiente)."""
+    f = fecha or datetime.date.today()
+    if isinstance(f, str): f = datetime.date.fromisoformat(f[:10])
+    anio = f.year if f >= datetime.date(f.year, 2, 1) else f.year - 1
+    vals = sorted(_uma_cargar().get("valores") or [], key=lambda v: v["anio"])
+    ok = [v for v in vals if v["anio"] <= anio]
+    return float((ok[-1] if ok else (vals[0] if vals else {"diario": 113.14}))["diario"])
+
+def _uma_consultar_inegi():
+    """Busca en el sitio del INEGI el valor diario de la UMA del año más reciente.
+    Regresa {"anio", "diario"} o lanza excepción."""
+    r = _requests.get(UMA_URL, timeout=15, headers={"User-Agent": "Mozilla/5.0 PersicoSuite"})
+    r.raise_for_status()
+    txt = re.sub(r"<[^>]+>", " ", r.text); txt = re.sub(r"&nbsp;|\s+", " ", txt)
+    hallados = {}
+    # filas tipo "2026 117.31 3,566.22 42,794.64" (año, diario, mensual, anual)
+    for m in re.finditer(r"\b(20[2-9]\d)\s+\$?\s*(\d{2,3}\.\d{2})\s+\$?\s*([\d,]+\.\d{2})\s+\$?\s*([\d,]+\.\d{2})", txt):
+        anio, diario = int(m.group(1)), float(m.group(2))
+        mensual = float(m.group(3).replace(",", ""))
+        if 80 < diario < 400 and abs(mensual - diario * 30.4) < diario * 2: hallados[anio] = diario
+    if not hallados:
+        m = re.search(r"(?:valor diario|diario)[^0-9$]{0,60}\$?\s*(\d{2,3}\.\d{2})", txt, re.I)
+        a = re.search(r"\b(20[2-9]\d)\b", txt)
+        if m and a: hallados[int(a.group(1))] = float(m.group(1))
+    if not hallados: raise ValueError("No se encontró el valor de la UMA en la página del INEGI")
+    anio = max(hallados); return {"anio": anio, "diario": hallados[anio]}
+
+def _uma_actualizar(forzar=False):
+    """Revisa el INEGI (como mucho una vez por semana, o en febrero a diario) y agrega o
+    corrige el valor del año publicado. Nunca borra valores."""
+    d = _uma_cargar(); hoy = datetime.date.today()
+    ult = d.get("ultima_revision")
+    if not forzar and ult:
+        try:
+            dias = (hoy - datetime.date.fromisoformat(ult[:10])).days
+            if dias < (1 if hoy.month in (1, 2) else 7): return {"ok": True, "omitido": True}
+        except ValueError:
+            pass
+    d = json.loads(json.dumps(d))
+    d["ultima_revision"] = datetime.datetime.now().isoformat(timespec="seconds")
+    try:
+        res = _uma_consultar_inegi()
+        vals = d.setdefault("valores", [])
+        ex = next((v for v in vals if v["anio"] == res["anio"]), None)
+        cambio = False
+        if ex is None:
+            vals.append({"anio": res["anio"], "diario": res["diario"], "fuente": "INEGI", "actualizado": d["ultima_revision"]}); cambio = True
+        elif abs(float(ex["diario"]) - res["diario"]) > 0.001 or ex.get("verificar"):
+            ex.update(diario=res["diario"], fuente="INEGI", actualizado=d["ultima_revision"]); ex.pop("verificar", None); cambio = True
+        d["ultimo_resultado"] = {"ok": True, **res, "cambio": cambio}
+        _uma_guardar(d)
+        if cambio: print(f"[UMA] {res['anio']}: {res['diario']} (INEGI)")
+        return d["ultimo_resultado"]
+    except Exception as e:
+        msg = "sin conexión con el sitio del INEGI" if any(k in str(e) for k in ("resolve", "Connection", "timed out", "Max retries")) else str(e)[:160]
+        d["ultimo_resultado"] = {"ok": False, "error": msg}
+        _uma_guardar(d)
+        print(f"[UMA] no se pudo consultar el INEGI: {e}")
+        return d["ultimo_resultado"]
+
+@app.route("/api/uma", methods=["GET"])
+def api_uma_get():
+    if not session.get("user"): return jsonify({"error": "No autenticado"}), 401
+    try: _thr_cache.Thread(target=_uma_actualizar, daemon=True).start()     # revisión periódica en segundo plano
+    except Exception: pass
+    d = _uma_cargar()
+    return jsonify({"vigente": _uma_vigente(), "valores": sorted(d.get("valores") or [], key=lambda v: -v["anio"]),
+                    "ultima_revision": d.get("ultima_revision"), "ultimo_resultado": d.get("ultimo_resultado"), "fuente_url": UMA_URL})
+
+@app.route("/api/uma/actualizar", methods=["POST"])
+def api_uma_actualizar():
+    if not (is_admin() or can("create", "rrhh-sueldos") or can("create", "mgmt-costo-mo")): return jsonify({"error": "Sin permiso"}), 403
+    return jsonify({**_uma_actualizar(forzar=True), "vigente": _uma_vigente()})
+
+@app.route("/api/uma", methods=["PUT"])
+def api_uma_put():
+    """Captura o corrige a mano el valor de un año."""
+    if not (is_admin() or can("create", "rrhh-sueldos") or can("create", "mgmt-costo-mo")): return jsonify({"error": "Sin permiso"}), 403
+    b = request.json or {}
+    try:
+        anio = int(b.get("anio")); diario = round(float(b.get("diario")), 2)
+        if not (2017 <= anio <= 2100 and 50 < diario < 1000): raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"error": "Año o valor inválido"}), 400
+    d = json.loads(json.dumps(_uma_cargar())); vals = d.setdefault("valores", [])
+    ex = next((v for v in vals if v["anio"] == anio), None)
+    reg = {"anio": anio, "diario": diario, "fuente": "manual", "actualizado": datetime.datetime.now().isoformat(timespec="seconds"), "por": session.get("user", "")}
+    if ex: ex.clear(); ex.update(reg)
+    else: vals.append(reg)
+    _uma_guardar(d)
+    return jsonify({"ok": True, "vigente": _uma_vigente()})
+
+# ── Costo mensual por trabajador (jornada normal) ──
+def _costo_mensual_detalle(salario_mensual, anios, uma, isn_pct, prima_vac_pct, prima_riesgo_pct, tabla_isr):
+    """Desglose mensual con las mismas tasas de Calcular Salario / Nómina."""
+    dias_mes = 30.4; dias_aguinaldo = 15; dias_vac = _dias_vacaciones_ley(anios)
+    diario = salario_mensual / dias_mes
+    factor = 1 + (dias_aguinaldo / 365) + ((dias_vac * prima_vac_pct) / 365)
+    sbc = min(diario * factor, uma * 25) if uma > 0 else diario * factor
+    exc = max(0, sbc - uma * 3)
+    prestaciones = (diario * dias_aguinaldo + diario * dias_vac + diario * dias_vac * prima_vac_pct) / 12
+    pat = {"cuota_fija": 0.2040 * uma * dias_mes, "excedente": 0.0110 * exc * dias_mes, "prest_dinero": 0.0070 * sbc * dias_mes,
+           "gastos_medicos": 0.0105 * sbc * dias_mes, "invalidez_vida": 0.0175 * sbc * dias_mes, "guarderias": 0.0100 * sbc * dias_mes,
+           "riesgo_trabajo": prima_riesgo_pct * sbc * dias_mes, "retiro": 0.0200 * sbc * dias_mes, "cesantia_vejez": 0.03150 * sbc * dias_mes}
+    imss_pat = sum(pat.values())
+    imss_obr = _imss_obrero_periodo(diario, anios, uma, prima_vac_pct, dias_mes)
+    infonavit = 0.0500 * sbc * dias_mes
+    isn = (salario_mensual + prestaciones) * isn_pct
+    isr = _calc_isr(salario_mensual, tabla_isr) if tabla_isr else 0.0
+    r2 = lambda v: round(v, 2)
+    return {"salario_bruto": r2(salario_mensual), "sbc_diario": r2(sbc), "isr": r2(isr), "imss_obrero": r2(imss_obr),
+            "neto": r2(salario_mensual - isr - imss_obr), "imss_patronal": r2(imss_pat), "infonavit": r2(infonavit), "isn": r2(isn),
+            "prestaciones": r2(prestaciones), "costo_empresa": r2(salario_mensual + prestaciones + imss_pat + infonavit + isn),
+            "detalle_patronal": {k: r2(v) for k, v in pat.items()}}
+
+@app.route("/api/costo-mano-obra", methods=["GET"])
+def api_costo_mano_obra():
+    if not can("view", "mgmt-costo-mo"): return jsonify({"error": "Sin permiso"}), 403
+    uma = float(request.args.get("uma") or 0) or _uma_vigente()
+    isn_pct = float(request.args.get("isn_pct") or 3) / 100
+    prima_vac_pct = float(request.args.get("prima_vac_pct") or 25) / 100
+    prima_riesgo_pct = float(request.args.get("prima_riesgo_pct") or 0.5) / 100
+    tablas = _load_isr_tablas() or {}
+    tabla = tablas.get("mensual") or []
+    sueldos = _load_sueldos() or {}
+    ver_individual = puede_ver_salarios()
+    fx = None
+    try: fx = fx_rate_for_date(datetime.date.today().isoformat(), fx_load_all())
+    except Exception: pass
+    filas, sin_salario = [], []
+    for p in _load_personal():
+        est = str(p.get("estado") or p.get("estatus") or "Activo").strip().lower()
+        if est not in ("activo", "active", ""): continue
+        tid = p.get("tid"); sal = float(((sueldos.get(tid) or {}).get("salario_mensual")) or 0)
+        nombre = p.get("nombre") or tid
+        if sal <= 0: sin_salario.append({"tid": tid, "nombre": nombre, "area": p.get("area") or ""}); continue
+        anios = _anios_completos_sueldo(p.get("fecha_ingreso"))
+        c = _costo_mensual_detalle(sal, anios, uma, isn_pct, prima_vac_pct, prima_riesgo_pct, tabla)
+        filas.append({"tid": tid, "nombre": nombre, "area": p.get("area") or "Sin área", "puesto": p.get("puesto") or "", "antiguedad": anios, **c})
+    campos = ["salario_bruto", "isr", "imss_obrero", "neto", "imss_patronal", "infonavit", "isn", "prestaciones", "costo_empresa"]
+    tot = {k: round(sum(f[k] for f in filas), 2) for k in campos}
+    por_area = {}
+    for f in filas:
+        a = por_area.setdefault(f["area"], {"personas": 0, **{k: 0.0 for k in campos}}); a["personas"] += 1
+        for k in campos: a[k] = round(a[k] + f[k], 2)
+    if not ver_individual:   # sin permiso de salarios: solo totales por área
+        filas = []
+    return jsonify({"uma": uma, "parametros": {"isn_pct": isn_pct * 100, "prima_vac_pct": prima_vac_pct * 100, "prima_riesgo_pct": prima_riesgo_pct * 100},
+                    "tabla_isr": bool(tabla), "tipo_cambio": fx, "totales": tot, "personas": len(por_area) and sum(a["personas"] for a in por_area.values()),
+                    "por_area": dict(sorted(por_area.items(), key=lambda x: -x[1]["costo_empresa"])),
+                    "filas": sorted(filas, key=lambda f: (f["area"], f["nombre"])), "ver_individual": ver_individual,
+                    "sin_salario": sin_salario})
+
 @app.route("/api/sueldos", methods=["GET"])
 def api_list_sueldos():
     if not can("view", "rrhh-sueldos"): return jsonify({"error": "Sin permiso"}), 403
@@ -2830,7 +3019,7 @@ def api_list_sueldos():
     # El costo por hora en USD sí es un dato consultable (a diferencia del salario y su
     # costo en pesos, que siguen ocultos). Se recalcula con los parámetros generales
     # actuales y el tipo de cambio del día anterior.
-    uma = float(request.args.get("uma") or 113.14)
+    uma = float(request.args.get("uma") or 0) or _uma_vigente()
     isn_pct = float(request.args.get("isn_pct") or 3) / 100
     prima_vac_pct = float(request.args.get("prima_vac_pct") or 25) / 100
 
@@ -3050,7 +3239,7 @@ def api_export_sueldos_excel():
     if not _check_login(user, password):
         return jsonify({"error": "Contraseña incorrecta"}), 401
 
-    uma = float(data.get("uma") or 113.14)
+    uma = float(data.get("uma") or 0) or _uma_vigente()
     isn_pct = float(data.get("isn_pct") or 3) / 100
     prima_vac_pct = float(data.get("prima_vac_pct") or 25) / 100
 
@@ -3460,7 +3649,7 @@ def api_generar_nomina(pid):
     if not periodo:
         return jsonify({"error": "Periodo no encontrado"}), 404
 
-    uma = float(data.get("uma") or 113.14)
+    uma = float(data.get("uma") or 0) or _uma_vigente()
     prima_vac_pct = float(data.get("prima_vac_pct") or 25) / 100
     dias_periodo_default = (datetime.date.fromisoformat(periodo["fecha_fin"]) - datetime.date.fromisoformat(periodo["fecha_inicio"])).days + 1
 
@@ -4586,7 +4775,7 @@ def api_control_horas_exportar_mano_obra():
     if not rows:
         return jsonify({"error": "No hay registros de horas en este período para exportar"}), 400
 
-    uma = float(data.get("uma") or 113.14)
+    uma = float(data.get("uma") or 0) or _uma_vigente()
     isn_pct = float(data.get("isn_pct") or 3) / 100
     prima_vac_pct = float(data.get("prima_vac_pct") or 25) / 100
 
@@ -10413,7 +10602,7 @@ MODULES = [
     "projconfig-dashboard", "projconfig-presupuesto", "projconfig-timing",
     "projconfig-abiertos", "projconfig-cambios", "projconfig-documentos",
     # Finanzas
-    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales", "fin-ordenes-cobro", "mgmt-income-forecast",
+    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales", "fin-ordenes-cobro", "mgmt-income-forecast", "mgmt-costo-mo",
     # Recursos Humanos
     "rrhh-asistencia", "rrhh-vacaciones", "rrhh-permisos", "rrhh-salario", "rrhh-sueldos", "rrhh-nomina",
     "personal-areas", "personal-tipos-puesto", "personal-perfiles", "personal-listado",
@@ -10895,7 +11084,8 @@ MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto
                    "ops-piso": "ops-capacidad",
                    "fin-datos-fiscales": "fin-esquemas",
                    "fin-ordenes-cobro": "fin-cpc",
-                   "mgmt-income-forecast": "fin-cpc",      # rev122: Income forecast toma el nivel de CPC          # rev121: Órdenes de cobro toma el nivel de CPC   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
+                   "mgmt-income-forecast": "fin-cpc",
+                   "mgmt-costo-mo": "rrhh-sueldos",        # rev127: Costo de mano de obra toma el nivel de Sueldos      # rev122: Income forecast toma el nivel de CPC          # rev121: Órdenes de cobro toma el nivel de CPC   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
                    "fin-cpc": "fin-cpp"}           # rev104: CPC toma el nivel de CPP mientras no se fije
 
 def nivel_heredado(info, mod):

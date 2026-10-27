@@ -125,6 +125,7 @@ function switchMenu(mod, groupId) {
   if(mod==='fin-ordenes-cobro') { setTimeout(ocCargar,100); }
   if(mod==='mgmt-income-forecast') { setTimeout(ifCargar,100); }
   if(mod==='fin-prog-pagos') { setTimeout(ppCargar,100); }
+  if(mod==='mgmt-costo-mo') { setTimeout(async ()=>{ await umaCargar(); cmoCargar(); },100); }
   if(mod==='personal-listado') { setTimeout(loadPersonal,100); }
   if(mod==='consignacion') { setTimeout(loadCsg,50); }
   if(mod==='apartados') { setTimeout(loadApartados,50); }   // antes solo se cargaba al abrir la suite
@@ -5979,9 +5980,9 @@ let USER_PERMS = null;
 
 // rev77: módulos que heredan el nivel de otro mientras el administrador no les fije uno
 const MODULOS_HEREDAN = {'projconfig-dashboard':'projconfig','projconfig-presupuesto':'projconfig','projconfig-timing':'projconfig',
-  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc','mgmt-income-forecast':'fin-cpc','fin-prog-pagos':'fin-cpp'};
+  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc','mgmt-income-forecast':'fin-cpc','fin-prog-pagos':'fin-cpp','mgmt-costo-mo':'rrhh-sueldos'};
 const MODULE_LABELS = {
-  'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)', 'fin-datos-fiscales':'Datos fiscales', 'fin-ordenes-cobro':'Órdenes de cobro', 'mgmt-income-forecast':'Management — Income Forecast', 'fin-prog-pagos':'Programación de pagos',
+  'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)', 'fin-datos-fiscales':'Datos fiscales', 'fin-ordenes-cobro':'Órdenes de cobro', 'mgmt-income-forecast':'Management — Income Forecast', 'fin-prog-pagos':'Programación de pagos', 'mgmt-costo-mo':'Management — Costo de mano de obra',
   // Proyectos
   'jobs':'Job Register', 'pt':'PT Numbers', 'sv':'SV Numbers',
   'rates':'Hourly Rates', 'quotes':'Quote Register',
@@ -6040,7 +6041,7 @@ const MODULE_GROUPS = [
   { label: '📊 Control de Costo',     mods: ['wh','report','multirpt','fx'] },
   { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-prog-pagos','fin-cpc','fin-ordenes-cobro','fin-pagos','fin-esquemas','fin-datos-fiscales'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-tipos-puesto','personal-perfiles','personal-listado'] },
-  { label: '📈 Management',           mods: ['rrhh-kpis','mgmt-income-forecast'] },
+  { label: '📈 Management',           mods: ['rrhh-kpis','mgmt-income-forecast','mgmt-costo-mo'] },
   { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os','ops-piso'] },
 ];
 
@@ -6289,6 +6290,7 @@ function applyPermsToDom(d) {
     'fin-ordenes-cobro':  ["switchMenu('fin-ordenes-cobro'"],
     'mgmt-income-forecast': ["switchMenu('mgmt-income-forecast'"],
     'fin-prog-pagos':     ["switchMenu('fin-prog-pagos'"],
+    'mgmt-costo-mo':      ["switchMenu('mgmt-costo-mo'"],
     'compras-requisicion':["switchMenu('requisicion'"],
     'fin-pagos':          ["switchMenu('fin-pagos'"],
     'fin-esquemas':       ["switchMenu('fin-esquemas'"],
@@ -20282,4 +20284,90 @@ async function ocDesligar(oid){
   const r = await apiCall('POST', `/ordenes-cobro/${encodeURIComponent(oid)}/desvincular`, {motivo});
   if(r.error){ toast(r.error,'er'); return; }
   toast('Factura desligada','if'); ocCargar();
+}
+
+
+// ════════════════════════════════════════════════════════
+//  rev127 — UMA automática + Management ▸ Costo de mano de obra
+// ════════════════════════════════════════════════════════
+let _uma = null;
+async function umaCargar(){
+  try{ _uma = await fetch('/api/uma').then(r=>r.json()); }catch(e){ return; }
+  // los campos "UMA Diaria" de Calcular Salario, Sueldos y Nómina toman la UMA vigente
+  ['cl-uma','sal-uma','np-gen-uma'].forEach(id=>{ const el=document.getElementById(id); if(el && (!el.dataset.umaTocado) && (el.value==='' || el.value==='113.14')) el.value = _uma.vigente; });
+}
+document.addEventListener('input', e=>{ if(['cl-uma','sal-uma','np-gen-uma'].includes(e.target?.id)) e.target.dataset.umaTocado='1'; });
+setTimeout(umaCargar, 2500);
+async function umaAbrir(){
+  await umaCargar(); if(!_uma) return;
+  const r = _uma.ultimo_resultado;
+  document.getElementById('uma-info').innerHTML = `UMA vigente hoy: <b style="font-size:15px">$${Number(_uma.vigente).toFixed(2)}</b> diarios.<br>
+    <span style="font-size:11px;color:var(--muted2)">La publica el INEGI en enero y entra en vigor el 1 de febrero. La Suite revisa el INEGI automáticamente (cada semana; a diario en enero y febrero).
+    Última revisión: ${_uma.ultima_revision ? esc(String(_uma.ultima_revision).replace('T',' ').slice(0,16)) : 'aún no'}${r ? (r.ok ? ` · ✓ ${r.anio}: $${r.diario}` : ` · <span style="color:var(--amber)">⚠ ${esc(r.error||'')}</span>`) : ''}</span>`;
+  document.getElementById('uma-tb').innerHTML = (_uma.valores||[]).map(v=>`<tr style="border-top:1px solid var(--border)"><td style="padding:5px">${v.anio}</td>
+    <td style="padding:5px;text-align:right;font-family:'DM Mono',monospace;font-weight:700">$${Number(v.diario).toFixed(2)}</td>
+    <td style="padding:5px;text-align:right;font-family:'DM Mono',monospace;color:var(--muted2)">$${(v.diario*30.4).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+    <td style="padding:5px;font-size:11px">${esc(v.fuente||'')}${v.verificar?' <span style="color:var(--amber)">· por verificar</span>':''}${v.por?` · ${esc(v.por)}`:''}</td></tr>`).join('');
+  document.getElementById('uma-anio').value = new Date().getFullYear();
+  document.getElementById('mo-uma').classList.add('on');
+}
+async function umaInegi(){
+  toast('Consultando el INEGI…','if',3000);
+  const r = await apiCall('POST','/uma/actualizar',{});
+  if(r.error && !r.ok){ toast(r.error,'er',6000); }
+  else toast(`UMA ${r.anio}: $${r.diario}${r.cambio?' (actualizada)':' (sin cambios)'}`,'ok',5000);
+  await umaAbrir(); if(document.getElementById('mod-mgmt-costo-mo')?.classList.contains('on')) cmoCargar();
+}
+async function umaGuardar(){
+  const r = await apiCall('PUT','/uma',{anio: document.getElementById('uma-anio').value, diario: document.getElementById('uma-diario').value});
+  if(r.error){ toast(r.error,'er'); return; }
+  toast('UMA guardada','ok'); await umaAbrir(); if(document.getElementById('mod-mgmt-costo-mo')?.classList.contains('on')) cmoCargar();
+}
+
+let _cmo = null;
+const cmo$ = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+async function cmoCargar(){
+  const q = new URLSearchParams({isn_pct: document.getElementById('cmo-isn').value, prima_vac_pct: document.getElementById('cmo-pv').value, prima_riesgo_pct: document.getElementById('cmo-pr').value});
+  try{ _cmo = await fetch('/api/costo-mano-obra?'+q).then(r=>r.json()); if(_cmo.error) throw new Error(_cmo.error); }
+  catch(e){ document.getElementById('cmo-cards').innerHTML = `<div style="color:var(--red)">⚠ ${esc(e.message)}</div>`; return; }
+  cmoRender();
+}
+const CMO_COLS = [['salario_bruto','Salario bruto'],['isr','ISR (retenido)'],['imss_obrero','IMSS obrero'],['neto','Neto al trabajador'],['imss_patronal','IMSS patronal'],['infonavit','INFONAVIT 5%'],['isn','ISN'],['prestaciones','Provisión prestaciones'],['costo_empresa','Costo total empresa']];
+function cmoRender(){
+  const d = _cmo, t = d.totales, fx = d.tipo_cambio;
+  document.getElementById('cmo-uma').innerHTML = `UMA $${Number(d.uma).toFixed(2)} · TC ${fx?Number(fx).toFixed(4):'—'}`;
+  const card = (tit, v, sub, col, big) => `<div style="background:var(--card,#fff);border:1px solid var(--border);border-radius:10px;padding:11px 13px;${big?'border-color:var(--red)':''}"><div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${tit}</div><div style="font-size:${big?22:18}px;font-weight:800;color:${col||'var(--text)'};margin-top:2px">${v}</div><div style="font-size:10.5px;color:var(--muted2)">${sub||''}</div></div>`;
+  const usd = v => fx ? `≈ ${cmo$(v/fx)} USD` : '';
+  document.getElementById('cmo-cards').innerHTML = card('Trabajadores', d.personas||0, d.sin_salario.length?`${d.sin_salario.length} activo(s) sin salario`:'activos con salario')
+    + card('Salario bruto mensual', cmo$(t.salario_bruto), usd(t.salario_bruto))
+    + card('ISR mensual', cmo$(t.isr), d.tabla_isr ? 'retenido al trabajador' : '⚠ falta la tabla de ISR', d.tabla_isr?null:'var(--amber)')
+    + card('IMSS obrero', cmo$(t.imss_obrero), 'retenido al trabajador')
+    + card('Neto a pagar', cmo$(t.neto), 'bruto − ISR − IMSS obrero')
+    + card('IMSS patronal', cmo$(t.imss_patronal), usd(t.imss_patronal))
+    + card('INFONAVIT + ISN', cmo$(t.infonavit + t.isn), `INFONAVIT ${cmo$(t.infonavit)} · ISN ${cmo$(t.isn)}`)
+    + card('Provisión prestaciones', cmo$(t.prestaciones), 'aguinaldo, vacaciones y prima')
+    + card('Costo total empresa / mes', cmo$(t.costo_empresa), usd(t.costo_empresa), 'var(--red)', true);
+  document.getElementById('cmo-nota').innerHTML = `<b>Cómo leerlo:</b> el <b>ISR</b> y el <b>IMSS obrero</b> forman parte del salario bruto (se retienen al trabajador y se enteran al SAT/IMSS), por eso no se suman otra vez al costo. El <b>costo total para la empresa</b> = salario bruto + IMSS patronal + INFONAVIT + ISN + provisión de prestaciones. Salida de efectivo mensual de nómina: neto ${cmo$(t.neto)} a trabajadores + ${cmo$(t.isr + t.imss_obrero)} de retenciones + ${cmo$(t.imss_patronal + t.infonavit + t.isn)} de cuotas patronales.`;
+  const thA = `<tr><th>Área</th><th style="text-align:right">Personas</th>${CMO_COLS.map(([,l])=>`<th style="text-align:right">${l}</th>`).join('')}</tr>`;
+  document.getElementById('cmo-area-th').innerHTML = thA;
+  const filaA = (n, a, b) => `<tr style="${b?'font-weight:700;border-top:2px solid var(--border)':''}"><td>${esc(n)}</td><td style="text-align:right">${a.personas}</td>${CMO_COLS.map(([k])=>`<td style="text-align:right;font-family:'DM Mono',monospace;${k==='costo_empresa'?'font-weight:700;color:var(--red)':''}">${cmo$(a[k])}</td>`).join('')}</tr>`;
+  document.getElementById('cmo-area-tb').innerHTML = Object.entries(d.por_area).map(([n,a])=>filaA(n,a)).join('') + filaA('Total', {personas: d.personas||0, ...t}, true);
+  document.getElementById('cmo-ind-box').style.display = d.ver_individual ? '' : 'none';
+  if(d.ver_individual){
+    const q = (document.getElementById('cmo-q').value||'').toLowerCase();
+    const L = d.filas.filter(f=>!q || [f.nombre,f.area,f.puesto].join(' ').toLowerCase().includes(q));
+    document.getElementById('cmo-th').innerHTML = `<tr><th>Trabajador</th><th>Área</th><th style="text-align:right">Antig.</th><th style="text-align:right">SBC diario</th>${CMO_COLS.map(([,l])=>`<th style="text-align:right">${l}</th>`).join('')}</tr>`;
+    document.getElementById('cmo-tb').innerHTML = L.map(f=>`<tr><td><b>${esc(f.nombre)}</b><div style="font-size:10.5px;color:var(--muted)">${esc(f.puesto||'')}</div></td><td>${esc(f.area)}</td><td style="text-align:right">${f.antiguedad} a</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace">${cmo$(f.sbc_diario)}</td>${CMO_COLS.map(([k])=>`<td style="text-align:right;font-family:'DM Mono',monospace;${k==='costo_empresa'?'font-weight:700':''}">${cmo$(f[k])}</td>`).join('')}</tr>`).join('');
+  }
+  document.getElementById('cmo-sin').innerHTML = d.sin_salario.length ? `<span style="color:var(--amber)">⚠ ${d.sin_salario.length} trabajador(es) activo(s) sin salario capturado en Sueldos y Salarios (no se incluyen):</span> ${d.sin_salario.map(x=>esc(x.nombre)).join(', ')}` : '';
+}
+function cmoExportar(){
+  const d = _cmo, q = v => `"${String(v??'').replace(/"/g,'""')}"`;
+  const head = ['Area','Personas',...CMO_COLS.map(c=>c[1])].join(',');
+  const rowsA = Object.entries(d.por_area).map(([n,a])=>[n,a.personas,...CMO_COLS.map(([k])=>a[k])].map(q).join(','));
+  let csv = ['COSTO DE MANO DE OBRA (mensual, MXN)', `UMA,${d.uma}`, '', head, ...rowsA, ['Total', d.personas, ...CMO_COLS.map(([k])=>d.totales[k])].map(q).join(',')];
+  if(d.ver_individual){ csv.push('', ['Trabajador','Area','Puesto','Antiguedad','SBC diario',...CMO_COLS.map(c=>c[1])].join(','),
+    ...d.filas.map(f=>[f.nombre,f.area,f.puesto,f.antiguedad,f.sbc_diario,...CMO_COLS.map(([k])=>f[k])].map(q).join(','))); }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff'+csv.join('\n')],{type:'text/csv'})); a.download = `costo_mano_obra_${new Date().toISOString().slice(0,10)}.csv`; a.click();
 }
