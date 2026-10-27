@@ -2973,6 +2973,36 @@ def _costo_mensual_detalle(salario_mensual, anios, uma, isn_pct, prima_vac_pct, 
             "prestaciones": r2(prestaciones), "costo_empresa": r2(salario_mensual + prestaciones + imss_pat + infonavit + isn),
             "detalle_patronal": {k: r2(v) for k, v in pat.items()}}
 
+CMO_DESBLOQUEO_MIN = 15
+
+@app.route("/api/costo-mano-obra/desbloquear", methods=["POST"])
+def api_cmo_desbloquear():
+    """Segunda verificación: la contraseña del usuario abre las tablas por 15 minutos."""
+    import time as _tm
+    if not can("view", "mgmt-costo-mo"): return jsonify({"error": "Sin permiso"}), 403
+    if not puede_ver_costo_mo():
+        return jsonify({"error": "No tienes permiso para ver las tablas de Costo de mano de obra. Pídelo al administrador."}), 403
+    bloqueo = float(session.get("cmo_bloqueo_until") or 0)
+    if bloqueo > _tm.time():
+        return jsonify({"error": f"Demasiados intentos. Espera {int((bloqueo - _tm.time()) // 60) + 1} min."}), 429
+    pw = str((request.json or {}).get("password") or "")
+    if not pw or not _check_login(session.get("user"), pw):
+        n = int(session.get("cmo_fallos") or 0) + 1
+        session["cmo_fallos"] = n
+        if n >= 5:
+            session["cmo_bloqueo_until"] = _tm.time() + 300; session["cmo_fallos"] = 0
+            print(f"[SEGURIDAD] Costo MO: 5 contraseñas incorrectas de {session.get('user')}")
+            return jsonify({"error": "Contraseña incorrecta. Se bloqueó 5 minutos por demasiados intentos."}), 429
+        return jsonify({"error": f"Contraseña incorrecta ({n} de 5)"}), 401
+    session["cmo_fallos"] = 0
+    session["cmo_unlock_until"] = _tm.time() + CMO_DESBLOQUEO_MIN * 60
+    print(f"[SEGURIDAD] Costo MO: tablas desbloqueadas por {session.get('user')}")
+    return jsonify({"ok": True, "minutos": CMO_DESBLOQUEO_MIN})
+
+@app.route("/api/costo-mano-obra/bloquear", methods=["POST"])
+def api_cmo_bloquear():
+    session.pop("cmo_unlock_until", None); return jsonify({"ok": True})
+
 @app.route("/api/costo-mano-obra", methods=["GET"])
 def api_costo_mano_obra():
     if not can("view", "mgmt-costo-mo"): return jsonify({"error": "Sin permiso"}), 403
@@ -2984,9 +3014,7 @@ def api_costo_mano_obra():
     tabla = tablas.get("mensual") or []
     sueldos = _load_sueldos() or {}
     ver_individual = puede_ver_salarios()
-    fx = None
-    try: fx = fx_rate_for_date(datetime.date.today().isoformat(), fx_load_all())
-    except Exception: pass
+    fx, _fxf = _fx_hoy_o_ultimo()
     filas, sin_salario = [], []
     for p in _load_personal():
         est = str(p.get("estado") or p.get("estatus") or "Activo").strip().lower()
@@ -3003,9 +3031,17 @@ def api_costo_mano_obra():
     for f in filas:
         a = por_area.setdefault(f["area"], {"personas": 0, **{k: 0.0 for k in campos}}); a["personas"] += 1
         for k in campos: a[k] = round(a[k] + f[k], 2)
-    if not ver_individual:   # sin permiso de salarios: solo totales por área
+    # rev128: las tablas (por área y por trabajador) son información sensible: requieren el
+    # permiso "Puede ver Costo de mano de obra" Y una segunda verificación con la contraseña
+    import time as _tm
+    tiene_permiso = puede_ver_costo_mo()
+    desbloqueado = tiene_permiso and float(session.get("cmo_unlock_until") or 0) > _tm.time()
+    if not desbloqueado:
+        filas = []; por_area = {}
+    elif not ver_individual:   # sin permiso de salarios: solo totales por área
         filas = []
-    return jsonify({"uma": uma, "parametros": {"isn_pct": isn_pct * 100, "prima_vac_pct": prima_vac_pct * 100, "prima_riesgo_pct": prima_riesgo_pct * 100},
+    return jsonify({"tablas": {"permiso": tiene_permiso, "desbloqueado": desbloqueado,
+                               "expira_en": int(float(session.get("cmo_unlock_until") or 0) - _tm.time()) if desbloqueado else 0},"uma": uma, "parametros": {"isn_pct": isn_pct * 100, "prima_vac_pct": prima_vac_pct * 100, "prima_riesgo_pct": prima_riesgo_pct * 100},
                     "tabla_isr": bool(tabla), "tipo_cambio": fx, "totales": tot, "personas": len(por_area) and sum(a["personas"] for a in por_area.values()),
                     "por_area": dict(sorted(por_area.items(), key=lambda x: -x[1]["costo_empresa"])),
                     "filas": sorted(filas, key=lambda f: (f["area"], f["nombre"])), "ver_individual": ver_individual,
@@ -10602,7 +10638,7 @@ MODULES = [
     "projconfig-dashboard", "projconfig-presupuesto", "projconfig-timing",
     "projconfig-abiertos", "projconfig-cambios", "projconfig-documentos",
     # Finanzas
-    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales", "fin-ordenes-cobro", "mgmt-income-forecast", "mgmt-costo-mo",
+    "fin-recepciones", "fin-procesarcompra", "fin-cpp", "fin-pagos", "fin-esquemas", "fin-datos-fiscales", "fin-ordenes-cobro", "mgmt-income-forecast", "mgmt-costo-mo", "fin-cashflow",
     # Recursos Humanos
     "rrhh-asistencia", "rrhh-vacaciones", "rrhh-permisos", "rrhh-salario", "rrhh-sueldos", "rrhh-nomina",
     "personal-areas", "personal-tipos-puesto", "personal-perfiles", "personal-listado",
@@ -11085,7 +11121,8 @@ MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto
                    "fin-datos-fiscales": "fin-esquemas",
                    "fin-ordenes-cobro": "fin-cpc",
                    "mgmt-income-forecast": "fin-cpc",
-                   "mgmt-costo-mo": "rrhh-sueldos",        # rev127: Costo de mano de obra toma el nivel de Sueldos      # rev122: Income forecast toma el nivel de CPC          # rev121: Órdenes de cobro toma el nivel de CPC   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
+                   "mgmt-costo-mo": "rrhh-sueldos",
+                   "fin-cashflow": "fin-cpp",               # rev128: Cash Flow Forecast toma el nivel de CPP        # rev127: Costo de mano de obra toma el nivel de Sueldos      # rev122: Income forecast toma el nivel de CPC          # rev121: Órdenes de cobro toma el nivel de CPC   # rev119: Datos fiscales toma el nivel de Esquemas Tributarios     # rev115: Piso de ensamble toma el nivel de Capacidad
                    "fin-cpc": "fin-cpp"}           # rev104: CPC toma el nivel de CPP mientras no se fije
 
 def nivel_heredado(info, mod):
@@ -11257,6 +11294,12 @@ def is_admin():
     if not user: return False
     info = get_user_perms(user)
     return info.get("role") == "admin"
+
+def puede_ver_costo_mo():
+    """rev128: permiso (Administrador) para ver las tablas de Costo de mano de obra."""
+    if is_admin(): return True
+    user = session.get("user")
+    return bool(user and get_user_perms(user).get("puede_ver_costo_mo"))
 
 def puede_ver_salarios():
     if is_admin(): return True
@@ -11580,6 +11623,8 @@ def api_admin_update_user(username):
     users[username]["role"] = new_role
     if "puede_ver_salarios" in data:
         users[username]["puede_ver_salarios"] = bool(data["puede_ver_salarios"])
+    if "puede_ver_costo_mo" in data:     # rev128: tablas de Costo de mano de obra
+        users[username]["puede_ver_costo_mo"] = bool(data["puede_ver_costo_mo"])
     if "tid" in data:   # rev94: persona de Control de Personal ligada al usuario (KPIs personales)
         users[username]["tid"] = (str(data.get("tid") or "").strip() or None)
     if "pm_names" in data:
@@ -11622,6 +11667,7 @@ def api_me_perms():
     return jsonify({"user": user, "role": info.get("role","viewer"),
                     "permissions": perms,
                     "puede_ver_salarios": bool(info.get("puede_ver_salarios")) or is_admin(),
+                    "puede_ver_costo_mo": bool(info.get("puede_ver_costo_mo")) or is_admin(),
                     "projconfig_tabs": {t: pc_tab_level(t, info) for t in PC_TABS},
                     "is_admin": is_admin()})
 
@@ -16298,6 +16344,10 @@ def api_oc_crear():
 @app.route("/api/income-forecast", methods=["GET"])
 def api_income_forecast():
     if not can("view", "mgmt-income-forecast"): return jsonify({"error": "Sin permiso"}), 403
+    return jsonify(_income_forecast_data())
+
+def _income_forecast_data():
+    """rev128: datos del Income Forecast (también los usa el Cash Flow Forecast)."""
     hoy = datetime.date.today()
     ordenes = {o.get("oid"): o for o in (_load_catalog("ordenes_cobro") or [])}
     cpcs = {c.get("id"): c for c in cpc_all_records()}
@@ -16378,8 +16428,8 @@ def api_income_forecast():
             sumar("Vencido" if (k and k < sem_hoy) else k, "gasto", v)
     except Exception as e:
         print(f"[FORECAST] gastos: {e}")
-    return jsonify({"filas": filas, "por_mes": meses, "sin_fecha": sin_fecha, "hoy": hoy.isoformat(),
-                    "semanas": semanas, "semana_actual": sem_hoy, "gastos_sin_fecha": gastos_sin_fecha, "gastos_sin_tc": gastos_sin_tc})
+    return {"filas": filas, "por_mes": meses, "sin_fecha": sin_fecha, "hoy": hoy.isoformat(),
+            "semanas": semanas, "semana_actual": sem_hoy, "gastos_sin_fecha": gastos_sin_fecha, "gastos_sin_tc": gastos_sin_tc}
 
 # ── rev125: saldar una orden de cobro con una factura CPC YA REGISTRADA ──────────
 #  Condición: el monto de la factura debe coincidir con el de la orden (total, con IVA si
@@ -22579,6 +22629,190 @@ try:
 except Exception as _e:
     print(f"[KPI] arranque: {_e}")
 
+# ══════════════════════════════════════════════════════════════════
+#  rev128 — FINANZAS ▸ CASH FLOW FORECAST (semanal, USD)
+#  Saldo inicial (bancos, captura) + cobros esperados − pagos a proveedores (CPP) −
+#  nómina en jornada normal, con su calendario de pago:
+#   · neto a trabajadores: quincenal (día 15 y último día del mes) / semanal (viernes) /
+#     mensual (último día), según la configuración;
+#   · ISR retenido, IMSS (cuotas mensuales obrero-patronales) e ISN: día 17 del mes siguiente;
+#   · Retiro, Cesantía y Vejez + INFONAVIT: bimestral, día 17 de ene/mar/may/jul/sep/nov;
+#   · aguinaldo: 15 días de salario, el 20 de diciembre.
+# ══════════════════════════════════════════════════════════════════
+CF_DEFAULT = {"cuentas": [], "fecha_saldo": None, "minimo_usd": 30000, "periodicidad_nomina": "quincenal",
+              "isn_pct": 3.0, "prima_vac_pct": 25.0, "prima_riesgo_pct": 0.5}
+
+def _cf_config():
+    try:
+        d = _kpi_snap_get("config:cashflow").get("config:cashflow") if (_orm and _orm.DB_ENABLED) else (
+            json.loads((Path(_DATA) / "FINANZAS" / "cashflow.json").read_text(encoding="utf-8")) if (Path(_DATA) / "FINANZAS" / "cashflow.json").exists() else None)
+    except Exception:
+        d = None
+    return dict(CF_DEFAULT, **(d or {}))
+
+def _nomina_componentes_mes(uma, isn_pct, prima_vac_pct, prima_riesgo_pct):
+    """Totales mensuales de nómina (MXN) de los activos con salario, separados por calendario de pago."""
+    tabla = (_load_isr_tablas() or {}).get("mensual") or []
+    sueldos = _load_sueldos() or {}
+    t = {"neto": 0.0, "isr": 0.0, "imss_mensual": 0.0, "rcv_infonavit": 0.0, "isn": 0.0, "aguinaldo_anual": 0.0, "personas": 0, "bruto": 0.0}
+    for p in _load_personal():
+        if str(p.get("estado") or p.get("estatus") or "Activo").strip().lower() not in ("activo", "active", ""): continue
+        sal = float(((sueldos.get(p.get("tid")) or {}).get("salario_mensual")) or 0)
+        if sal <= 0: continue
+        anios = _anios_completos_sueldo(p.get("fecha_ingreso"))
+        c = _costo_mensual_detalle(sal, anios, uma, isn_pct, prima_vac_pct, prima_riesgo_pct, tabla)
+        dp = c["detalle_patronal"]
+        rcv = dp["retiro"] + dp["cesantia_vejez"]
+        diario = sal / 30.4; sbc = c["sbc_diario"]
+        cyv_obr = 0.01125 * sbc * 30.4                      # la parte obrera de CyV se entera con el RCV (bimestral)
+        t["personas"] += 1; t["bruto"] += sal
+        t["neto"] += c["neto"]; t["isr"] += c["isr"]
+        t["imss_mensual"] += (c["imss_patronal"] - rcv) + (c["imss_obrero"] - cyv_obr)
+        t["rcv_infonavit"] += rcv + cyv_obr + c["infonavit"]
+        t["isn"] += c["isn"]; t["aguinaldo_anual"] += diario * 15
+    return {k: (round(v, 2) if isinstance(v, float) else v) for k, v in t.items()}
+
+def _fx_hoy_o_ultimo():
+    """Tipo de cambio de hoy o, si no hay (fin de semana largo, Banxico sin actualizar),
+    el último disponible. Regresa (tc, fecha)."""
+    try:
+        todos = fx_load_all() or {}
+        hoy = datetime.date.today().isoformat()
+        tc = fx_rate_for_date(hoy, todos)
+        if tc: return float(tc), hoy
+        prev = sorted(k for k in todos if k <= hoy and todos.get(k))
+        if prev: return float(todos[prev[-1]]), prev[-1]
+    except Exception:
+        pass
+    return None, None
+
+def _cf_semana(f):
+    y, w, _ = f.isocalendar(); return f"{y}-W{w:02d}"
+
+@app.route("/api/cashflow", methods=["GET"])
+def api_cashflow():
+    if not can("view", "fin-cashflow"): return jsonify({"error": "Sin permiso"}), 403
+    cfg = _cf_config()
+    n_sem = max(4, min(int(request.args.get("semanas") or 13), 52))
+    hoy = datetime.date.today()
+    lunes0 = hoy - datetime.timedelta(days=hoy.weekday())
+    semanas = [_cf_semana(lunes0 + datetime.timedelta(weeks=i)) for i in range(n_sem)]
+    fin = lunes0 + datetime.timedelta(weeks=n_sem) - datetime.timedelta(days=1)
+    fx, fx_fecha = _fx_hoy_o_ultimo()
+    a_usd = lambda mxn: (mxn / fx) if fx else None
+    filas = {k: {s_: 0.0 for s_ in ["Vencido"] + semanas} for k in
+             ("cobros", "cpp", "nom_neto", "nom_isr", "nom_imss", "nom_rcv", "nom_isn", "nom_aguinaldo")}
+    detalle = {k: [] for k in filas}
+    def poner(fila, fecha_iso, monto_usd, desc):
+        if monto_usd is None or not fecha_iso: return
+        try: f = datetime.date.fromisoformat(fecha_iso[:10])
+        except ValueError: return
+        if f > fin: return
+        k = "Vencido" if f < lunes0 else _cf_semana(f)
+        if k not in filas[fila]: return
+        filas[fila][k] = round(filas[fila][k] + monto_usd, 2)
+        detalle[fila].append({"semana": k, "fecha": f.isoformat(), "monto": round(monto_usd, 2), "desc": desc})
+    avisos = []
+    if fx and fx_fecha != hoy.isoformat(): avisos.append(f"Tipo de cambio del {fx_fecha} (no hay uno más reciente)")
+    # 1) cobros esperados (milestones / órdenes de cobro / facturas)
+    try:
+        inc = _income_forecast_data()
+        sin_f = 0.0
+        for r in inc["filas"]:
+            if r["estatus"] in ("Cobrado", "Factura cancelada"): continue
+            if not r["fecha_cobro"]: sin_f += r["monto"]; continue
+            poner("cobros", r["fecha_cobro"], r["monto"], f"{r['job']} · {r['milestone']} ({r['estatus']})")
+        if sin_f: avisos.append(f"Cobros sin fecha (no incluidos): ${sin_f:,.2f} USD")
+    except Exception as e:
+        avisos.append(f"Cobros: {e}")
+    # 2) pagos a proveedores (CPP por pagar: fecha programada o vencimiento)
+    try:
+        sin_f = 0.0; sin_tc = 0
+        for c in _cpp_enriquecer([c for c in cpp_load() if (c.get("estatus") or "Pendiente") != "Pagado"]):
+            f = c.get("fecha_programada") or c.get("fecha_vencimiento")
+            if c.get("monto_usd") is None: sin_tc += 1; continue
+            if not f: sin_f += c["monto_usd"]; continue
+            poner("cpp", f, c["monto_usd"], f"{c.get('supplier_name') or ''} · {c.get('cpp_number')}" + (" (programado)" if c.get("fecha_programada") else " (vencimiento)"))
+        if sin_f: avisos.append(f"CPP sin vencimiento (no incluidas): ${sin_f:,.2f} USD")
+        if sin_tc: avisos.append(f"{sin_tc} CPP en MXN sin tipo de cambio (no incluidas)")
+    except Exception as e:
+        avisos.append(f"CPP: {e}")
+    # 3) nómina en jornada normal
+    nom = None
+    try:
+        nom = _nomina_componentes_mes(_uma_vigente(), cfg["isn_pct"] / 100, cfg["prima_vac_pct"] / 100, cfg["prima_riesgo_pct"] / 100)
+        if not fx: avisos.append("Sin tipo de cambio del día: la nómina (MXN) no se puede convertir a USD")
+        elif nom["personas"]:
+            import calendar as _cal
+            d = lunes0
+            while d <= fin:
+                ult = _cal.monthrange(d.year, d.month)[1]
+                per = cfg.get("periodicidad_nomina") or "quincenal"
+                if per == "quincenal" and d.day in (15, ult): poner("nom_neto", d.isoformat(), a_usd(nom["neto"] / 2), f"Nómina quincenal (neto)")
+                elif per == "semanal" and d.weekday() == 4: poner("nom_neto", d.isoformat(), a_usd(nom["neto"] * 12 / 52), "Nómina semanal (neto)")
+                elif per == "mensual" and d.day == ult: poner("nom_neto", d.isoformat(), a_usd(nom["neto"]), "Nómina mensual (neto)")
+                if d.day == 17:
+                    poner("nom_isr", d.isoformat(), a_usd(nom["isr"]), "ISR retenido del mes anterior")
+                    poner("nom_imss", d.isoformat(), a_usd(nom["imss_mensual"]), "Cuotas IMSS del mes anterior")
+                    poner("nom_isn", d.isoformat(), a_usd(nom["isn"]), "ISN del mes anterior")
+                    if d.month in (1, 3, 5, 7, 9, 11):
+                        poner("nom_rcv", d.isoformat(), a_usd(nom["rcv_infonavit"] * 2), "RCV + INFONAVIT del bimestre anterior")
+                if d.month == 12 and d.day == 20: poner("nom_aguinaldo", d.isoformat(), a_usd(nom["aguinaldo_anual"]), "Aguinaldo (15 días)")
+                d += datetime.timedelta(days=1)
+    except Exception as e:
+        avisos.append(f"Nómina: {e}")
+    # saldo inicial
+    saldo_ini = 0.0; cuentas = []
+    for c in cfg.get("cuentas") or []:
+        try: monto = float(c.get("saldo") or 0)
+        except (TypeError, ValueError): monto = 0
+        usd = monto if (c.get("moneda") or "MXN").upper() == "USD" else (a_usd(monto) if fx else None)
+        cuentas.append({**c, "saldo_usd": round(usd, 2) if usd is not None else None})
+        saldo_ini += usd or 0
+    cols = ["Vencido"] + semanas
+    salidas = ["cpp", "nom_neto", "nom_isr", "nom_imss", "nom_rcv", "nom_isn", "nom_aguinaldo"]
+    res = {"entradas": {}, "salidas": {}, "neto": {}, "saldo_final": {}, "saldo_inicial": {}}
+    saldo = round(saldo_ini, 2)
+    for k in cols:
+        ent = filas["cobros"][k]; sal = sum(filas[x][k] for x in salidas)
+        res["saldo_inicial"][k] = saldo
+        res["entradas"][k] = round(ent, 2); res["salidas"][k] = round(sal, 2); res["neto"][k] = round(ent - sal, 2)
+        saldo = round(saldo + ent - sal, 2); res["saldo_final"][k] = saldo
+    lunes = {s_: (lunes0 + datetime.timedelta(weeks=i)).isoformat() for i, s_ in enumerate(semanas)}
+    return jsonify({"columnas": cols, "lunes": lunes, "semana_actual": semanas[0], "filas": filas, "detalle": detalle, "resumen": res,
+                    "saldo_inicial": round(saldo_ini, 2), "cuentas": cuentas, "fecha_saldo": cfg.get("fecha_saldo"), "minimo_usd": cfg.get("minimo_usd"),
+                    "periodicidad_nomina": cfg.get("periodicidad_nomina"), "tipo_cambio": fx,
+                    "parametros": {k: cfg.get(k) for k in ("isn_pct", "prima_vac_pct", "prima_riesgo_pct")}, "nomina_mes_mxn": nom, "avisos": avisos,
+                    "puede_editar": can("create", "fin-cashflow")})
+
+@app.route("/api/cashflow/config", methods=["PUT"])
+def api_cashflow_config():
+    if not can("create", "fin-cashflow"): return jsonify({"error": "Sin permiso"}), 403
+    b = request.json or {}
+    cfg = _cf_config()
+    if "cuentas" in b:
+        cuentas = []
+        for c in b.get("cuentas") or []:
+            nombre = str(c.get("cuenta") or "").strip()[:60]
+            if not nombre: continue
+            try: saldo = round(float(c.get("saldo") or 0), 2)
+            except (TypeError, ValueError): return jsonify({"error": f"Saldo inválido en {nombre}"}), 400
+            cuentas.append({"cuenta": nombre, "moneda": "USD" if str(c.get("moneda")).upper() == "USD" else "MXN", "saldo": saldo})
+        cfg["cuentas"] = cuentas
+        cfg["fecha_saldo"] = str(b.get("fecha_saldo") or datetime.date.today().isoformat())[:10]
+    for k in ("minimo_usd", "isn_pct", "prima_vac_pct", "prima_riesgo_pct"):
+        if k in b:
+            try: cfg[k] = float(b[k])
+            except (TypeError, ValueError): return jsonify({"error": f"Valor inválido: {k}"}), 400
+    if b.get("periodicidad_nomina") in ("semanal", "quincenal", "mensual"): cfg["periodicidad_nomina"] = b["periodicidad_nomina"]
+    cfg["actualizado"] = datetime.datetime.now().isoformat(timespec="minutes"); cfg["actualizado_por"] = session.get("user", "")
+    if _orm and _orm.DB_ENABLED: _kpi_snap_set("config:cashflow", cfg)
+    else:
+        pth = Path(_DATA) / "FINANZAS" / "cashflow.json"; pth.parent.mkdir(parents=True, exist_ok=True)
+        pth.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return jsonify({"ok": True})
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("  Persico Mex — Suite Unificada")
@@ -22593,3 +22827,4 @@ if __name__ == "__main__":
     print(f"  URL             : http://localhost:{PORT}")
     print("=" * 60)
     app.run(host=HOST, port=PORT, debug=False)
+
