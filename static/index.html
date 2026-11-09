@@ -474,7 +474,6 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <button onclick="switchMenu('pt','ng-proyectos')">PT Numbers</button>
         <button onclick="switchMenu('sv','ng-proyectos')">SV Numbers</button>
         <button onclick="switchMenu('projconfig','ng-proyectos')">Configurar Proyecto</button>
-        <button onclick="switchMenu('proj-timeline','ng-proyectos')">Línea de tiempo WIP</button>
         <button onclick="switchMenu('costos-perfil','ng-proyectos')">Costo por Perfil (USD/h)</button>
       </div>
     </div>
@@ -581,6 +580,7 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <button onclick="switchMenu('ops-ot','ng-ops')">Tareas Asignadas</button>
         <button onclick="switchMenu('ops-op','ng-ops')">Órdenes de Producción</button>
         <button onclick="switchMenu('ops-os','ng-ops')">Órdenes de Servicio</button>
+        <button onclick="switchMenu('proj-timeline','ng-ops')">Línea de tiempo WIP</button>
         <button onclick="switchMenu('ops-piso','ng-ops')">Piso de ensamble</button>
       </div>
     </div>
@@ -6047,7 +6047,9 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       <select id="tl-pm" onchange="tlRender()" style="font-size:12px;padding:5px 8px"><option value="">Todos los PM</option></select>
       <select id="tl-est" onchange="tlRender()" style="font-size:12px;padding:5px 8px"><option value="">Todos los estados</option><option>Atrasado</option><option>En riesgo</option><option>Por enviar</option><option>En tiempo</option><option>Sin fecha de envío</option></select>
       <select id="tl-zoom" onchange="tlRender()" style="font-size:12px;padding:5px 8px"><option value="2.2" selected>Vista: meses</option><option value="6">Vista: semanas</option><option value="16">Vista: días</option></select>
-      <button class="btn-reload" onclick="tlCargar()" style="margin-left:auto">Recargar</button></div>
+      <label style="font-size:11px;display:flex;gap:4px;align-items:center;margin-left:auto"><input type="checkbox" id="tl-pdf-act"> con actividades</label>
+      <button class="btn-reload" onclick="tlPDF()">⬇ PDF</button>
+      <button class="btn-reload" onclick="tlCargar()">Recargar</button></div>
     <div style="padding:14px 18px">
       <div id="tl-cards" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px"></div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--muted2);margin-bottom:8px;align-items:center">

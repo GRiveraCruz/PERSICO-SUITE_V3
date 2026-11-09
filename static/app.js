@@ -6085,12 +6085,12 @@ const MODULE_GROUPS = [
   { label: '📄 Documentos de Compra', mods: ['compras-requisicion','gpo','po','ivp','reassign','consig-reassign','recovery'] },
   { label: '🏬 Almacenes',            mods: ['stock','consignacion','ingreso','apartados','manuf-stock','salida'] },
   { label: '✈ Servicio',             mods: ['viaticos','gastos-viaje','envios'] },
-  { label: '⚙ Configurar Proyecto',   mods: ['projconfig','proj-timeline','projconfig-dashboard','projconfig-presupuesto','projconfig-timing','projconfig-abiertos','projconfig-cambios','projconfig-documentos'] },
+  { label: '⚙ Configurar Proyecto',   mods: ['projconfig','projconfig-dashboard','projconfig-presupuesto','projconfig-timing','projconfig-abiertos','projconfig-cambios','projconfig-documentos'] },
   { label: '📊 Control de Costo',     mods: ['wh','report','multirpt','fx'] },
   { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-prog-pagos','fin-cashflow','fin-cpc','fin-ordenes-cobro','fin-pagos','fin-esquemas','fin-datos-fiscales'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-tipos-puesto','personal-perfiles','personal-listado'] },
   { label: '📈 Management',           mods: ['rrhh-kpis','mgmt-income-forecast','mgmt-costo-mo'] },
-  { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os','ops-piso'] },
+  { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os','ops-piso','proj-timeline'] },
 ];
 
 let _adminUsersData = null;
@@ -20924,3 +20924,10 @@ function tlRender(){
   const w = document.getElementById('tl-wrap'); if(!w.dataset.scrolled && xh!=null){ w.scrollLeft = Math.max(0, xh + IZQ - w.clientWidth * 0.6); w.dataset.scrolled = '1'; }
 }
 function tlToggle(job){ _tlAbiertos.has(job) ? _tlAbiertos.delete(job) : _tlAbiertos.add(job); tlRender(); }
+
+// rev145: reporte PDF de la línea de tiempo (con los filtros actuales)
+function tlPDF(){
+  const q = new URLSearchParams({pm: document.getElementById('tl-pm').value, estado: document.getElementById('tl-est').value,
+                                 q: document.getElementById('tl-q').value, actividades: document.getElementById('tl-pdf-act').checked ? '1' : ''});
+  window.open('/api/timeline-wip/pdf?' + q.toString(), '_blank');
+}
