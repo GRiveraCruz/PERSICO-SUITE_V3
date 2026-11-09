@@ -10905,7 +10905,7 @@ MODULES = [
     # Servicio
     "viaticos", "gastos-viaje", "envios",
     # Reportes y Configuración
-    "wh", "report", "multirpt", "fx", "projconfig",
+    "wh", "report", "multirpt", "fx", "projconfig", "proj-timeline",
     # rev69: pestañas de Configurar Proyecto. Si un usuario no tiene la llave, la pestaña
     # hereda el nivel de "projconfig" (así los usuarios existentes no pierden nada).
     "projconfig-dashboard", "projconfig-presupuesto", "projconfig-timing",
@@ -11391,6 +11391,7 @@ MODULOS_HEREDAN = {"projconfig-dashboard": "projconfig", "projconfig-presupuesto
                    "personal-tipos-puesto": "personal-perfiles",
                    "rrhh-kpis": "personal-listado",
                    "ops-piso": "ops-capacidad",
+                   "proj-timeline": "projconfig",          # rev144: Línea de tiempo WIP toma el nivel de Configurar Proyecto
                    "fin-datos-fiscales": "fin-esquemas",
                    "fin-ordenes-cobro": "fin-cpc",
                    "mgmt-income-forecast": "fin-cpc",
@@ -23846,6 +23847,80 @@ def api_pc_presupuesto_export():
       <table><tr><th>Horas por línea (proyecto)</th><th class="r">Horas</th><th class="r">Importe</th></tr>{horas_lin or '<tr><td colspan="3" class="muted">Sin horas estimadas</td></tr>'}</table></div>
     {"".join(bloques)}</body></html>"""
     return Response(html, mimetype="text/html")
+
+# ══════════════════════════════════════════════════════════════════
+#  rev144 — PROYECTOS ▸ LÍNEA DE TIEMPO WIP
+#  Vida de cada Job en WIP: inicio → Run Off interno → Run Off cliente → envío, con los
+#  milestones de pago y las actividades del Timing de su PT/SV.
+# ══════════════════════════════════════════════════════════════════
+def _fecha_iso(v):
+    v = str(v or "").strip()
+    if not v: return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S", "%d-%m-%Y"):
+        try: return datetime.datetime.strptime(v[:19] if "T" in v else v[:10], fmt).date().isoformat()
+        except ValueError: pass
+    return None
+
+@app.route("/api/timeline-wip", methods=["GET"])
+def api_timeline_wip():
+    if not (can("view", "proj-timeline") or is_admin()): return jsonify({"error": "Sin permiso"}), 403
+    hoy = datetime.date.today().isoformat()
+    incluir = (request.args.get("estatus") or "WIP").upper()
+    jobs = [j for j in scan_jobs() if incluir == "TODOS" or str(j.get("status") or "").strip().upper() == incluir]
+    cfg_por_job = {}
+    for c in projcfg_load():
+        for jc in c.get("jobs") or []:
+            cfg_por_job[str(jc.get("job_number") or "").upper()] = (c, jc)
+    cpo_fecha = {}
+    for y in (cpo_available_years() or []):
+        for c in cpo_load(y):
+            jn = str(c.get("job") or "").upper(); f = _fecha_iso(c.get("date"))
+            if jn and f and (jn not in cpo_fecha or f < cpo_fecha[jn]): cpo_fecha[jn] = f
+    out = []
+    for j in jobs:
+        jn = str(j.get("job_number") or "").upper()
+        cfg, jc = cfg_por_job.get(jn, (None, {}))
+        inicio = (_fecha_iso(jc.get("fecha_inicio")) or cpo_fecha.get(jn) or _fecha_iso(j.get("created_at")))
+        envio = _fecha_iso(jc.get("fecha_envio")) or _fecha_iso(j.get("ship_date"))
+        hitos = []
+        for nombre, campo in (("Run Off interno", "runoff_interno"), ("Run Off cliente", "runoff_cliente")):
+            f = _fecha_iso(jc.get(campo))
+            if f: hitos.append({"tipo": "runoff", "nombre": nombre, "fecha": f, "vencido": f < hoy})
+        pagos = [{"tipo": "pago", "nombre": m.get("nombre"), "fecha": _fecha_iso(m.get("fecha_estimada")), "porcentaje": m.get("porcentaje"),
+                  "cumplido": bool(m.get("cumplido")), "orden_cobro": m.get("orden_cobro"),
+                  "vencido": bool(_fecha_iso(m.get("fecha_estimada")) and _fecha_iso(m.get("fecha_estimada")) < hoy and not m.get("cumplido"))}
+                 for m in jc.get("terminos_pago") or []]
+        actividades = []
+        if cfg:
+            for a in cfg.get("timing") or []:
+                fi = _fecha_iso(a.get("fecha_inicial")) or _fecha_iso(a.get("fecha_condicionada"))
+                fo = _fecha_iso(a.get("fecha_objetivo"))
+                if not fo and fi and a.get("dias_estimados"):
+                    try: fo = (datetime.date.fromisoformat(fi) + datetime.timedelta(days=int(float(a["dias_estimados"])))).isoformat()
+                    except Exception: fo = None
+                real = _fecha_iso(a.get("fecha_real_finalizacion"))
+                if not (fi or fo): continue
+                actividades.append({"actividad": a.get("actividad"), "grupo": a.get("grupo"), "tipo": a.get("tipo"), "inicio": fi or fo, "fin": fo or fi,
+                                    "real": real, "cumplido": bool(a.get("cumplido")) or bool(real), "recurso": a.get("recurso"),
+                                    "atrasada": bool(fo and fo < hoy and not (a.get("cumplido") or real))})
+        dur = trans = None
+        if inicio and envio:
+            try:
+                d0, d1 = datetime.date.fromisoformat(inicio), datetime.date.fromisoformat(envio)
+                dur = (d1 - d0).days; trans = (datetime.date.today() - d0).days
+            except Exception: pass
+        if envio and envio < hoy: estado = "Atrasado"
+        elif any(a["atrasada"] for a in actividades) or any(h["vencido"] for h in hitos): estado = "En riesgo"
+        elif envio and dur and dur > 0 and (datetime.date.fromisoformat(envio) - datetime.date.today()).days <= 14: estado = "Por enviar"
+        else: estado = "En tiempo" if envio else "Sin fecha de envío"
+        out.append({"job": jn, "customer": j.get("customer"), "description": j.get("description"), "pm": j.get("pm"), "status": j.get("status"),
+                    "ptsv": cfg.get("ptsv") if cfg else None, "inicio": inicio, "envio": envio, "hitos": hitos, "pagos": pagos,
+                    "actividades": sorted(actividades, key=lambda a: a["inicio"] or ""), "duracion_dias": dur, "transcurridos_dias": trans,
+                    "pct_tiempo": round(min(max(trans / dur * 100, 0), 999), 1) if dur and trans is not None and dur > 0 else None,
+                    "estado": estado, "revenue": jc.get("revenue") or j.get("revenue")})
+    orden = {"Atrasado": 0, "En riesgo": 1, "Por enviar": 2, "En tiempo": 3, "Sin fecha de envío": 4}
+    out.sort(key=lambda r: (orden.get(r["estado"], 9), r["envio"] or "9999"))
+    return jsonify({"hoy": hoy, "jobs": out})
 
 if __name__ == "__main__":
     print("=" * 60)
