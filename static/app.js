@@ -124,6 +124,7 @@ function switchMenu(mod, groupId) {
   if(mod==='proj-timeline') { setTimeout(tlCargar,100); }
   if(mod==='centros-costo') { setTimeout(ccCargar,100); }
   if(mod==='piezas-cliente') { setTimeout(pzcCargar,100); }
+  if(mod==='fin-cfdi') { setTimeout(cfdiCargar,100); }
   if(mod==='log-impexp') { setTimeout(()=>logCargar('impexp'),100); }
   if(mod==='log-paqueteria') { setTimeout(()=>logCargar('paqueteria'),100); }
   if(mod==='fin-datos-fiscales') { setTimeout(dfCargar,100); }
@@ -6037,7 +6038,7 @@ let USER_PERMS = null;
 
 // rev77: módulos que heredan el nivel de otro mientras el administrador no les fije uno
 const MODULOS_HEREDAN = {'projconfig-dashboard':'projconfig','projconfig-presupuesto':'projconfig','projconfig-timing':'projconfig',
-  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','proj-timeline':'projconfig','centros-costo':'report','piezas-cliente':'salida','log-impexp':'ingreso','log-paqueteria':'ingreso','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc','mgmt-income-forecast':'fin-cpc','fin-prog-pagos':'fin-cpp','mgmt-costo-mo':'rrhh-sueldos','fin-cashflow':'fin-cpp'};
+  'projconfig-abiertos':'projconfig','projconfig-cambios':'projconfig','projconfig-documentos':'projconfig','personal-tipos-puesto':'personal-perfiles','rrhh-kpis':'personal-listado','fin-cpc':'fin-cpp','ops-piso':'ops-capacidad','proj-timeline':'projconfig','centros-costo':'report','piezas-cliente':'salida','fin-cfdi':'fin-cpc','log-impexp':'ingreso','log-paqueteria':'ingreso','fin-datos-fiscales':'fin-esquemas','fin-ordenes-cobro':'fin-cpc','mgmt-income-forecast':'fin-cpc','fin-prog-pagos':'fin-cpp','mgmt-costo-mo':'rrhh-sueldos','fin-cashflow':'fin-cpp'};
 const MODULE_LABELS = {
   'compras-requisicion':'Requisición de Compra', 'fin-cpc':'Cuentas por Cobrar (CPC)', 'fin-datos-fiscales':'Datos fiscales', 'fin-ordenes-cobro':'Órdenes de cobro', 'mgmt-income-forecast':'Management — Income Forecast', 'fin-prog-pagos':'Programación de pagos', 'mgmt-costo-mo':'Management — Costo de mano de obra', 'fin-cashflow':'Cash Flow Forecast',
   // Proyectos
@@ -6060,7 +6061,7 @@ const MODULE_LABELS = {
   // Servicio
   'viaticos':'Viáticos', 'gastos-viaje':'Gastos de Viaje', 'envios':'Envíos de Mensajería',
   // Reportes y Config
-  'wh':'Work Hours', 'report':'Job Report', 'multirpt':'Multi-Job Report', 'fx':'Exchange Rate', 'centros-costo':'Centros de costo', 'piezas-cliente':'Piezas de Cliente', 'log-impexp':'Importaciones / Exportaciones', 'log-paqueteria':'Paquetería',
+  'wh':'Work Hours', 'report':'Job Report', 'multirpt':'Multi-Job Report', 'fx':'Exchange Rate', 'centros-costo':'Centros de costo', 'piezas-cliente':'Piezas de Cliente', 'fin-cfdi':'Facturación electrónica', 'log-impexp':'Importaciones / Exportaciones', 'log-paqueteria':'Paquetería',
   'projconfig':'Configurar Proyecto', 'proj-timeline':'Línea de tiempo WIP',
   'projconfig-dashboard':'↳ Pestaña Dashboard', 'projconfig-presupuesto':'↳ Pestaña Presupuesto',
   'projconfig-timing':'↳ Pestaña Timing', 'projconfig-abiertos':'↳ Pestaña Puntos Abiertos',
@@ -6097,7 +6098,7 @@ const MODULE_GROUPS = [
   { label: '✈ Servicio',             mods: ['viaticos','gastos-viaje','envios'] },
   { label: '⚙ Configurar Proyecto',   mods: ['projconfig','projconfig-dashboard','projconfig-presupuesto','projconfig-timing','projconfig-abiertos','projconfig-cambios','projconfig-documentos'] },
   { label: '📊 Control de Costo',     mods: ['centros-costo','wh','report','multirpt','fx'] },
-  { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-prog-pagos','fin-cashflow','fin-cpc','fin-ordenes-cobro','fin-pagos','fin-esquemas','fin-datos-fiscales'] },
+  { label: '💹 Finanzas',             mods: ['fin-recepciones','fin-procesarcompra','fin-cpp','fin-prog-pagos','fin-cashflow','fin-cpc','fin-ordenes-cobro','fin-pagos','fin-esquemas','fin-datos-fiscales','fin-cfdi'] },
   { label: '🧑‍💼 Recursos Humanos',    mods: ['rrhh-asistencia','rrhh-vacaciones','rrhh-permisos','rrhh-salario','rrhh-sueldos','rrhh-nomina','personal-areas','personal-tipos-puesto','personal-perfiles','personal-listado'] },
   { label: '📈 Management',           mods: ['rrhh-kpis','mgmt-income-forecast','mgmt-costo-mo'] },
   { label: '🏭 Operaciones',           mods: ['ops-capacidad','ops-ot','ops-op','ops-os','ops-piso','proj-timeline'] },
@@ -6358,6 +6359,7 @@ function applyPermsToDom(d) {
     'fin-cpp':            ["switchMenu('fin-cpp'"],
     'fin-cpc':            ["switchMenu('fin-cpc'"],
     'fin-datos-fiscales': ["switchMenu('fin-datos-fiscales'"],
+    'fin-cfdi':           ["switchMenu('fin-cfdi'"],
     'fin-ordenes-cobro':  ["switchMenu('fin-ordenes-cobro'"],
     'mgmt-income-forecast': ["switchMenu('mgmt-income-forecast'"],
     'fin-prog-pagos':     ["switchMenu('fin-prog-pagos'"],
@@ -21417,3 +21419,202 @@ async function logEvidBorrar(tipo, lid, archivo){
   if(d.error){ toast(d.error,'er'); return; }
   await logCargar(tipo); logAbrir(tipo, lid);
 }
+
+
+// ════════════════════════════════════════════════════════
+//  rev160 — Facturación electrónica (FiscalAPI)
+// ════════════════════════════════════════════════════════
+let _cfdi = {tab:'emitidos', estado:null, clientes:[], nombres:[], emitidos:[]};
+const CFDI_TIPO = {I:'Ingreso', P:'Pago (REP)', E:'Nota de crédito'};
+async function cfdiCargar(){
+  try{ _cfdi.estado = await fetch('/api/cfdi/estado').then(r=>r.json()); }catch(e){ _cfdi.estado = null; }
+  const e = (_cfdi.estado||{}).entorno||{};
+  document.getElementById('cfdi-env').innerHTML = !e.api_key||!e.tenant ? '<span style="color:var(--red)">⚠ FiscalAPI sin credenciales en el servidor</span>'
+    : `<span style="padding:3px 8px;border-radius:10px;background:${e.produccion?'#fee2e2':'#e0f2fe'};color:${e.produccion?'#b91c1c':'#0369a1'};font-weight:700">${e.produccion?'PRODUCCIÓN':'PRUEBAS'}</span> <span style="color:var(--muted2)">${esc(e.url||'')} · emisor ${e.csd?'por CSD':(e.issuer_id?'por referencia':'<b style="color:var(--red)">sin configurar</b>')}</span>`;
+  await Promise.all([cfdiCargarClientes(), cfdiCargarEmitidos()]);
+  cfdiTab(_cfdi.tab);
+}
+async function cfdiCargarClientes(){ try{ const d = await fetch('/api/cfdi/clientes').then(r=>r.json()); _cfdi.clientes = d.clientes||[]; _cfdi.nombres = d.nombres_erp||[]; }catch(e){} }
+async function cfdiCargarEmitidos(){ try{ const d = await fetch('/api/cfdi').then(r=>r.json()); _cfdi.emitidos = d.records||[]; }catch(e){} }
+function cfdiTab(t){
+  _cfdi.tab = t;
+  ['emitidos','clientes','config'].forEach(x=>{ document.getElementById('cfdi-pane-'+x).style.display = x===t?'':'none'; const b=document.getElementById('cfdi-t-'+x); if(b){ b.style.background = x===t?'var(--red)':''; b.style.color = x===t?'#fff':''; } });
+  if(t==='emitidos') cfdiRenderEmitidos(); if(t==='clientes') cfdiRenderClientes(); if(t==='config') cfdiRenderConfig();
+}
+function cfdiRenderEmitidos(){
+  const q=(document.getElementById('cfdi-q').value||'').toLowerCase(), ft=document.getElementById('cfdi-ftipo').value;
+  const L = _cfdi.emitidos.filter(r=>(!ft||r.tipo===ft) && (!q || [r.uuid,r.serie,r.folio,r.cliente,r.job,r.cpc_id,r.orden_cobro].join(' ').toLowerCase().includes(q)));
+  const col = {Vigente:'#15803d', Cancelada:'#c8102e', 'En cancelación':'#b45309'};
+  document.getElementById('cfdi-tb').innerHTML = L.map(r=>`<tr>
+    <td>${CFDI_TIPO[r.tipo]||r.tipo}${r.comercio_exterior?' <span title="Comercio Exterior" style="font-size:10px;background:#ede9fe;color:#6d28d9;border-radius:6px;padding:1px 5px">CCE</span>':''}</td>
+    <td style="font-family:'DM Mono',monospace">${esc((r.serie||'')+(r.folio||''))}</td><td style="font-family:'DM Mono',monospace;font-size:10.5px">${esc(r.uuid)}</td>
+    <td style="white-space:nowrap">${esc(String(r.fecha||'').slice(0,16).replace('T',' '))}</td><td>${esc(r.cliente||'')}</td><td style="font-family:'DM Mono',monospace">${esc(r.job||'')}</td>
+    <td style="text-align:right">${ifFmt(r.total)} <span style="font-size:10px;color:var(--muted)">${esc(r.moneda||'')}</span></td><td>${esc(r.metodo||(r.tipo==='P'?'parc. '+r.parcialidad:''))}</td>
+    <td style="color:${col[r.estatus]||'inherit'};font-weight:700">${esc(r.estatus)}${r.sat?`<div style="font-size:10px;font-weight:400;color:var(--muted2)">SAT: ${esc(r.sat.estado)}</div>`:''}</td>
+    <td style="white-space:nowrap">
+      <a class="btn-reload" style="font-size:10px;padding:3px 7px" href="/api/cfdi/${r.cid}/pdf" target="_blank">PDF</a>
+      <a class="btn-reload" style="font-size:10px;padding:3px 7px" href="/api/cfdi/${r.cid}/xml?descargar=1">XML</a>
+      ${r.tipo==='I'&&r.metodo==='PPD'&&r.estatus==='Vigente'?`<button class="btn-reload" style="font-size:10px;padding:3px 7px" onclick="cfdiAccion('rep','${r.cid}')">REP</button>`:''}
+      ${r.tipo==='I'&&r.estatus==='Vigente'?`<button class="btn-reload" style="font-size:10px;padding:3px 7px" onclick="cfdiAccion('nc','${r.cid}')">Nota de crédito</button>`:''}
+      <button class="btn-reload" style="font-size:10px;padding:3px 7px" onclick="cfdiEstatus('${r.cid}')">Estatus SAT</button>
+      ${r.estatus==='Vigente'?`<button class="btn-reload" style="font-size:10px;padding:3px 7px;color:var(--red)" onclick="cfdiAccion('cancelar','${r.cid}')">Cancelar</button>`:''}</td></tr>`).join('')
+    || '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:20px">Aún no hay CFDI timbrados desde el ERP.</td></tr>';
+}
+function cfdiRenderClientes(){
+  document.getElementById('cfdi-cli-tb').innerHTML = _cfdi.clientes.map(c=>`<tr><td><b>${esc(c.clave)}</b></td><td style="font-family:'DM Mono',monospace">${esc(c.rfc)}</td><td>${esc(c.razon_social)}</td><td>${esc(c.regimen)}</td><td>${esc(c.cp)}</td><td>${esc(c.uso_cfdi)}</td>
+    <td>${c.extranjero?esc((c.pais||'')+' · '+(c.num_reg_id_trib||'')):'—'}</td><td style="font-size:11px">${esc(c.email||'')}</td><td><button class="btn-reload" style="font-size:10px;padding:3px 8px" onclick="cfdiCliForm('${esc(c.clave).replace(/'/g,'')}')">Editar</button></td></tr>`).join('')
+    || '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:16px">Sin clientes fiscales. Agrega los clientes que vas a facturar.</td></tr>';
+}
+function cfdiCliForm(clave){
+  const c = _cfdi.clientes.find(x=>x.clave===clave) || {domicilio:{}};
+  const v = (k)=>esc(c[k]||''), dv = (k)=>esc((c.domicilio||{})[k]||'');
+  document.getElementById('cfdi-cli-form').innerHTML = `
+    <div class="fr"><div class="fi"><label>Cliente (como en las CPO) *</label><input id="cc-clave" list="cc-nombres" value="${v('clave')}" ${clave?'readonly':''}><datalist id="cc-nombres">${_cfdi.nombres.map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
+      <div class="fi"><label>¿Extranjero?</label><select id="cc-ext" onchange="document.getElementById('cc-extbox').style.display=this.value==='1'?'':'none'"><option value="0">No (RFC mexicano)</option><option value="1" ${c.extranjero?'selected':''}>Sí (XEXX010101000)</option></select></div></div>
+    <div class="fr"><div class="fi"><label>RFC *</label><input id="cc-rfc" value="${v('rfc')}" style="text-transform:uppercase;font-family:'DM Mono',monospace"></div><div class="fi"><label>Razón social * (sin S.A. de C.V.)</label><input id="cc-rs" value="${v('razon_social')}"></div></div>
+    <div class="fr"><div class="fi"><label>Régimen fiscal (c_RegimenFiscal)</label><input id="cc-reg" value="${v('regimen')}" placeholder="601"></div><div class="fi"><label>CP fiscal</label><input id="cc-cp" value="${v('cp')}" placeholder="72000"></div>
+      <div class="fi"><label>Uso CFDI</label><input id="cc-uso" value="${v('uso_cfdi')}" placeholder="G03"></div></div>
+    <div class="fi"><label>Correo(s) para enviar la factura</label><input id="cc-email" value="${v('email')}"></div>
+    <div id="cc-extbox" style="display:${c.extranjero?'':'none'};border-top:1px dashed var(--border);margin-top:8px;padding-top:8px">
+      <div class="fr"><div class="fi"><label>País (c_Pais) *</label><input id="cc-pais" value="${v('pais')}" placeholder="USA"></div><div class="fi"><label>Tax ID (NumRegIdTrib) *</label><input id="cc-taxid" value="${v('num_reg_id_trib')}"></div></div>
+      <div style="font-size:11px;color:var(--muted2);margin:4px 0">Domicilio del cliente (para Comercio Exterior)</div>
+      <div class="fr"><div class="fi"><label>Calle</label><input id="cc-calle" value="${dv('calle')}"></div><div class="fi"><label>Número</label><input id="cc-num" value="${dv('numero')}"></div><div class="fi"><label>Colonia</label><input id="cc-col" value="${dv('colonia')}"></div></div>
+      <div class="fr"><div class="fi"><label>Ciudad / municipio</label><input id="cc-mun" value="${dv('municipio')}"></div><div class="fi"><label>Estado (ej. MI, IN)</label><input id="cc-edo" value="${dv('estado')}"></div>
+        <div class="fi"><label>País (c_Pais)</label><input id="cc-dpais" value="${dv('pais')||esc(c.pais||'')}"></div><div class="fi"><label>Código postal</label><input id="cc-dcp" value="${dv('cp')}"></div></div></div>
+    <div style="margin-top:10px"><button class="btn btn-p" onclick="cfdiCliGuardar()">Guardar</button></div>`;
+  document.getElementById('mo-cfdi-cli').classList.add('on');
+}
+async function cfdiCliGuardar(){
+  const g = id=>document.getElementById(id)?.value||'';
+  const d = await apiCall('PUT','/cfdi/clientes',{clave:g('cc-clave'), extranjero:g('cc-ext')==='1', rfc:g('cc-rfc'), razon_social:g('cc-rs'), regimen:g('cc-reg'), cp:g('cc-cp'), uso_cfdi:g('cc-uso'), email:g('cc-email'),
+    pais:g('cc-pais'), num_reg_id_trib:g('cc-taxid'), domicilio:{calle:g('cc-calle'), numero:g('cc-num'), colonia:g('cc-col'), municipio:g('cc-mun'), estado:g('cc-edo'), pais:g('cc-dpais'), cp:g('cc-dcp')}});
+  if(d.error){ toast(d.error,'er'); return; }
+  toast('Cliente fiscal guardado','ok'); closeMo('mo-cfdi-cli'); await cfdiCargarClientes(); cfdiRenderClientes();
+}
+function cfdiRenderConfig(){
+  const st = _cfdi.estado||{}, c = st.config||{}, e = st.entorno||{}, em = st.emisor||{}, ce = c.cce_emisor||{}, cd = c.concepto_default||{}, cx = c.cce_defaults||{};
+  const ok = b=>b?'<span style="color:#15803d">✓</span>':'<span style="color:var(--red)">✗</span>';
+  const inp = (id,val,ph='')=>`<input id="${id}" value="${esc(val??'')}" placeholder="${ph}">`;
+  document.getElementById('cfdi-config-box').innerHTML = `
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px">
+      <div style="font-weight:700;margin-bottom:6px">Conexión con FiscalAPI (variables del servidor en Railway)</div>
+      <div style="font-size:12px;line-height:1.8">${ok(e.api_key)} FISCALAPI_API_KEY · ${ok(e.tenant)} FISCALAPI_TENANT · URL: <b>${esc(e.url||'')}</b> (${e.produccion?'producción':'pruebas'})<br>
+        Emisor: ${ok(e.csd||e.issuer_id)} ${e.csd?'CSD por variables (FISCALAPI_CSD_CER_B64 / KEY_B64 / PASSWORD)':(e.issuer_id?'por referencia (FISCALAPI_ISSUER_ID)':'falta FISCALAPI_CSD_* o FISCALAPI_ISSUER_ID')}<br>
+        Datos del emisor (Finanzas ▸ Datos fiscales): RFC <b>${esc(em.rfc||'—')}</b> · ${esc(em.razon_social||'')} · régimen <b>${esc(em.regimen||'—')}</b> · CP <b>${esc(em.cp||'—')}</b></div>
+      <button class="btn btn-s" style="margin-top:6px" onclick="cfdiProbar()">Probar conexión</button> <span id="cfdi-prueba" style="font-size:12px"></span></div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px"><div style="font-weight:700;margin-bottom:6px">Series, expedición y PDF</div>
+      <div class="fr"><div class="fi"><label>Serie ingreso</label>${inp('cfg-si',c.serie_ingreso)}</div><div class="fi"><label>Serie nota de crédito</label>${inp('cfg-se',c.serie_egreso)}</div><div class="fi"><label>Serie pago</label>${inp('cfg-sp',c.serie_pago)}</div>
+        <div class="fi"><label>CP lugar de expedición</label>${inp('cfg-zip',c.expedition_zip, em.cp||'')}</div><div class="fi"><label>IVA nacional</label>${inp('cfg-iva',c.iva_tasa)}</div></div>
+      <div class="fr"><div class="fi"><label>Concepto: clave prod/serv SAT por defecto</label>${inp('cfg-cp',cd.clave_prod,'81141601')}</div><div class="fi"><label>Clave unidad</label>${inp('cfg-cu',cd.clave_unidad,'E48')}</div>
+        <div class="fi"><label>Color banda PDF</label>${inp('cfg-band',c.pdf_band_color)}</div><div class="fi"><label>Color texto PDF</label>${inp('cfg-font',c.pdf_font_color)}</div></div></div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px"><div style="font-weight:700;margin-bottom:6px">Comercio Exterior — domicilio del emisor (claves del SAT) y valores por defecto</div>
+      <div class="fr"><div class="fi"><label>Calle</label>${inp('ce-calle',ce.calle)}</div><div class="fi"><label>No. exterior</label>${inp('ce-num',ce.numero_exterior)}</div><div class="fi"><label>Colonia (c_Colonia)</label>${inp('ce-col',ce.colonia_id)}</div><div class="fi"><label>Localidad (c_Localidad)</label>${inp('ce-loc',ce.localidad_id)}</div></div>
+      <div class="fr"><div class="fi"><label>Municipio (c_Municipio)</label>${inp('ce-mun',ce.municipio_id,'114')}</div><div class="fi"><label>Estado (c_Estado)</label>${inp('ce-edo',ce.estado_id,'PUE')}</div><div class="fi"><label>País</label>${inp('ce-pais',ce.pais_id,'MEX')}</div><div class="fi"><label>CP</label>${inp('ce-cp',ce.codigo_postal_id)}</div></div>
+      <div class="fr"><div class="fi"><label>Clave de pedimento</label>${inp('cx-ped',cx.clave_pedimento,'A1')}</div><div class="fi"><label>Incoterm</label>${inp('cx-inc',cx.incoterm,'FCA')}</div><div class="fi"><label>Certificado de origen (0/1)</label>${inp('cx-cert',cx.certificado_origen,'0')}</div></div></div>
+    <button class="btn btn-p" onclick="cfdiGuardarConfig()">Guardar configuración</button>`;
+}
+async function cfdiProbar(){ const s=document.getElementById('cfdi-prueba'); s.textContent='Probando…'; const d = await apiCall('POST','/cfdi/prueba',{}); s.innerHTML = d.error?`<span style="color:var(--red)">${esc(d.error)}</span>`:`<span style="color:#15803d">✓ Conectado${d.cuenta&&d.cuenta.tin?' · '+esc(d.cuenta.tin)+' '+esc(d.cuenta.legal_name||''):''}</span>`; }
+async function cfdiGuardarConfig(){
+  const g = id=>document.getElementById(id)?.value||'';
+  const d = await apiCall('PUT','/cfdi/config',{serie_ingreso:g('cfg-si'), serie_egreso:g('cfg-se'), serie_pago:g('cfg-sp'), expedition_zip:g('cfg-zip'), iva_tasa:g('cfg-iva'), pdf_band_color:g('cfg-band'), pdf_font_color:g('cfg-font'),
+    concepto_default:{clave_prod:g('cfg-cp'), clave_unidad:g('cfg-cu')},
+    cce_emisor:{calle:g('ce-calle'), numero_exterior:g('ce-num'), colonia_id:g('ce-col'), localidad_id:g('ce-loc'), municipio_id:g('ce-mun'), estado_id:g('ce-edo'), pais_id:g('ce-pais'), codigo_postal_id:g('ce-cp')},
+    cce_defaults:{clave_pedimento:g('cx-ped'), incoterm:g('cx-inc'), certificado_origen:parseInt(g('cx-cert'))||0}});
+  if(d.error){ toast(d.error,'er'); return; } toast('Configuración guardada','ok'); _cfdi.estado.config = d.config;
+}
+// ── Emisión desde la orden de cobro ──
+let _cfe = null;
+async function cfdiEmitirDesdeOrden(oid){
+  closeMo('mo-oc-facturar');
+  const o = (typeof _ocLista!=='undefined' ? _ocLista : []).find(x=>x.oid===oid); if(!o) return;
+  if(!_cfdi.estado){ try{ _cfdi.estado = await fetch('/api/cfdi/estado').then(r=>r.json()); }catch(e){} }
+  await cfdiCargarClientes();
+  const cfg = (_cfdi.estado||{}).config||{}, cd = cfg.concepto_default||{};
+  const cli = _cfdi.clientes.find(c=>c.clave.toUpperCase()===String(o.cliente||'').toUpperCase());
+  _cfe = {oid, o, conceptos:[{descripcion:`${(o.hito||{}).nombre||'Hito'} (${(o.hito||{}).porcentaje||''}%) — Job ${o.job||''} — PO ${o.cpo_po_number||o.cpo_id||''}`, cantidad:1, valor_unitario:o.subtotal,
+          clave_prod:cd.clave_prod||'', clave_unidad:cd.clave_unidad||'E48', objeto_imp:'02', iva_tasa: o.requiere_iva ? (cfg.iva_tasa??0.16) : 0, mercancia:false}]};
+  document.getElementById('cfe-oid').textContent = oid;
+  document.getElementById('cfe-body').innerHTML = `
+    <div style="font-size:12px;margin-bottom:8px">${esc(o.cliente||'')} · Job <b>${esc(o.job||'')}</b> · ${esc((o.hito||{}).nombre||'')} · Orden: <b>${ifFmt(o.total)} USD</b></div>
+    <div class="fr"><div class="fi"><label>Cliente fiscal *</label><select id="cfe-cli" onchange="cfeCliCambio()">${_cfdi.clientes.map(c=>`<option value="${esc(c.clave)}" ${cli&&cli.clave===c.clave?'selected':''}>${esc(c.clave)} · ${esc(c.rfc)}</option>`).join('')}</select>
+        ${cli?'':`<div style="font-size:11px;color:var(--red)">No hay datos fiscales de «${esc(o.cliente||'')}»: dalos de alta en Facturación electrónica ▸ Clientes fiscales.</div>`}</div>
+      <div class="fi"><label>Moneda</label><select id="cfe-mon"><option>USD</option><option>MXN</option></select></div><div class="fi"><label>Tipo de cambio</label><input id="cfe-tc" type="number" step="0.0001" placeholder="FIX del día"></div>
+      <div class="fi"><label>Método</label><select id="cfe-met" onchange="document.getElementById('cfe-forma').disabled=this.value==='PPD'"><option value="PPD">PPD (crédito)</option><option value="PUE">PUE (contado)</option></select></div>
+      <div class="fi"><label>Forma de pago</label><select id="cfe-forma" disabled><option value="03">03 Transferencia</option><option value="99">99 Por definir</option><option value="02">02 Cheque</option></select></div></div>
+    <div class="fr"><div class="fi"><label>Uso CFDI</label><input id="cfe-uso" placeholder="del cliente"></div><div class="fi"><label>Exportación</label><select id="cfe-exp" onchange="cfeExpCambio()"><option value="01">01 No aplica</option><option value="02">02 Definitiva (Comercio Exterior)</option></select></div>
+      <div class="fi"><label>Condiciones de pago</label><input id="cfe-cond" value="${(o.hito||{}).dias_vencimiento?esc((o.hito||{}).dias_vencimiento+' días'):''}"></div></div>
+    <div style="font-weight:700;margin:8px 0 4px">Conceptos</div><div id="cfe-conceptos"></div>
+    <button class="btn-reload" style="font-size:11px" onclick="_cfe.conceptos.push({descripcion:'',cantidad:1,valor_unitario:0,clave_prod:'${esc(cd.clave_prod||'')}',clave_unidad:'${esc(cd.clave_unidad||'E48')}',objeto_imp:'02',iva_tasa:0});cfeRenderConceptos()">＋ Concepto</button>
+    <div id="cfe-cce" style="display:none;border:1px solid #ddd6fe;background:#f5f3ff;border-radius:8px;padding:10px;margin-top:10px">
+      <div style="font-weight:700;color:#6d28d9;margin-bottom:6px">Complemento de Comercio Exterior</div>
+      <div class="fr"><div class="fi"><label>Clave de pedimento</label><input id="cfe-ped" value="${esc((cfg.cce_defaults||{}).clave_pedimento||'A1')}"></div><div class="fi"><label>Incoterm</label><input id="cfe-inc" value="${esc((cfg.cce_defaults||{}).incoterm||'FCA')}"></div>
+        <div class="fi"><label>Certificado de origen</label><select id="cfe-cert"><option value="0">0 No</option><option value="1">1 Sí</option></select></div><div class="fi"><label>No. certificado</label><input id="cfe-ncert"></div></div>
+      <div class="fi"><label>Observaciones</label><input id="cfe-obs"></div>
+      <div style="font-size:11px;color:var(--muted2)">Marca como <b>mercancía</b> los conceptos que son bienes exportados y captura su No. de identificación y fracción arancelaria. Los servicios (instalación, ingeniería) no llevan mercancía.</div></div>
+    <div id="cfe-tot" style="text-align:right;margin-top:10px;font-size:13px"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn btn-p" id="cfe-btn" onclick="cfeTimbrar()">Timbrar CFDI</button>
+      <span style="font-size:11px;color:var(--muted2)">${((_cfdi.estado||{}).entorno||{}).produccion?'<b style="color:var(--red)">Ambiente de PRODUCCIÓN: el CFDI tendrá validez fiscal.</b>':'Ambiente de pruebas: el CFDI no tiene validez fiscal.'}</span></div>`;
+  cfeCliCambio(); cfeRenderConceptos();
+  document.getElementById('mo-cfdi-emitir').classList.add('on');
+}
+function cfeCliCambio(){
+  const c = _cfdi.clientes.find(x=>x.clave===document.getElementById('cfe-cli').value); if(!c) return;
+  document.getElementById('cfe-uso').value = c.uso_cfdi||''; document.getElementById('cfe-exp').value = c.extranjero ? '02' : '01'; cfeExpCambio();
+}
+function cfeExpCambio(){ const x = document.getElementById('cfe-exp').value==='02'; document.getElementById('cfe-cce').style.display = x?'':'none'; if(x) _cfe.conceptos.forEach(c=>c.iva_tasa=0); cfeRenderConceptos(); }
+function cfeRenderConceptos(){
+  const x = document.getElementById('cfe-exp')?.value==='02';
+  document.getElementById('cfe-conceptos').innerHTML = `<div style="overflow-x:auto"><table class="tbl" style="width:100%;font-size:11.5px"><thead><tr><th>Descripción</th><th>Cant.</th><th>Valor unit.</th><th>Clave SAT</th><th>Unidad</th><th>Objeto</th><th>IVA</th>${x?'<th>Mercancía</th><th>No. ident.</th><th>Fracción</th><th>Cant. aduana</th><th>U. aduana</th>':''}<th></th></tr></thead><tbody>
+    ${_cfe.conceptos.map((c,i)=>{ const f=(k,w,t='text')=>`<input type="${t}" value="${esc(c[k]??'')}" style="width:${w}px" oninput="_cfe.conceptos[${i}]['${k}']=this.type==='number'?parseFloat(this.value||0):this.value;cfeTotales()">`;
+      return `<tr><td>${f('descripcion',260)}</td><td>${f('cantidad',50,'number')}</td><td>${f('valor_unitario',95,'number')}</td><td>${f('clave_prod',80)}</td><td>${f('clave_unidad',50)}</td>
+      <td><select onchange="_cfe.conceptos[${i}].objeto_imp=this.value;cfeTotales()"><option value="02" ${c.objeto_imp==='02'?'selected':''}>02</option><option value="01" ${c.objeto_imp==='01'?'selected':''}>01</option></select></td>
+      <td><select onchange="_cfe.conceptos[${i}].iva_tasa=parseFloat(this.value);cfeTotales()"><option value="0.16" ${c.iva_tasa==0.16?'selected':''}>16%</option><option value="0" ${!c.iva_tasa?'selected':''}>0%</option></select></td>
+      ${x?`<td style="text-align:center"><input type="checkbox" ${c.mercancia?'checked':''} onchange="_cfe.conceptos[${i}].mercancia=this.checked"></td><td>${f('no_identificacion',80)}</td><td>${f('fraccion',90)}</td><td>${f('cantidad_aduana',60,'number')}</td><td>${f('unidad_aduana',40)}</td>`:''}
+      <td><button class="btn-reload" style="font-size:10px;padding:2px 6px" onclick="_cfe.conceptos.splice(${i},1);cfeRenderConceptos()">✕</button></td></tr>`; }).join('')}</tbody></table></div>`;
+  cfeTotales();
+}
+function cfeTotales(){
+  const sub = _cfe.conceptos.reduce((a,c)=>a+(+c.cantidad||0)*(+c.valor_unitario||0),0), iva = _cfe.conceptos.reduce((a,c)=>a+(c.objeto_imp==='02'?(+c.cantidad||0)*(+c.valor_unitario||0)*(+c.iva_tasa||0):0),0);
+  const dif = Math.round((sub+iva-(_cfe.o.total||0))*100)/100;
+  document.getElementById('cfe-tot').innerHTML = `Subtotal <b>${ifFmt(sub)}</b> · IVA <b>${ifFmt(iva)}</b> · Total <b style="font-size:15px">${ifFmt(sub+iva)}</b>` + (Math.abs(dif)>0.01?` <span style="color:var(--amber)">(difiere de la orden por ${ifFmt(dif)})</span>`:' <span style="color:#15803d">✓ igual a la orden</span>');
+}
+async function cfeTimbrar(){
+  const g = id=>document.getElementById(id)?.value||'';
+  const exp = g('cfe-exp');
+  const body = {oid:_cfe.oid, cliente:g('cfe-cli'), moneda:g('cfe-mon'), tipo_cambio:g('cfe-tc'), metodo:g('cfe-met'), forma:g('cfe-forma'), uso_cfdi:g('cfe-uso'), exportacion:exp, condiciones:g('cfe-cond'),
+    conceptos:_cfe.conceptos, cce: exp==='02' ? {clave_pedimento:g('cfe-ped'), incoterm:g('cfe-inc'), certificado_origen:g('cfe-cert'), num_certificado_origen:g('cfe-ncert'), observaciones:g('cfe-obs')} : null};
+  if(!confirm(`¿Timbrar el CFDI de ${body.cliente}? Esta acción genera un comprobante fiscal${((_cfdi.estado||{}).entorno||{}).produccion?' VÁLIDO ante el SAT':' de PRUEBAS'}.`)) return;
+  const btn = document.getElementById('cfe-btn'); btn.disabled = true; btn.textContent = 'Timbrando…';
+  const d = await apiCall('POST','/cfdi/emitir', body); btn.disabled = false; btn.textContent = 'Timbrar CFDI';
+  if(d.error){ toast(d.error,'er',12000); return; }
+  toast(`CFDI timbrado: ${d.cfdi.serie||''}${d.cfdi.folio||''} · ${d.cfdi.uuid}${d.cfdi.cpc_id?' · registrado en CPC '+d.cfdi.cpc_id:''}`,'ok',9000);
+  closeMo('mo-cfdi-emitir'); try{ ocCargar && ocCargar(); }catch(e){} window.open(`/api/cfdi/${d.cfdi.cid}/pdf`,'_blank');
+}
+// ── REP, nota de crédito, cancelación, estatus ──
+function cfdiAccion(tipo, cid){
+  const r = _cfdi.emitidos.find(x=>x.cid===cid); if(!r) return;
+  const tit = {rep:'Complemento de pago (REP)', nc:'Nota de crédito', cancelar:'Cancelar CFDI'}[tipo];
+  document.getElementById('cfa-tit').textContent = `${tit} · ${(r.serie||'')+(r.folio||'')}`;
+  const hoy = new Date().toISOString().slice(0,10);
+  document.getElementById('cfa-body').innerHTML = (tipo==='rep' ? `
+      <div class="fr"><div class="fi"><label>Fecha de pago</label><input id="cfa-fecha" type="date" value="${hoy}"></div><div class="fi"><label>Monto pagado</label><input id="cfa-monto" type="number" step="0.01"></div></div>
+      <div class="fr"><div class="fi"><label>Moneda del pago</label><select id="cfa-mon"><option ${r.moneda==='USD'?'selected':''}>USD</option><option ${r.moneda==='MXN'?'selected':''}>MXN</option></select></div><div class="fi"><label>Tipo de cambio</label><input id="cfa-tc" type="number" step="0.0001" placeholder="FIX"></div>
+        <div class="fi"><label>Forma</label><select id="cfa-forma"><option value="03">03 Transferencia</option><option value="02">02 Cheque</option><option value="01">01 Efectivo</option></select></div></div>
+      <div class="fi"><label>No. de operación / referencia</label><input id="cfa-op"></div>`
+    : tipo==='nc' ? `<div class="fi"><label>Importe sin IVA</label><input id="cfa-imp" type="number" step="0.01"></div><div class="fi"><label>Motivo / descripción</label><input id="cfa-desc" placeholder="ej. Descuento por ajuste de alcance"></div>`
+    : `<div class="fi"><label>Motivo (c_MotivoCancelacion)</label><select id="cfa-mot" onchange="document.getElementById('cfa-sustbox').style.display=this.value==='01'?'':'none'"><option value="02">02 Comprobante emitido con errores sin relación</option><option value="01">01 Con errores con relación (lo sustituye otro CFDI)</option><option value="03">03 No se llevó a cabo la operación</option><option value="04">04 Operación nominativa en factura global</option></select></div>
+       <div class="fi" id="cfa-sustbox" style="display:none"><label>UUID del CFDI que lo sustituye</label><input id="cfa-sust" style="font-family:'DM Mono',monospace;text-transform:uppercase"></div>
+       <div style="font-size:11.5px;color:var(--muted2)">Si el cliente debe aceptar la cancelación, quedará "En cancelación" hasta que responda; consulta "Estatus SAT" después.</div>`)
+    + `<div style="margin-top:10px"><button class="btn btn-p" onclick="cfdiAccionEnviar('${tipo}','${cid}')">${tipo==='cancelar'?'Cancelar ante el SAT':'Timbrar'}</button></div>`;
+  document.getElementById('mo-cfdi-accion').classList.add('on');
+}
+async function cfdiAccionEnviar(tipo, cid){
+  const g = id=>document.getElementById(id)?.value||'';
+  let url, body;
+  if(tipo==='rep'){ url=`/cfdi/${cid}/rep`; body={fecha:g('cfa-fecha'), monto:g('cfa-monto'), moneda:g('cfa-mon'), tipo_cambio:g('cfa-tc'), forma:g('cfa-forma'), operacion:g('cfa-op')}; }
+  else if(tipo==='nc'){ url=`/cfdi/${cid}/nota-credito`; body={importe:g('cfa-imp'), descripcion:g('cfa-desc')}; }
+  else { if(!confirm('¿Cancelar este CFDI ante el SAT? No se puede deshacer.')) return; url=`/cfdi/${cid}/cancelar`; body={motivo:g('cfa-mot'), uuid_sustituto:g('cfa-sust')}; }
+  const d = await apiCall('POST', url, body); if(d.error){ toast(d.error,'er',12000); return; }
+  toast(tipo==='cancelar' ? `CFDI ${d.cfdi.estatus}` : `Timbrado: ${d.cfdi.uuid}`,'ok',8000); closeMo('mo-cfdi-accion'); await cfdiCargarEmitidos(); cfdiRenderEmitidos();
+}
+async function cfdiEstatus(cid){ const d = await apiCall('POST',`/cfdi/${cid}/estatus`,{}); if(d.error){ toast(d.error,'er',9000); return; } toast(`SAT: ${d.cfdi.sat.estado} · ${d.cfdi.sat.cancelable}`,'ok',7000); await cfdiCargarEmitidos(); cfdiRenderEmitidos(); }
