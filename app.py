@@ -25152,7 +25152,36 @@ def _cfdi_cliente(clave):
 @app.route("/api/cfdi", methods=["GET"])
 def api_cfdi_list():
     if not _cfdi_puede("view"): return jsonify({"error": "Sin permiso"}), 403
-    return jsonify({"records": list(reversed(_cfdi_get("emitidos", []) or []))})
+    em = _cfdi_get("emitidos", []) or []
+    out = []
+    for r in reversed(em):
+        r = dict(r)
+        if r.get("tipo") == "I": r["pago"] = _cfdi_estado_pago(r, em)          # rev170: saldo y estatus de cobro
+        out.append(r)
+    return jsonify({"records": out})
+
+def _cfdi_relacionados_vigentes(cid, em=None):
+    em = em if em is not None else (_cfdi_get("emitidos", []) or [])
+    return [x for x in em if cid in (x.get("relacionados") or []) and x.get("estatus") in ("Vigente", "En cancelación")]
+
+def _cfdi_estado_pago(f, em=None):
+    """rev170: estado de cobro de una factura de ingreso.
+    Con CPC: su saldo (pagos, REP y notas de crédito registrados). Sin CPC (pruebas): total − REP − notas de crédito vigentes."""
+    total = float(f.get("total") or 0)
+    if f.get("estatus") == "Cancelada": return {"estado": "Cancelada", "saldo": 0.0, "pagado": 0.0, "total": total}
+    saldo = None
+    if f.get("cpc_id"):
+        try:
+            y, recs, i = _cpc_buscar(f["cpc_id"])
+            if i is not None: saldo = round(_cpc_saldo(recs[i]), 2)
+        except Exception: saldo = None
+    if saldo is None:
+        rel = _cfdi_relacionados_vigentes(f["cid"], em)
+        if f.get("metodo") == "PUE" and not rel: return {"estado": "Pagada (PUE)", "saldo": 0.0, "pagado": total, "total": total}
+        saldo = round(total - sum(float(x.get("total") or 0) for x in rel if x.get("tipo") in ("P", "E")), 2)
+    saldo = max(0.0, saldo)
+    estado = "Saldada" if saldo <= 0.01 else ("Pago parcial" if saldo < total - 0.01 else "Pendiente de pago")
+    return {"estado": estado, "saldo": saldo, "pagado": round(total - saldo, 2), "total": total}
 
 @app.route("/api/cfdi/<cid>/<tipo>", methods=["GET"])
 def api_cfdi_archivo(cid, tipo):
@@ -25553,6 +25582,20 @@ def api_cfdi_cancelar(cid):
     if f.get("estatus") in ("Cancelada", "En cancelación"): return jsonify({"error": f"El CFDI ya está {f['estatus']}"}), 400
     motivo = str(b.get("motivo") or "").strip()
     if motivo not in ("01", "02", "03", "04"): return jsonify({"error": "Elige el motivo de cancelación (01–04)"}), 400
+    # rev170: no se cancela una factura con pagos, complementos de pago o notas de crédito vigentes
+    if f.get("tipo") == "I":
+        rel = _cfdi_relacionados_vigentes(cid)
+        if rel:
+            lst = ", ".join(f"{'REP' if x.get('tipo') == 'P' else 'nota de crédito'} {x.get('serie','')}{x.get('folio','')}" for x in rel)
+            return jsonify({"error": f"No se puede cancelar: la factura tiene CFDI relacionados vigentes ({lst}). Cancela primero esos complementos de pago o notas de crédito."}), 400
+        if f.get("cpc_id"):
+            try:
+                y_, recs_, i_ = _cpc_buscar(f["cpc_id"])
+                pagos_ = (recs_[i_].get("pagos") or []) if i_ is not None else []
+            except Exception: pagos_ = []
+            if pagos_:
+                return jsonify({"error": f"No se puede cancelar: la factura tiene {len(pagos_)} pago(s) registrados en Cuentas por Cobrar"
+                                         f" (pagado {round(sum(float(p.get('monto') or 0) for p in pagos_), 2):,.2f}). Elimina o revierte primero esos pagos."}), 400
     sust = str(b.get("uuid_sustituto") or "").strip().upper()
     if motivo == "01" and not re.match(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$", sust): return jsonify({"error": "El motivo 01 requiere el UUID del CFDI que la sustituye"}), 400
     try:
@@ -25580,6 +25623,16 @@ def api_cfdi_cancelar(cid):
             (d / f"{f['uuid']}_acuse_cancelacion.xml").write_bytes(_b64.b64decode(r.data.base64_cancellation_acknowledgement))
     except Exception: pass
     with lock: _cfdi_registrar(f)
+    if f.get("tipo") in ("P", "E") and f.get("cpc_id") and f["estatus"] == "Cancelada":     # rev170: revertir el pago / nota de crédito en CPC
+        with _cpc_candado():
+            y, recs, i = _cpc_buscar(f["cpc_id"])
+            if i is not None:
+                c = recs[i]; antes = len(c.get("pagos") or [])
+                c["pagos"] = [pg for pg in (c.get("pagos") or []) if ((pg.get("rep") or {}).get("uuid") != f["uuid"] and (pg.get("nota_credito") or {}).get("uuid") != f["uuid"])]
+                if len(c["pagos"]) != antes:
+                    _cpc_aplicar_pagos(c)
+                    _cpc_hist(c, "Pago revertido", f"{'REP' if f['tipo'] == 'P' else 'Nota de crédito'} {f['uuid']} cancelado · saldo {_cpc_saldo(c):,.2f}")
+                    cpc_save(y, recs)
     if f.get("tipo") == "I" and f.get("orden_cobro") and f["estatus"] == "Cancelada":     # rev169: la orden vuelve a "Por facturar"
         with lock:
             ordenes = _load_catalog("ordenes_cobro") or []
