@@ -24935,6 +24935,11 @@ def _cfdi_respuesta_error(resp):
         if resp.error_data: det = (det + " " + json.dumps(resp.error_data, ensure_ascii=False))[:1500]
     except Exception: pass
     msg = _cfdi_traducir(resp.message or "error"); det = _cfdi_traducir(det)
+    if re.search(r"emisora .* no tiene r[eé]gimen fiscal|satTaxRegimeId", det + " " + msg, re.I):          # rev162
+        return ("El emisor registrado en FiscalAPI no tiene régimen fiscal. Ve a Facturación electrónica ▸ Configuración ▸ "
+                "«Sincronizar emisor con FiscalAPI» (toma RFC, razón social, régimen y CP de Datos fiscales) y vuelve a timbrar."
+                + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else ""))
+    if msg.strip().lower().startswith("sorry, it's not me"): msg = "Datos rechazados"
     return f"FiscalAPI rechazó el comprobante: {msg}" + (f" — {det}" if det and det != msg else "") + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else "")
 
 def _cfdi_enviar(api, invoice, idem, operacion):
@@ -25136,7 +25141,10 @@ def api_cfdi_emitir():
     exportacion = "02" if str(b.get("exportacion") or "01") == "02" else "01"
     zip_ = cfg.get("expedition_zip") or _datos_fiscales().get("cp") or ""
     errores = _cfdi_validar_ingreso(cli, conceptos, moneda, tc, metodo, forma, exportacion, zip_, cfg)
-    if errores: return jsonify({"error": "Revisa antes de timbrar: " + " · ".join(errores), "errores": errores}), 400
+    em_err = _cfdi_verificar_emisor()                         # rev162
+    if em_err: errores.append(em_err)
+    if errores: return jsonify({"error": "Revisa antes de timbrar: " + " · ".join(errores), "errores": errores,
+                                "emisor_incompleto": bool(em_err)}), 400
     try:
         complemento = None
         if exportacion == "02" and any(c.get("mercancia") for c in conceptos):
@@ -25149,7 +25157,7 @@ def api_cfdi_emitir():
                           metadata={"erp": "Persico Suite", "orden_cobro": oid or None, "job": (o or {}).get("job")})
         inv, uuid_, xml_bytes = _cfdi_crear(invoice, f"oc-{oid}-{int(time.time()) // 600}" if oid else None, f"Ingreso {oid or ''}".strip())
     except (ValueError, RuntimeError) as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": str(e), "emisor_incompleto": "Sincronizar emisor" in str(e)}), 400
     ahora = datetime.datetime.now().isoformat(timespec="seconds")
     rec = {"cid": f"CFDI-{uuid_[:8]}", "tipo": "I", "uuid": uuid_, "fiscalapi_id": inv.id, "serie": inv.series or cfg["serie_ingreso"], "folio": inv.number or "",
            "fecha": ahora, "cliente": cli["clave"], "rfc_receptor": cli["rfc"], "moneda": moneda, "tipo_cambio": tc, "metodo": metodo, "forma": forma,
@@ -25193,6 +25201,70 @@ def api_cfdi_emitir():
 
 def _cfdi_buscar(cid):
     return next((x for x in (_cfdi_get("emitidos", []) or []) if x.get("cid") == cid), None)
+
+# ── rev162: emisor por referencia (FISCALAPI_ISSUER_ID): revisar y sincronizar sus datos fiscales ──
+_cfdi_emisor_ok = {"t": 0, "ok": False}
+def _cfdi_emisor_remoto(api=None):
+    api = api or _cfdi_cliente_api()
+    pid = (_os.environ.get("FISCALAPI_ISSUER_ID") or "").strip()
+    r = api.people.get_by_id(pid)
+    if not r.succeeded or not r.data: raise RuntimeError(_cfdi_respuesta_error(r))
+    p_ = r.data; csd = []
+    try:
+        tf = api.people.get_tax_files(pid)
+        if tf.succeeded and tf.data: csd = [{"tipo": "certificado (.cer)" if t.file_type == 0 else "llave (.key)", "vigente_hasta": str(t.valid_to or "")[:10]} for t in tf.data]
+    except Exception: pass
+    return {"id": pid, "rfc": p_.tin, "razon_social": p_.legal_name, "regimen": p_.sat_tax_regime_id, "cp": p_.zip_code, "email": p_.email, "csd": csd}
+
+def _cfdi_verificar_emisor():
+    """Antes de timbrar con emisor por referencia: que tenga régimen y CP (se revisa cada 10 min)."""
+    e = _cfdi_entorno()
+    if e["csd"] or not e["issuer_id"]: return None
+    if _cfdi_emisor_ok["ok"] and time.time() - _cfdi_emisor_ok["t"] < 600: return None
+    try: rem = _cfdi_emisor_remoto()
+    except Exception as ex: return None                      # si no se puede consultar, que decida FiscalAPI al timbrar
+    falt = [n for k, n in (("rfc", "RFC"), ("razon_social", "razón social"), ("regimen", "régimen fiscal"), ("cp", "código postal")) if not rem.get(k)]
+    if falt:
+        _cfdi_emisor_ok.update(ok=False)
+        return ("El emisor registrado en FiscalAPI no tiene " + ", ".join(falt) + ". Ve a Facturación electrónica ▸ Configuración ▸ "
+                "«Sincronizar emisor con FiscalAPI» y vuelve a timbrar.")
+    _cfdi_emisor_ok.update(ok=True, t=time.time()); return None
+
+@app.route("/api/cfdi/emisor", methods=["GET"])
+def api_cfdi_emisor_get():
+    if not is_admin(): return jsonify({"error": "Solo el administrador"}), 403
+    e = _cfdi_entorno()
+    if not e["issuer_id"]: return jsonify({"modo": "csd" if e["csd"] else "sin_configurar"})
+    try: rem = _cfdi_emisor_remoto()
+    except Exception as ex: return jsonify({"error": str(ex)}), 400
+    df = _datos_fiscales()
+    loc = {"rfc": (df.get("rfc") or "").upper(), "razon_social": _cfdi_sin_regimen_capital(df.get("razon_social") or ""), "regimen": str(df.get("regimen_fiscal") or "")[:3], "cp": df.get("cp") or ""}
+    dif = [k for k in ("rfc", "razon_social", "regimen", "cp") if str(rem.get(k) or "").strip().upper() != str(loc[k] or "").strip().upper()]
+    return jsonify({"modo": "referencia", "fiscalapi": rem, "erp": loc, "diferencias": dif})
+
+@app.route("/api/cfdi/emisor/sincronizar", methods=["POST"])
+def api_cfdi_emisor_sync():
+    """Actualiza la persona emisora en FiscalAPI con los Datos fiscales del ERP (RFC, razón social, régimen, CP)."""
+    if not is_admin(): return jsonify({"error": "Solo el administrador"}), 403
+    from fiscalapi import Person
+    e = _cfdi_entorno()
+    if not e["issuer_id"]: return jsonify({"error": "El emisor no está configurado por referencia (FISCALAPI_ISSUER_ID)"}), 400
+    df = _datos_fiscales()
+    rfc = (df.get("rfc") or "").upper(); reg = str(df.get("regimen_fiscal") or "").strip()[:3]; cp = str(df.get("cp") or "").strip()
+    falt = [n for v, n in ((re.match(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$", rfc), "RFC"), (re.match(r"^\d{3}$", reg), "régimen fiscal (3 dígitos, p. ej. 601)"),
+                           (re.match(r"^\d{5}$", cp), "código postal (5 dígitos)"), (df.get("razon_social"), "razón social")) if not v]
+    if falt: return jsonify({"error": "Completa en Finanzas ▸ Datos fiscales: " + ", ".join(falt)}), 400
+    per = Person(id=_os.environ["FISCALAPI_ISSUER_ID"].strip(), tin=rfc, legal_name=_cfdi_sin_regimen_capital(df.get("razon_social")), sat_tax_regime_id=reg, zip_code=cp)
+    try:
+        api = _cfdi_cliente_api(); r = api.people.update(per)
+        _cfdi_log("Sincronizar emisor", per.model_dump(mode="json", by_alias=True, exclude_none=True),
+                  {"succeeded": r.succeeded, "httpStatusCode": r.http_status_code, "message": r.message, "details": r.details, "traceIdentifier": r.trace_identifier}, r.succeeded)
+        if not r.succeeded: raise RuntimeError(_cfdi_respuesta_error(r))
+        rem = _cfdi_emisor_remoto(api)
+    except RuntimeError as ex:
+        return jsonify({"error": str(ex)}), 400
+    _cfdi_emisor_ok.update(ok=bool(rem.get("regimen") and rem.get("cp")), t=time.time())
+    return jsonify({"ok": True, "fiscalapi": rem})
 
 @app.route("/api/cfdi/tipo-cambio", methods=["GET"])
 def api_cfdi_tc():
