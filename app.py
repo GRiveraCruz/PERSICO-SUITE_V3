@@ -25442,7 +25442,14 @@ def api_cfdi_rep(cid):
     parc = 1 + sum(1 for x in (_cfdi_get("emitidos", []) or []) if x.get("tipo") == "P" and x.get("estatus") == "Vigente" and cid in (x.get("relacionados") or []))
     cli = _cfdi_cliente(f["cliente"])
     if not cli: return jsonify({"error": "Faltan los datos fiscales del cliente"}), 400
-    tasa = float(cfg["iva_tasa"]) if f.get("exportacion") != "02" else 0.0
+    # rev168: tasa de IVA real de la factura pagada (subtotal vs total); exportación o facturas sin IVA → 0
+    try:
+        _st, _tt = float(f.get("subtotal") or 0), float(f.get("total") or 0)
+        tasa = 0.0 if (f.get("exportacion") == "02" or not _st or abs(_tt - _st) < 0.01) else round(_tt / _st - 1, 4)
+        if abs(tasa - 0.16) < 0.002: tasa = 0.16
+        elif abs(tasa - 0.08) < 0.002: tasa = 0.08
+    except (TypeError, ValueError, ZeroDivisionError):
+        tasa = float(cfg["iva_tasa"])
     try:
         inv_p = Invoice(version_code="4.0", series=cfg["serie_pago"] or None, date=_cfdi_fecha_local(), currency_code="XXX", type_code="P",
                         expedition_zip_code=_cfdi_zip_doc(f, cfg), exchange_rate=1, export_code="01",
@@ -25452,7 +25459,9 @@ def api_cfdi_rep(cid):
                             payment_date=fecha, payment_form_code=str(b.get("forma") or "03"), currency_code=mon_pago, exchange_rate=_cfdi_d(tc_pago, 6), amount=_cfdi_d(monto, 2),
                             operation_number=(str(b.get("operacion") or "")[:100] or None),
                             paid_invoices=[PaidInvoice(uuid=f["uuid"], series=f.get("serie") or None, number=f.get("folio") or None, currency_code=f["moneda"], partiality_number=parc,
-                                                       sub_total=None, previous_balance=_cfdi_d(saldo, 2), payment_amount=_cfdi_d(monto, 2), remaining_balance=_cfdi_d(saldo - monto, 2),
+                                                       # rev168: base del impuesto que corresponde a ESTE pago (pago / (1 + tasa)); FiscalAPI la exige > 0.
+                                                       # Con pago total equivale al subtotal de la factura, como en el ejemplo oficial.
+                                                       sub_total=_cfdi_d(monto / (1 + tasa), 2), previous_balance=_cfdi_d(saldo, 2), payment_amount=_cfdi_d(monto, 2), remaining_balance=_cfdi_d(saldo - monto, 2),
                                                        tax_object_code="02", equivalence=_cfdi_d(1 if mon_pago == f["moneda"] else (tc_pago if f["moneda"] == "MXN" else 1 / tc_pago), 6) if mon_pago != f["moneda"] else None,
                                                        paid_invoice_taxes=[PaidInvoiceTax(tax_code="002", tax_type_code="Tasa", tax_rate=_cfdi_d(tasa), tax_flag_code="T")])])))
         inv, uuid_, _x = _cfdi_crear(inv_p, f"rep-{cid}-{parc}", f"Complemento de pago {f.get('serie','')}{f.get('folio','')}")
