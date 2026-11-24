@@ -21540,7 +21540,8 @@ function cfdiRenderConfig(){
       <div class="fr"><div class="fi"><label>Clave de pedimento</label>${inp('cx-ped',cx.clave_pedimento,'A1')}</div><div class="fi"><label>Incoterm</label>${inp('cx-inc',cx.incoterm,'FCA')}</div><div class="fi"><label>Certificado de origen (0/1)</label>${inp('cx-cert',cx.certificado_origen,'0')}</div></div></div>
     <button class="btn btn-p" onclick="cfdiGuardarConfig()">Guardar configuración</button>`;
 }
-async function cfdiProbar(){ const s=document.getElementById('cfdi-prueba'); s.textContent='Probando…'; const d = await apiCall('POST','/cfdi/prueba',{}); s.innerHTML = d.error?`<span style="color:var(--red)">${esc(d.error)}</span>`:`<span style="color:#15803d">✓ Conectado${d.cuenta&&d.cuenta.tin?' · '+esc(d.cuenta.tin)+' '+esc(d.cuenta.legal_name||''):''}</span>`; }
+async function cfdiProbar(){ const s=document.getElementById('cfdi-prueba'); s.textContent='Probando…'; const d = await apiCall('POST','/cfdi/prueba',{}); s.innerHTML = d.error?`<span style="color:var(--red)">${esc(d.error)}</span>`:`<span style="color:#15803d">✓ Conectado${d.cuenta&&d.cuenta.tin?' · '+esc(d.cuenta.tin)+' '+esc(d.cuenta.legal_name||''):''}</span>`
+    + (d.cuenta && d.cuenta.timbres!=null ? ` · <b style="color:${(+d.cuenta.timbres)>0?'#15803d':'var(--red)'}">Timbres disponibles: ${esc(String(d.cuenta.timbres))}</b>${(+d.cuenta.timbres)>0?'':' — compra timbres en el panel de FiscalAPI'}` : ''); }
 async function cfdiGuardarConfig(){
   const g = id=>document.getElementById(id)?.value||'';
   const d = await apiCall('PUT','/cfdi/config',{emisor_prueba: !!document.getElementById('cfg-prueba')?.checked, serie_ingreso:g('cfg-si'), serie_egreso:g('cfg-se'), serie_pago:g('cfg-sp'), expedition_zip:g('cfg-zip'), iva_tasa:g('cfg-iva'), pdf_band_color:g('cfg-band'), pdf_font_color:g('cfg-font'),

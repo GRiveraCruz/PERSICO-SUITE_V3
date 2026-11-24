@@ -10,3 +10,4 @@ flask-migrate
 alembic
 # xlrd==1.2.0   # opcional — acelera lectura de archivos .xls del Banco de México
 pydantic>=2.5,<3
+tzdata

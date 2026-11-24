@@ -24778,6 +24778,17 @@ def _cfdi_cliente_api():
     if not (e["api_key"] and e["tenant"]): raise RuntimeError("Faltan FISCALAPI_API_KEY y/o FISCALAPI_TENANT en las variables del servidor")
     return FiscalApiClient(settings=FiscalApiSettings(api_url=e["url"], api_key=_os.environ["FISCALAPI_API_KEY"], tenant=_os.environ["FISCALAPI_TENANT"]))
 
+def _cfdi_fecha_local():
+    """rev167: la fecha del CFDI debe ser la hora local del lugar de expedición (México, centro), no la del
+    servidor (Railway corre en UTC: +6 h → el SAT la rechaza por fuera de rango). Se resta 1 minuto de margen
+    por diferencias de reloj. Zona configurable con CFDI_TZ (por omisión America/Mexico_City)."""
+    try:
+        from zoneinfo import ZoneInfo
+        ahora = datetime.datetime.now(ZoneInfo(_os.environ.get("CFDI_TZ") or "America/Mexico_City"))
+    except Exception:
+        ahora = datetime.datetime.utcnow() - datetime.timedelta(hours=6)       # respaldo: centro de México (sin horario de verano desde 2022)
+    return (ahora - datetime.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+
 def _cfdi_modo_prueba():
     """rev165: emisor de PRUEBA del SAT — solo en el ambiente de pruebas y si está activado en Configuración."""
     return (not _cfdi_entorno()["produccion"]) and bool(_cfdi_config().get("emisor_prueba"))
@@ -24968,6 +24979,11 @@ def _cfdi_respuesta_error(resp):
         return ("El emisor registrado en FiscalAPI no tiene régimen fiscal. Ve a Facturación electrónica ▸ Configuración ▸ "
                 "«Sincronizar emisor con FiscalAPI» (toma RFC, razón social, régimen y CP de Datos fiscales) y vuelve a timbrar."
                 + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else ""))
+    m_saldo = re.search(r"Saldo insuficiente\.?\s*Disponible:\s*(\d+(?:\.\d+)?)", det + " " + msg, re.I)          # rev166
+    if m_saldo:
+        return (f"Tu cuenta de FiscalAPI no tiene timbres disponibles (saldo: {m_saldo.group(1)}). Compra o asigna timbres en el panel de FiscalAPI "
+                "(Compras en línea) para este ambiente y vuelve a timbrar. El comprobante sí pasó las validaciones."
+                + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else ""))
     if re.search(r"archivos fiscales de la persona|tax.?files", det + " " + msg, re.I):                # rev164
         return ("FiscalAPI no encontró el CSD (certificado .cer y llave .key) del emisor en este ambiente. Súbelo en Facturación electrónica ▸ "
                 "Configuración ▸ «Subir CSD a FiscalAPI» (o en el panel de FiscalAPI, en la persona emisora) y vuelve a timbrar."
@@ -25080,7 +25096,9 @@ def api_cfdi_prueba():
         r = _cfdi_cliente_api().me.get()
         if not r.succeeded: return jsonify({"error": _cfdi_respuesta_error(r)}), 400
         d = r.data.model_dump(mode="json", by_alias=False, exclude_none=True) if r.data else {}
-        return jsonify({"ok": True, "cuenta": {k: d.get(k) for k in ("tin", "legal_name", "email", "id") if d.get(k)}})
+        cta = {k: d.get(k) for k in ("tin", "legal_name", "email", "id") if d.get(k)}
+        cta["timbres"] = d.get("available_balance"); cta["validaciones"] = d.get("available_validation_balance")        # rev166
+        return jsonify({"ok": True, "cuenta": cta})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -25210,7 +25228,7 @@ def _cfdi_emitir_orden(b, cfg, oid, o, produccion):
         if exportacion == "02" and any(c.get("mercancia") for c in conceptos):
             tc_usd = tc if moneda == "USD" else float(b.get("tipo_cambio_usd") or fx_rate_for_date(datetime.date.today().isoformat(), fx_load_all()) or 0)
             complemento = _cfdi_cce(b.get("cce") or {}, cli, cfg, conceptos, tc_usd)
-        invoice = Invoice(version_code="4.0", series=cfg["serie_ingreso"] or None, date=datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        invoice = Invoice(version_code="4.0", series=cfg["serie_ingreso"] or None, date=_cfdi_fecha_local(),
                           payment_form_code=forma, payment_method_code=metodo, currency_code=moneda, exchange_rate=_cfdi_d(tc, 6) if moneda != "MXN" else 1,
                           type_code="I", expedition_zip_code=zip_, export_code=exportacion, payment_conditions=(str(b.get("condiciones") or "")[:100] or None),
                           issuer=_cfdi_emisor(prueba), recipient=_cfdi_receptor(cli, b.get("uso_cfdi"), prueba, zip_), items=_cfdi_items(conceptos, cfg), complement=complemento,
@@ -25426,7 +25444,7 @@ def api_cfdi_rep(cid):
     if not cli: return jsonify({"error": "Faltan los datos fiscales del cliente"}), 400
     tasa = float(cfg["iva_tasa"]) if f.get("exportacion") != "02" else 0.0
     try:
-        inv_p = Invoice(version_code="4.0", series=cfg["serie_pago"] or None, date=datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), currency_code="XXX", type_code="P",
+        inv_p = Invoice(version_code="4.0", series=cfg["serie_pago"] or None, date=_cfdi_fecha_local(), currency_code="XXX", type_code="P",
                         expedition_zip_code=_cfdi_zip_doc(f, cfg), exchange_rate=1, export_code="01",
                         issuer=_cfdi_emisor(f.get("emisor_prueba")), recipient=_cfdi_receptor(cli, "CP01", f.get("emisor_prueba"), _cfdi_zip_doc(f, cfg)),
                         items=[InvoiceItem(item_code="84111506", item_sku=(f.get("job") or "PAGO"), quantity=1, unit_of_measurement_code="ACT", description="Pago", unit_price=0, tax_object_code="01")],
@@ -25470,7 +25488,7 @@ def api_cfdi_nota_credito(cid):
     if len(motivo) < 4: return jsonify({"error": "Describe el motivo de la nota de crédito"}), 400
     tasa = 0.0 if f.get("exportacion") == "02" else float(cfg["iva_tasa"])
     try:
-        inv_e = Invoice(version_code="4.0", series=cfg["serie_egreso"] or None, date=datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        inv_e = Invoice(version_code="4.0", series=cfg["serie_egreso"] or None, date=_cfdi_fecha_local(),
                         payment_form_code=str(b.get("forma") or "15"), payment_method_code="PUE", currency_code=f["moneda"],
                         exchange_rate=_cfdi_d(f.get("tipo_cambio") or 1, 6) if f["moneda"] != "MXN" else 1, type_code="E",
                         expedition_zip_code=_cfdi_zip_doc(f, cfg), export_code=f.get("exportacion") or "01",
