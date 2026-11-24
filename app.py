@@ -25404,9 +25404,24 @@ def api_cfdi_emisor_sync():
     falt = [n for v, n in ((re.match(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$", rfc), "RFC"), (re.match(r"^\d{3}$", reg), "régimen fiscal (3 dígitos, p. ej. 601)"),
                            (re.match(r"^\d{5}$", cp), "código postal (5 dígitos)"), (df.get("razon_social"), "razón social")) if not v]
     if falt: return jsonify({"error": "Completa en Finanzas ▸ Datos fiscales: " + ", ".join(falt)}), 400
-    per = Person(id=_os.environ["FISCALAPI_ISSUER_ID"].strip(), tin=rfc, legal_name=_cfdi_razon_social_sat(), sat_tax_regime_id=reg, zip_code=cp)
+    # rev171: el PUT de FiscalAPI reemplaza la persona completa y exige el correo → se conservan los datos que ya
+    # tiene (correo, teléfono, tipo, uso CFDI) y solo se actualizan RFC, razón social, régimen y CP.
+    pid = _os.environ["FISCALAPI_ISSUER_ID"].strip()
     try:
-        api = _cfdi_cliente_api(); r = api.people.update(per)
+        api = _cfdi_cliente_api()
+        actual = api.people.get_by_id(pid)
+    except RuntimeError as ex:
+        return jsonify({"error": str(ex)}), 400
+    act = actual.data if (actual.succeeded and actual.data) else None
+    email = ((act.email if act else None) or df.get("email") or "").strip()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return jsonify({"error": "FiscalAPI exige un correo para la persona emisora: captúralo en Finanzas ▸ Datos fiscales (Correo) y vuelve a sincronizar."}), 400
+    per = Person(id=pid, tin=rfc, legal_name=_cfdi_razon_social_sat(), sat_tax_regime_id=reg, zip_code=cp, email=email,
+                 phone_number=(act.phone_number if act else None) or (df.get("telefono") or None),
+                 user_type_id=(act.user_type_id if act else None), sat_cfdi_use_id=(act.sat_cfdi_use_id if act else None) or "G03",
+                 curp=(act.curp if act else None))
+    try:
+        r = api.people.update(per)
         _cfdi_log("Sincronizar emisor", per.model_dump(mode="json", by_alias=True, exclude_none=True),
                   {"succeeded": r.succeeded, "httpStatusCode": r.http_status_code, "message": r.message, "details": r.details, "traceIdentifier": r.trace_identifier}, r.succeeded)
         if not r.succeeded: raise RuntimeError(_cfdi_respuesta_error(r))

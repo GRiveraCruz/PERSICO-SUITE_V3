@@ -21457,7 +21457,8 @@ function cfdiTab(t){
 }
 function cfdiRenderEmitidos(){
   const q=(document.getElementById('cfdi-q').value||'').toLowerCase(), ft=document.getElementById('cfdi-ftipo').value;
-  const L = _cfdi.emitidos.filter(r=>(!ft||r.tipo===ft) && (!q || [r.uuid,r.serie,r.folio,r.cliente,r.job,r.cpc_id,r.orden_cobro].join(' ').toLowerCase().includes(q)));
+  const fc = document.getElementById('cfdi-fcobro')?.value || '';
+  const L = _cfdi.emitidos.filter(r=>(!ft||r.tipo===ft) && (!fc || (r.pago && (fc==='saldada' ? ['Saldada','Pagada (PUE)'].includes(r.pago.estado) : ['Pendiente de pago','Pago parcial'].includes(r.pago.estado)))) && (!q || [r.uuid,r.serie,r.folio,r.cliente,r.job,r.cpc_id,r.orden_cobro].join(' ').toLowerCase().includes(q)));
   const col = {Vigente:'#15803d', Cancelada:'#c8102e', 'En cancelación':'#b45309'};
   document.getElementById('cfdi-tb').innerHTML = L.map(r=>`<tr>
     <td>${CFDI_TIPO[r.tipo]||r.tipo}${r.prueba?' <span style="font-size:10px;background:#e0f2fe;color:#0369a1;border-radius:6px;padding:1px 5px" title="Timbrado en el ambiente de pruebas">PRUEBA</span>':''}${r.comercio_exterior?' <span title="Comercio Exterior" style="font-size:10px;background:#ede9fe;color:#6d28d9;border-radius:6px;padding:1px 5px">CCE</span>':''}</td>
@@ -21465,14 +21466,17 @@ function cfdiRenderEmitidos(){
     <td style="white-space:nowrap">${esc(String(r.fecha||'').slice(0,16).replace('T',' '))}</td><td>${esc(r.cliente||'')}</td><td style="font-family:'DM Mono',monospace">${esc(r.job||'')}</td>
     <td style="text-align:right">${ifFmt(r.total)} <span style="font-size:10px;color:var(--muted)">${esc(r.moneda||'')}</span></td><td>${esc(r.metodo||(r.tipo==='P'?'parc. '+r.parcialidad:''))}</td>
     <td style="color:${col[r.estatus]||'inherit'};font-weight:700">${esc(r.estatus)}${r.sat?`<div style="font-size:10px;font-weight:400;color:var(--muted2)">SAT: ${esc(r.sat.estado)}</div>`:''}</td>
+    <td>${cfdiCobroHTML(r)}</td>
     <td style="white-space:nowrap">
       <a class="btn-reload" style="font-size:10px;padding:3px 7px" href="/api/cfdi/${r.cid}/pdf" target="_blank">PDF</a>
       <a class="btn-reload" style="font-size:10px;padding:3px 7px" href="/api/cfdi/${r.cid}/xml?descargar=1">XML</a>
-      ${r.tipo==='I'&&r.metodo==='PPD'&&r.estatus==='Vigente'?`<button class="btn-reload" style="font-size:10px;padding:3px 7px" onclick="cfdiAccion('rep','${r.cid}')">REP</button>`:''}
+      ${r.tipo==='I'&&r.metodo==='PPD'&&r.estatus==='Vigente'&&(!r.pago||r.pago.saldo>0.01)?`<button class="btn-reload" style="font-size:10px;padding:3px 7px" onclick="cfdiAccion('rep','${r.cid}')">REP</button>`:''}
       ${r.tipo==='I'&&r.estatus==='Vigente'?`<button class="btn-reload" style="font-size:10px;padding:3px 7px" onclick="cfdiAccion('nc','${r.cid}')">Nota de crédito</button>`:''}
       <button class="btn-reload" style="font-size:10px;padding:3px 7px" onclick="cfdiEstatus('${r.cid}')">Estatus SAT</button>
-      ${r.estatus==='Vigente'?`<button class="btn-reload" style="font-size:10px;padding:3px 7px;color:var(--red)" onclick="cfdiAccion('cancelar','${r.cid}')">Cancelar</button>`:''}</td></tr>`).join('')
-    || '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:20px">Aún no hay CFDI timbrados desde el ERP.</td></tr>';
+      ${r.estatus==='Vigente' ? (r.tipo==='I' && r.pago && r.pago.pagado>0.01 && r.pago.estado!=='Pagada (PUE)'
+          ? `<span title="Tiene pagos o notas de crédito: cancela primero sus complementos de pago / notas de crédito" style="font-size:10px;color:var(--muted)">🔒 con pagos</span>`
+          : `<button class="btn-reload" style="font-size:10px;padding:3px 7px;color:var(--red)" onclick="cfdiAccion('cancelar','${r.cid}')">Cancelar</button>`) : ''}</td></tr>`).join('')
+    || '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:20px">Aún no hay CFDI timbrados desde el ERP.</td></tr>';
 }
 function cfdiRenderClientes(){
   document.getElementById('cfdi-cli-tb').innerHTML = _cfdi.clientes.map(c=>`<tr><td><b>${esc(c.clave)}</b></td><td style="font-family:'DM Mono',monospace">${esc(c.rfc)}</td><td>${esc(c.razon_social)}</td><td>${esc(c.regimen)}</td><td>${esc(c.cp)}</td><td>${esc(c.uso_cfdi)}</td>
@@ -21776,4 +21780,10 @@ async function cfdiSubirCsd(){
   if(d.error){ out.innerHTML = `<span style="color:var(--red)">${esc(d.error)}</span>`; return; }
   out.innerHTML = `<span style="color:#15803d">✓ CSD cargado en FiscalAPI${(d.subidos||[]).find(x=>x.vigente_hasta)?' · vigente hasta '+esc((d.subidos.find(x=>x.vigente_hasta)||{}).vigente_hasta):''}</span>`;
   toast('CSD cargado en FiscalAPI. Ya puedes timbrar.','ok',7000); if(document.getElementById('cfdi-emisor-box')) cfdiEmisorRevisar();
+}
+
+function cfdiCobroHTML(r){                                                           // rev170
+  if(r.tipo!=='I' || !r.pago) return '';
+  const p = r.pago, col = {'Saldada':'#15803d','Pagada (PUE)':'#15803d','Pago parcial':'#b45309','Pendiente de pago':'#1d4ed8','Cancelada':'#94a3b8'}[p.estado]||'inherit';
+  return `<span style="font-weight:700;color:${col}">${p.estado==='Saldada'?'✓ ':''}${esc(p.estado)}</span>${p.estado!=='Cancelada'&&p.estado!=='Pagada (PUE)'?`<div style="font-size:10.5px;color:var(--muted2)">pagado ${ifFmt(p.pagado)} · saldo ${ifFmt(p.saldo)}</div>`:''}`;
 }
