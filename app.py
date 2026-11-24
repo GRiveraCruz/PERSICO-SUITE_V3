@@ -24939,6 +24939,9 @@ def _cfdi_respuesta_error(resp):
         return ("El emisor registrado en FiscalAPI no tiene régimen fiscal. Ve a Facturación electrónica ▸ Configuración ▸ "
                 "«Sincronizar emisor con FiscalAPI» (toma RFC, razón social, régimen y CP de Datos fiscales) y vuelve a timbrar."
                 + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else ""))
+    if re.search(r"Idempotency-Key ya se us", det + " " + msg, re.I):                               # rev163
+        return ("FiscalAPI detectó un reenvío con datos distintos a una petición anterior. Vuelve a presionar «Timbrar CFDI»; si se repite, "
+                "revisa en Diagnóstico si el primer intento sí se timbró." + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else ""))
     if msg.strip().lower().startswith("sorry, it's not me"): msg = "Datos rechazados"
     return f"FiscalAPI rechazó el comprobante: {msg}" + (f" — {det}" if det and det != msg else "") + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else "")
 
@@ -24946,6 +24949,11 @@ def _cfdi_enviar(api, invoice, idem, operacion):
     """POST /invoices con el JSON numérico (los importes y el tipo de cambio van como números)."""
     from fiscalapi import Invoice as _Inv
     payload = _cfdi_json_numerico(invoice.model_dump(mode="python", by_alias=True, exclude_none=True))
+    # rev163: la Idempotency-Key se deriva del CONTENIDO exacto de la petición. Si el comprobante cambia
+    # (otra fecha, monto, receptor…) la llave cambia; antes se reutilizaba la misma llave durante 10 min y
+    # FiscalAPI rechazaba el reintento ("ya se usó con otra petición").
+    if idem:
+        idem = (str(idem)[:20] + "-" + hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:40])[:64]
     headers = {"Idempotency-Key": idem} if idem else {}
     resp = api.invoices.send_request("POST", "invoices", _Inv, json=payload, headers=headers)
     r_log = {"succeeded": resp.succeeded, "httpStatusCode": resp.http_status_code, "message": resp.message, "details": resp.details,
@@ -25117,6 +25125,19 @@ def api_cfdi_emitir():
     if oid and not o: return jsonify({"error": "Orden de cobro no encontrada"}), 404
     if o and o.get("estatus") != "Por facturar": return jsonify({"error": f"La orden está {o.get('estatus')}"}), 400
     produccion = _cfdi_entorno()["produccion"]
+    if oid:                                                   # rev163: una sola petición de timbrado por orden a la vez
+        with lock:
+            if oid in _cfdi_en_proceso: return jsonify({"error": "Esta orden ya se está timbrando; espera unos segundos."}), 409
+            _cfdi_en_proceso.add(oid)
+    try:
+        return _cfdi_emitir_orden(b, cfg, oid, o, produccion)
+    finally:
+        if oid:
+            with lock: _cfdi_en_proceso.discard(oid)
+
+_cfdi_en_proceso = set()
+def _cfdi_emitir_orden(b, cfg, oid, o, produccion):
+    from fiscalapi import Invoice
     cli = _cfdi_cliente(b.get("cliente"))
     cli_orden = _cfdi_cliente((o or {}).get("cliente")) if o else None
     if o and not cli_orden:                                   # rev161: el cliente de la orden no tiene datos fiscales
@@ -25155,7 +25176,7 @@ def api_cfdi_emitir():
                           type_code="I", expedition_zip_code=zip_, export_code=exportacion, payment_conditions=(str(b.get("condiciones") or "")[:100] or None),
                           issuer=_cfdi_emisor(), recipient=_cfdi_receptor(cli, b.get("uso_cfdi")), items=_cfdi_items(conceptos, cfg), complement=complemento,
                           metadata={"erp": "Persico Suite", "orden_cobro": oid or None, "job": (o or {}).get("job")})
-        inv, uuid_, xml_bytes = _cfdi_crear(invoice, f"oc-{oid}-{int(time.time()) // 600}" if oid else None, f"Ingreso {oid or ''}".strip())
+        inv, uuid_, xml_bytes = _cfdi_crear(invoice, f"oc-{oid}" if oid else "ing", f"Ingreso {oid or ''}".strip())
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e), "emisor_incompleto": "Sincronizar emisor" in str(e)}), 400
     ahora = datetime.datetime.now().isoformat(timespec="seconds")
@@ -25320,7 +25341,7 @@ def api_cfdi_rep(cid):
                                                        sub_total=None, previous_balance=_cfdi_d(saldo, 2), payment_amount=_cfdi_d(monto, 2), remaining_balance=_cfdi_d(saldo - monto, 2),
                                                        tax_object_code="02", equivalence=_cfdi_d(1 if mon_pago == f["moneda"] else (tc_pago if f["moneda"] == "MXN" else 1 / tc_pago), 6) if mon_pago != f["moneda"] else None,
                                                        paid_invoice_taxes=[PaidInvoiceTax(tax_code="002", tax_type_code="Tasa", tax_rate=_cfdi_d(tasa), tax_flag_code="T")])])))
-        inv, uuid_, _x = _cfdi_crear(inv_p, f"rep-{cid}-{parc}-{int(monto * 100)}", f"Complemento de pago {f.get('serie','')}{f.get('folio','')}")
+        inv, uuid_, _x = _cfdi_crear(inv_p, f"rep-{cid}-{parc}", f"Complemento de pago {f.get('serie','')}{f.get('folio','')}")
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 400
     ahora = datetime.datetime.now().isoformat(timespec="seconds")
@@ -25358,7 +25379,7 @@ def api_cfdi_nota_credito(cid):
                         issuer=_cfdi_emisor(), recipient=_cfdi_receptor(cli, "G02"), related_invoices=[RelatedInvoice(uuid=f["uuid"], relationship_type_code="01")],
                         items=_cfdi_items([{"descripcion": motivo, "cantidad": 1, "valor_unitario": importe, "clave_prod": "84111506", "clave_unidad": "ACT", "objeto_imp": "02", "iva_tasa": tasa,
                                             "sku": (f.get("job") or "NC")}], cfg))
-        inv, uuid_, _x = _cfdi_crear(inv_e, f"nc-{cid}-{int(importe * 100)}-{int(time.time()) // 600}", f"Nota de crédito {f.get('serie','')}{f.get('folio','')}")
+        inv, uuid_, _x = _cfdi_crear(inv_e, f"nc-{cid}", f"Nota de crédito {f.get('serie','')}{f.get('folio','')}")
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 400
     ahora = datetime.datetime.now().isoformat(timespec="seconds"); total = float(inv.total or round(importe * (1 + tasa), 2))
