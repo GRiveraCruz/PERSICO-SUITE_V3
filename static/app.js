@@ -21502,7 +21502,11 @@ function cfdiRenderConfig(){
       <div style="font-size:12px;line-height:1.8">${ok(e.api_key)} FISCALAPI_API_KEY · ${ok(e.tenant)} FISCALAPI_TENANT · URL: <b>${esc(e.url||'')}</b> (${e.produccion?'producción':'pruebas'})<br>
         Emisor: ${ok(e.csd||e.issuer_id)} ${e.csd?'CSD por variables (FISCALAPI_CSD_CER_B64 / KEY_B64 / PASSWORD)':(e.issuer_id?'por referencia (FISCALAPI_ISSUER_ID)':'falta FISCALAPI_CSD_* o FISCALAPI_ISSUER_ID')}<br>
         Datos del emisor (Finanzas ▸ Datos fiscales): RFC <b>${esc(em.rfc||'—')}</b> · ${esc(em.razon_social||'')} · régimen <b>${esc(em.regimen||'—')}</b> · CP <b>${esc(em.cp||'—')}</b></div>
-      <button class="btn btn-s" style="margin-top:6px" onclick="cfdiProbar()">Probar conexión</button> <span id="cfdi-prueba" style="font-size:12px"></span></div>
+      <button class="btn btn-s" style="margin-top:6px" onclick="cfdiProbar()">Probar conexión</button> <span id="cfdi-prueba" style="font-size:12px"></span>
+      ${e.issuer_id&&!e.csd?`<div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px"><div style="font-weight:700;font-size:12.5px">Emisor en FiscalAPI (por referencia)</div>
+        <div style="font-size:11.5px;color:var(--muted2);margin:2px 0 6px">FiscalAPI usa los datos de la persona emisora registrada en su plataforma. Deben coincidir con Finanzas ▸ Datos fiscales (RFC, razón social, régimen y CP).</div>
+        <button class="btn btn-s" onclick="cfdiEmisorRevisar()">Revisar emisor</button> <button class="btn btn-p" onclick="cfdiEmisorSync()">Sincronizar emisor con FiscalAPI</button>
+        <div id="cfdi-emisor-box" style="margin-top:8px;font-size:12px"></div></div>`:''}</div>
     <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px"><div style="font-weight:700;margin-bottom:6px">Series, expedición y PDF</div>
       <div class="fr"><div class="fi"><label>Serie ingreso</label>${inp('cfg-si',c.serie_ingreso)}</div><div class="fi"><label>Serie nota de crédito</label>${inp('cfg-se',c.serie_egreso)}</div><div class="fi"><label>Serie pago</label>${inp('cfg-sp',c.serie_pago)}</div>
         <div class="fi"><label>CP lugar de expedición</label>${inp('cfg-zip',c.expedition_zip, em.cp||'')}</div><div class="fi"><label>IVA nacional</label>${inp('cfg-iva',c.iva_tasa)}</div></div>
@@ -21667,6 +21671,7 @@ async function cfeTimbrar(){
   if(d.error){
     if(d.sin_datos_fiscales){ cfeRefrescarClientes(); }
     document.getElementById('cfe-errores').innerHTML = `<div style="padding:8px 12px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;font-size:12px">${(d.errores&&d.errores.length)?'<b>No se pudo timbrar:</b><ul style="margin:4px 0 0 18px;padding:0">'+d.errores.map(e=>`<li>${esc(e)}</li>`).join('')+'</ul>':esc(d.error)}
+      ${d.emisor_incompleto?`<div style="margin-top:6px"><button class="btn btn-p" style="padding:4px 10px;font-size:11px" onclick="cfdiEmisorSync().then(ok=>{ if(ok) toast('Listo: vuelve a presionar Timbrar CFDI','ok',6000); })">Sincronizar emisor con FiscalAPI</button> <span style="font-size:11px;color:var(--muted2)">(solo administrador)</span></div>`:''}
       <div style="margin-top:4px;color:var(--muted2)">El detalle de la solicitud queda en Facturación electrónica ▸ Diagnóstico.</div></div>`;
     toast('No se pudo timbrar: revisa el detalle en la ventana','er',8000); return;
   }
@@ -21713,3 +21718,20 @@ async function cfdiAccionEnviar(tipo, cid){
   toast(tipo==='cancelar' ? `CFDI ${d.cfdi.estatus}` : `Timbrado: ${d.cfdi.uuid}`,'ok',8000); closeMo('mo-cfdi-accion'); await cfdiCargarEmitidos(); cfdiRenderEmitidos();
 }
 async function cfdiEstatus(cid){ const d = await apiCall('POST',`/cfdi/${cid}/estatus`,{}); if(d.error){ toast(d.error,'er',9000); return; } toast(`SAT: ${d.cfdi.sat.estado} · ${d.cfdi.sat.cancelable}`,'ok',7000); await cfdiCargarEmitidos(); cfdiRenderEmitidos(); }
+
+// ── rev162: emisor por referencia ──
+async function cfdiEmisorRevisar(){
+  const box = document.getElementById('cfdi-emisor-box'); if(box) box.textContent = 'Consultando FiscalAPI…';
+  const d = await fetch('/api/cfdi/emisor').then(r=>r.json());
+  if(d.error){ box.innerHTML = `<span style="color:var(--red)">${esc(d.error)}</span>`; return; }
+  if(d.modo!=='referencia'){ box.textContent = 'El emisor no está configurado por referencia.'; return; }
+  const f = d.fiscalapi, l = d.erp, row = (k,n)=>{ const dif = (d.diferencias||[]).includes(k); return `<tr><td>${n}</td><td style="font-family:'DM Mono',monospace">${esc(l[k]||'—')}</td><td style="font-family:'DM Mono',monospace;color:${dif?'var(--red)':'#15803d'};font-weight:${dif?700:400}">${esc(f[k]||'— vacío —')}</td></tr>`; };
+  box.innerHTML = `<table class="tbl" style="width:auto;font-size:12px"><thead><tr><th>Dato</th><th>ERP (Datos fiscales)</th><th>FiscalAPI</th></tr></thead><tbody>${row('rfc','RFC')}${row('razon_social','Razón social')}${row('regimen','Régimen fiscal')}${row('cp','Código postal')}</tbody></table>
+    <div style="margin-top:4px">CSD en FiscalAPI: ${f.csd&&f.csd.length?f.csd.map(c=>`${esc(c.tipo)}${c.vigente_hasta?' (vigente hasta '+esc(c.vigente_hasta)+')':''}`).join(' · '):'<b style="color:var(--red)">no hay certificados cargados</b>'}</div>
+    ${(d.diferencias||[]).length?'<div style="color:var(--red);margin-top:4px">Hay diferencias: usa «Sincronizar emisor con FiscalAPI».</div>':'<div style="color:#15803d;margin-top:4px">✓ Los datos coinciden.</div>'}`;
+}
+async function cfdiEmisorSync(){
+  if(!confirm('Se actualizará la persona emisora en FiscalAPI con RFC, razón social, régimen y CP de Finanzas ▸ Datos fiscales. ¿Continuar?')) return;
+  const d = await apiCall('POST','/cfdi/emisor/sincronizar',{}); if(d.error){ toast(d.error,'er',10000); return false; }
+  toast('Emisor actualizado en FiscalAPI','ok'); if(document.getElementById('cfdi-emisor-box')) cfdiEmisorRevisar(); return true;
+}
