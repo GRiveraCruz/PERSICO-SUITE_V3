@@ -25178,15 +25178,33 @@ def api_cfdi_emitir():
     if oid and not o: return jsonify({"error": "Orden de cobro no encontrada"}), 404
     if o and o.get("estatus") != "Por facturar": return jsonify({"error": f"La orden está {o.get('estatus')}"}), 400
     produccion = _cfdi_entorno()["produccion"]
-    if oid:                                                   # rev163: una sola petición de timbrado por orden a la vez
-        with lock:
+    if oid:
+        # rev169: una orden de cobro solo puede tener UN CFDI de ingreso vigente (en pruebas o en producción)
+        previo = _cfdi_vigente_de_orden(oid)
+        if previo:
+            return jsonify({"error": f"La orden {oid} ya tiene el CFDI {previo.get('serie','')}{previo.get('folio','')} ({previo['uuid']}) vigente"
+                                     + (" de PRUEBA" if previo.get("prueba") else "") + ". Para volver a timbrarla, cancela primero ese CFDI.",
+                            "cfdi_vigente": previo["cid"]}), 409
+        with lock:                                            # rev163/169: un solo timbrado por orden a la vez (también entre procesos)
             if oid in _cfdi_en_proceso: return jsonify({"error": "Esta orden ya se está timbrando; espera unos segundos."}), 409
+            ordenes_ = _load_catalog("ordenes_cobro") or []; o_ = next((x for x in ordenes_ if x.get("oid") == oid), None)
+            ep = (o_ or {}).get("cfdi_en_proceso") or {}
+            if ep and time.time() - float(ep.get("t") or 0) < 180:
+                return jsonify({"error": f"Esta orden ya se está timbrando ({ep.get('por','')}); espera unos segundos."}), 409
+            if o_: o_["cfdi_en_proceso"] = {"por": session.get("user", ""), "t": time.time()}; _save_catalog("ordenes_cobro", ordenes_)
             _cfdi_en_proceso.add(oid)
     try:
         return _cfdi_emitir_orden(b, cfg, oid, o, produccion)
     finally:
         if oid:
-            with lock: _cfdi_en_proceso.discard(oid)
+            with lock:
+                _cfdi_en_proceso.discard(oid)
+                ordenes_ = _load_catalog("ordenes_cobro") or []; o_ = next((x for x in ordenes_ if x.get("oid") == oid), None)
+                if o_ and o_.get("cfdi_en_proceso"): o_.pop("cfdi_en_proceso", None); _save_catalog("ordenes_cobro", ordenes_)
+
+def _cfdi_vigente_de_orden(oid):
+    return next((x for x in reversed(_cfdi_get("emitidos", []) or []) if x.get("tipo") == "I" and x.get("orden_cobro") == oid
+                 and x.get("estatus") in ("Vigente", "En cancelación")), None)
 
 _cfdi_en_proceso = set()
 def _cfdi_emitir_orden(b, cfg, oid, o, produccion):
@@ -25253,6 +25271,7 @@ def _cfdi_emitir_orden(b, cfg, oid, o, produccion):
                 ordenes = _load_catalog("ordenes_cobro") or []
                 o2 = next((x for x in ordenes if x.get("oid") == oid), None)
                 if o2:
+                    o2["cfdi_prueba"] = rec["cid"]                           # rev169
                     o2["historial"] = (o2.get("historial") or []) + [{"fecha": ahora, "usuario": session.get("user", ""), "accion": "CFDI de prueba",
                                       "detalle": f"Timbrado en PRUEBAS {rec['serie']}{rec['folio']} · {uuid_} (sin validez fiscal; la orden sigue Por facturar)"}]
                     _save_catalog("ordenes_cobro", ordenes)
@@ -25561,6 +25580,17 @@ def api_cfdi_cancelar(cid):
             (d / f"{f['uuid']}_acuse_cancelacion.xml").write_bytes(_b64.b64decode(r.data.base64_cancellation_acknowledgement))
     except Exception: pass
     with lock: _cfdi_registrar(f)
+    if f.get("tipo") == "I" and f.get("orden_cobro") and f["estatus"] == "Cancelada":     # rev169: la orden vuelve a "Por facturar"
+        with lock:
+            ordenes = _load_catalog("ordenes_cobro") or []
+            o = next((x for x in ordenes if x.get("oid") == f["orden_cobro"]), None)
+            if o:
+                if o.get("cfdi_prueba") == f["cid"]: o.pop("cfdi_prueba", None)
+                if o.get("cfdi") == f["cid"] and o.get("estatus") == "Facturada":
+                    o["estatus"] = "Por facturar"; o.pop("cfdi", None); o.pop("cpc_id", None)
+                o["historial"] = (o.get("historial") or []) + [{"fecha": ahora, "usuario": session.get("user", ""), "accion": "CFDI cancelado",
+                                  "detalle": f"{f.get('serie','')}{f.get('folio','')} {f['uuid']} cancelado (motivo {motivo}); la orden se puede volver a facturar"}]
+                _save_catalog("ordenes_cobro", ordenes)
     if f.get("tipo") == "I" and f.get("cpc_id") and f["estatus"] == "Cancelada":
         with _cpc_candado():
             y, recs, i = _cpc_buscar(f["cpc_id"])

@@ -20283,6 +20283,7 @@ function ocRender(){
         ${o.estatus==='Facturada' && (!USER_PERMS || USER_PERMS.is_admin || (USER_PERMS.permissions||{})['fin-ordenes-cobro']==='full') ? `<button class="fi-del" style="font-size:10px" onclick="ocDesligar('${esc(o.oid)}')">Desligar</button>`:''}</td>
       <td style="white-space:nowrap"><button class="fi-del" style="color:var(--muted2)" onclick="window.open('/api/ordenes-cobro/${encodeURIComponent(o.oid)}/pdf','_blank')">PDF</button>
         <button class="fi-del" style="color:var(--muted2)" onclick="window.open('/api/ordenes-cobro/${encodeURIComponent(o.oid)}/evidencia','_blank')" title="${esc((o.evidencia||{}).nombre||'')}">Evidencia</button>
+        ${o.cfdi_prueba ? `<span title="Tiene un CFDI de prueba vigente (sin validez fiscal). Cancélalo en Facturación electrónica para volver a timbrar." style="font-size:9.5px;background:#e0f2fe;color:#0369a1;border-radius:6px;padding:1px 5px;margin-right:4px">CFDI PRUEBA</span>` : ''}
         ${puede && o.estatus==='Por facturar' ? `<button class="fi-del" style="color:#1f8a4c" onclick="ocFacturarAbrir('${esc(o.oid)}')">Facturar</button>
         <button class="fi-del" onclick="ocCancelar('${esc(o.oid)}')">Cancelar</button>` : ''}</td></tr>`).join('')
     || '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:24px">Sin órdenes de cobro. Se generan desde Configurar Proyecto ▸ Presupuesto ▸ Términos de pago.</td></tr>';
@@ -21557,6 +21558,10 @@ function cfeProduccion(){ return !!(((_cfdi.estado||{}).entorno||{}).produccion)
 async function cfdiEmitirDesdeOrden(oid){
   closeMo('mo-oc-facturar');
   const o = (typeof _ocLista!=='undefined' ? _ocLista : []).find(x=>x.oid===oid); if(!o) return;
+  // rev169: una orden solo puede tener un CFDI de ingreso vigente
+  await cfdiCargarEmitidos();
+  const previo = _cfdi.emitidos.find(x=>x.tipo==='I' && x.orden_cobro===oid && ['Vigente','En cancelación'].includes(x.estatus));
+  if(previo){ toast(`La orden ${oid} ya tiene el CFDI ${previo.serie||''}${previo.folio||''}${previo.prueba?' de PRUEBA':''} vigente. Cancélalo en Facturación electrónica ▸ CFDI emitidos para volver a timbrar.`,'er',9000); return; }
   if(!_cfdi.estado){ try{ _cfdi.estado = await fetch('/api/cfdi/estado').then(r=>r.json()); }catch(e){} }
   await cfdiCargarClientes();
   const cfg = (_cfdi.estado||{}).config||{}, cd = cfg.concepto_default||{};
