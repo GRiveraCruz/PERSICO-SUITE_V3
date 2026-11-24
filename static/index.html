@@ -6217,7 +6217,8 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
       <div style="display:flex;gap:4px;margin-left:14px">
         <button class="btn-reload" id="cfdi-t-emitidos" onclick="cfdiTab('emitidos')">CFDI emitidos</button>
         <button class="btn-reload" id="cfdi-t-clientes" onclick="cfdiTab('clientes')">Clientes fiscales</button>
-        <button class="btn-reload" id="cfdi-t-config" onclick="cfdiTab('config')">Configuración</button></div>
+        <button class="btn-reload" id="cfdi-t-config" onclick="cfdiTab('config')">Configuración</button>
+        <button class="btn-reload" id="cfdi-t-diag" onclick="cfdiTab('diag')">Diagnóstico</button></div>
       <span id="cfdi-env" style="margin-left:auto;font-size:11px"></span></div>
     <div style="padding:14px 18px">
       <div id="cfdi-pane-emitidos">
@@ -6232,6 +6233,10 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
         <div style="overflow-x:auto"><table class="tbl" style="width:100%"><thead><tr><th>Cliente (ERP)</th><th>RFC</th><th>Razón social</th><th>Régimen</th><th>CP</th><th>Uso CFDI</th><th>País / Tax ID</th><th>Correo</th><th></th></tr></thead><tbody id="cfdi-cli-tb"></tbody></table></div>
       </div>
       <div id="cfdi-pane-config" style="display:none"><div id="cfdi-config-box"></div></div>
+      <div id="cfdi-pane-diag" style="display:none">
+        <div style="font-size:12px;color:var(--muted2);margin-bottom:8px">Últimas solicitudes a FiscalAPI: JSON enviado y respuesta recibida. Las llaves, certificados (CSD) y contraseñas <b>no se registran</b>. Útil para revisar un rechazo o enviarlo a soporte de FiscalAPI (incluye la referencia de la petición).</div>
+        <button class="btn-reload" onclick="cfdiDiagCargar()" style="margin-bottom:8px">Recargar</button>
+        <div id="cfdi-diag-box"></div></div>
     </div>
   </div>
 </div>

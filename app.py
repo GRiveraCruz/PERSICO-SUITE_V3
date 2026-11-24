@@ -24738,7 +24738,7 @@ def api_log_evidencia_del(tipo, lid, archivo):
 import time
 CFDI_DIR = Path(_DATA) / "FINANZAS" / "cfdi"
 _CFDI_FILES = {"config": Path(_DATA) / "FINANZAS" / "cfdi_config.json", "clientes": Path(_DATA) / "FINANZAS" / "cfdi_clientes.json",
-               "emitidos": Path(_DATA) / "FINANZAS" / "cfdi_emitidos.json"}
+               "emitidos": Path(_DATA) / "FINANZAS" / "cfdi_emitidos.json", "log": Path(_DATA) / "FINANZAS" / "cfdi_log.json"}
 CFDI_CONFIG_DEFAULT = {"serie_ingreso": "F", "serie_egreso": "NC", "serie_pago": "CP", "expedition_zip": "", "iva_tasa": 0.16,
                        "pdf_band_color": "#C8102E", "pdf_font_color": "#FFFFFF",
                        "concepto_default": {"clave_prod": "", "clave_unidad": "E48", "unidad": "Unidad de servicio", "objeto_imp": "02"},
@@ -24814,7 +24814,9 @@ def _cfdi_items(conceptos, cfg):
         if obj == "02":
             tasa = float(c.get("iva_tasa") if c.get("iva_tasa") not in (None, "") else cfg["iva_tasa"])
             taxes = [ItemTax(tax_code="002", tax_type_code="Tasa", tax_rate=_cfdi_d(tasa), tax_flag_code="T")]
-        out.append(InvoiceItem(item_code=c.get("clave_prod") or cfg["concepto_default"]["clave_prod"], item_sku=(c.get("no_identificacion") or None),
+        sku = str(c.get("sku") or "").strip()                       # rev161: itemSku obligatorio (no es la clave SAT)
+        if not sku: raise ValueError(f"El concepto «{c.get('descripcion') or ''}» no tiene No. de identificación (SKU)")
+        out.append(InvoiceItem(item_code=c.get("clave_prod") or cfg["concepto_default"]["clave_prod"], item_sku=sku,
                                quantity=_cfdi_d(c.get("cantidad") or 1), unit_of_measurement_code=c.get("clave_unidad") or cfg["concepto_default"]["clave_unidad"],
                                description=str(c.get("descripcion") or "")[:1000], unit_price=_cfdi_d(c.get("valor_unitario")),
                                discount=_cfdi_d(c.get("descuento") or 0) if c.get("descuento") else None, tax_object_code=obj, item_taxes=taxes))
@@ -24848,12 +24850,6 @@ def _cfdi_cce(cce, cli, cfg, conceptos, tipo_cambio_usd):
         mercancias=merc)
     return InvoiceComplement(comercio_exterior=comp)
 
-def _cfdi_respuesta_error(resp):
-    det = resp.details or ""
-    try:
-        if resp.error_data: det = (det + " " + json.dumps(resp.error_data, ensure_ascii=False))[:1500]
-    except Exception: pass
-    return f"FiscalAPI rechazó el comprobante: {resp.message or 'error'}" + (f" — {det}" if det else "") + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else "")
 
 def _cfdi_guardar_archivos(api, inv_id, uuid_):
     from fiscalapi import CreatePdfRequest
@@ -24883,9 +24879,80 @@ def _cfdi_registrar(rec):
     lst = [x for x in lst if x.get("cid") != rec["cid"]] + [rec]
     _cfdi_set("emitidos", lst[-5000:])
 
-def _cfdi_crear(invoice, idem):
+# ── rev161: payload con números (no texto), bitácora sin datos sensibles y errores en español ──
+def _cfdi_json_numerico(v):
+    from decimal import Decimal
+    if isinstance(v, Decimal): return float(v)
+    if isinstance(v, datetime.datetime): return v.strftime("%Y-%m-%dT%H:%M:%S")
+    if isinstance(v, datetime.date): return v.isoformat()
+    if isinstance(v, dict): return {k: _cfdi_json_numerico(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)): return [_cfdi_json_numerico(x) for x in v]
+    return v
+
+_CFDI_SENSIBLES = {"taxCredentials", "password", "base64File", "base64Logo", "apiKey", "tenant"}
+def _cfdi_sanitizar(v):
+    if isinstance(v, dict): return {k: ("[omitido]" if k in _CFDI_SENSIBLES else _cfdi_sanitizar(x)) for k, x in v.items()}
+    if isinstance(v, list): return [_cfdi_sanitizar(x) for x in v]
+    return v
+
+def _cfdi_log(operacion, request_json, respuesta, ok):
+    try:
+        e = _cfdi_entorno()
+        ent = {"fecha": datetime.datetime.now().isoformat(timespec="seconds"), "operacion": operacion, "ambiente": "PRODUCCIÓN" if e["produccion"] else "PRUEBAS",
+               "usuario": session.get("user", "") if request else "", "ok": bool(ok), "request": _cfdi_sanitizar(request_json), "response": _cfdi_sanitizar(respuesta)}
+        with lock:
+            L = (_cfdi_get("log", []) or []) + [ent]
+            _cfdi_set("log", L[-300:])
+    except Exception as ex:
+        print(f"[CFDI] bitácora: {ex}")
+
+_CFDI_CAMPOS = {"itemsku": "No. de identificación (SKU)", "itemcode": "Clave de producto/servicio SAT", "unitofmeasurementcode": "Clave de unidad SAT",
+                "description": "Descripción", "quantity": "Cantidad", "unitprice": "Valor unitario", "taxobjectcode": "Objeto de impuesto", "itemtaxes": "Impuestos",
+                "taxrate": "Tasa de impuesto", "tin": "RFC", "legalname": "Razón social", "zipcode": "Código postal fiscal", "taxregimecode": "Régimen fiscal",
+                "cfdiusecode": "Uso CFDI", "countryid": "País de residencia", "foreigntin": "Tax ID (NumRegIdTrib)", "exchangerate": "Tipo de cambio",
+                "paymentformcode": "Forma de pago", "paymentmethodcode": "Método de pago", "currencycode": "Moneda", "expeditionzipcode": "Lugar de expedición",
+                "exportcode": "Exportación", "series": "Serie", "date": "Fecha", "fraccionarancelariaid": "Fracción arancelaria", "noidentificacion": "No. de identificación (mercancía)",
+                "valordolares": "Valor en dólares", "tipocambiousd": "Tipo de cambio USD", "incotermid": "Incoterm", "clavedepedimentoid": "Clave de pedimento",
+                "codigopostalid": "Código postal", "estadoid": "Estado", "calle": "Calle", "paymentdate": "Fecha de pago", "amount": "Monto", "uuid": "UUID relacionado"}
+_CFDI_SECC = {"items": "Concepto", "recipient": "Receptor", "issuer": "Emisor", "mercancias": "Mercancía", "paidinvoices": "Factura pagada", "relatedinvoices": "CFDI relacionado"}
+def _cfdi_traducir(texto):
+    """'Items[0].ItemSku: …' → 'Concepto 1 · No. de identificación (SKU): …'"""
+    def _ruta(m):
+        partes = []
+        for seg in m.group(1).split("."):
+            mm = re.match(r"([A-Za-z]+)(?:\[(\d+)\])?$", seg)
+            if not mm: partes.append(seg); continue
+            n, idx = mm.group(1).lower(), mm.group(2)
+            if n in _CFDI_SECC: partes.append(_CFDI_SECC[n] + (f" {int(idx) + 1}" if idx is not None else ""))
+            elif n in ("complement", "comercioexterior", "payment"): partes.append({"complement": "Complemento", "comercioexterior": "Comercio Exterior", "payment": "Pago"}[n])
+            else: partes.append(_CFDI_CAMPOS.get(n, seg))
+        return " · ".join(partes) + ":"
+    return re.sub(r"\b((?:[A-Za-z]+(?:\[\d+\])?\.)*[A-Za-z]+(?:\[\d+\])?):", _ruta, str(texto or ""))
+
+def _cfdi_respuesta_error(resp):
+    det = resp.details or ""
+    try:
+        if resp.error_data: det = (det + " " + json.dumps(resp.error_data, ensure_ascii=False))[:1500]
+    except Exception: pass
+    msg = _cfdi_traducir(resp.message or "error"); det = _cfdi_traducir(det)
+    return f"FiscalAPI rechazó el comprobante: {msg}" + (f" — {det}" if det and det != msg else "") + (f" (ref. {resp.trace_identifier})" if resp.trace_identifier else "")
+
+def _cfdi_enviar(api, invoice, idem, operacion):
+    """POST /invoices con el JSON numérico (los importes y el tipo de cambio van como números)."""
+    from fiscalapi import Invoice as _Inv
+    payload = _cfdi_json_numerico(invoice.model_dump(mode="python", by_alias=True, exclude_none=True))
+    headers = {"Idempotency-Key": idem} if idem else {}
+    resp = api.invoices.send_request("POST", "invoices", _Inv, json=payload, headers=headers)
+    r_log = {"succeeded": resp.succeeded, "httpStatusCode": resp.http_status_code, "message": resp.message, "details": resp.details,
+             "traceIdentifier": resp.trace_identifier, "errorData": resp.error_data}
+    if resp.succeeded and resp.data: r_log["data"] = {"id": resp.data.id, "uuid": resp.data.uuid, "series": resp.data.series, "number": resp.data.number,
+                                                      "subtotal": float(resp.data.subtotal or 0), "total": float(resp.data.total or 0)}
+    _cfdi_log(operacion, payload, r_log, resp.succeeded)
+    return resp
+
+def _cfdi_crear(invoice, idem, operacion="Timbrado"):
     api = _cfdi_cliente_api()
-    resp = api.invoices.create(invoice, idempotency_key=idem)
+    resp = _cfdi_enviar(api, invoice, idem, operacion)
     if not resp.succeeded or not resp.data: raise RuntimeError(_cfdi_respuesta_error(resp))
     inv = resp.data
     uuid_ = (inv.uuid or (inv.responses[0].invoice_uuid if inv.responses else "") or "").upper()
@@ -24895,6 +24962,62 @@ def _cfdi_crear(invoice, idem):
     return inv, uuid_, xml_bytes
 
 def _cfdi_puede(nivel="create"): return can(nivel, "fin-cpc") or is_admin()
+
+CFDI_FORMAS_PUE = {"01": "Efectivo", "02": "Cheque nominativo", "03": "Transferencia electrónica", "04": "Tarjeta de crédito", "05": "Monedero electrónico",
+                   "06": "Dinero electrónico", "08": "Vales de despensa", "12": "Dación en pago", "13": "Pago por subrogación", "14": "Pago por consignación",
+                   "15": "Condonación", "17": "Compensación", "23": "Novación", "24": "Confusión", "25": "Remisión de deuda", "26": "Prescripción o caducidad",
+                   "27": "A satisfacción del acreedor", "28": "Tarjeta de débito", "29": "Tarjeta de servicios", "30": "Aplicación de anticipos", "31": "Intermediario pagos"}
+
+def _cfdi_asignar_sku(conceptos, job):
+    """rev161: itemSku = Job de la orden (689-01); con varios conceptos, sufijos consecutivos (689-01-1, 689-01-2…).
+    En mercancías de Comercio Exterior el SKU es su No. de identificación (deben coincidir)."""
+    base = (str(job or "").strip().upper() or "ERP")
+    sin_sku = [c for c in conceptos if not str(c.get("sku") or "").strip()]
+    k = 0
+    for c in conceptos:
+        if c.get("mercancia") and str(c.get("no_identificacion") or "").strip():
+            c["sku"] = str(c["no_identificacion"]).strip(); continue
+        if not str(c.get("sku") or "").strip():
+            k += 1; c["sku"] = base if len(sin_sku) == 1 and len(conceptos) == 1 else f"{base}-{k}"
+        if c.get("mercancia") and not str(c.get("no_identificacion") or "").strip(): c["no_identificacion"] = c["sku"]
+    vistos = set()
+    for c in conceptos:                                   # SKU únicos
+        sku = c["sku"]; n = 2
+        while sku in vistos: sku = f"{c['sku']}-{n}"; n += 1
+        c["sku"] = sku; vistos.add(sku)
+    return conceptos
+
+def _cfdi_validar_ingreso(cli, conceptos, moneda, tc, metodo, forma, exportacion, zip_, cfg):
+    err, df = [], _datos_fiscales()
+    if not re.match(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$", str(df.get("rfc") or "").upper()): err.append("Emisor: falta el RFC en Finanzas ▸ Datos fiscales")
+    if not str(df.get("regimen_fiscal") or "").strip(): err.append("Emisor: falta el régimen fiscal en Datos fiscales")
+    if not re.match(r"^\d{5}$", str(zip_ or "")): err.append("Lugar de expedición: código postal inválido (Datos fiscales o Configuración)")
+    if not cli.get("razon_social"): err.append("Receptor: falta la razón social")
+    if cli.get("extranjero"):
+        if not cli.get("pais"): err.append("Receptor extranjero: falta el país (c_Pais)")
+        if not cli.get("num_reg_id_trib"): err.append("Receptor extranjero: falta el Tax ID")
+    else:
+        if not re.match(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$", str(cli.get("rfc") or "")): err.append("Receptor: RFC inválido")
+        if not re.match(r"^\d{5}$", str(cli.get("cp") or "")): err.append("Receptor: código postal fiscal inválido")
+        if not cli.get("regimen"): err.append("Receptor: falta el régimen fiscal")
+    if moneda not in ("MXN", "USD", "EUR"): err.append("Moneda inválida")
+    if moneda != "MXN" and not (tc and 1 < float(tc) < 100): err.append(f"Tipo de cambio inválido o no disponible para {moneda}")
+    if metodo == "PPD" and forma != "99": err.append("Con método PPD la forma de pago debe ser 99 (Por definir)")
+    if metodo == "PUE" and forma not in CFDI_FORMAS_PUE: err.append("Con método PUE elige una forma de pago válida (no 99)")
+    if exportacion == "02" and not cli.get("extranjero"): err.append("La exportación definitiva (02) requiere un cliente extranjero")
+    for i, c in enumerate(conceptos, 1):
+        pre = f"Concepto {i}"
+        if not str(c.get("descripcion") or "").strip(): err.append(f"{pre}: falta la descripción")
+        try:
+            if float(c.get("cantidad") or 0) <= 0: err.append(f"{pre}: la cantidad debe ser mayor a 0")
+            if float(c.get("valor_unitario") or 0) <= 0: err.append(f"{pre}: el valor unitario debe ser mayor a 0")
+        except (TypeError, ValueError): err.append(f"{pre}: cantidad o valor unitario inválido")
+        if not re.match(r"^\d{8}$", str(c.get("clave_prod") or cfg["concepto_default"]["clave_prod"] or "")): err.append(f"{pre}: la clave de producto/servicio SAT debe tener 8 dígitos")
+        if not str(c.get("clave_unidad") or cfg["concepto_default"]["clave_unidad"] or "").strip(): err.append(f"{pre}: falta la clave de unidad SAT")
+        if str(c.get("objeto_imp") or "02") not in ("01", "02", "03", "04"): err.append(f"{pre}: objeto de impuesto inválido")
+        if not str(c.get("sku") or "").strip(): err.append(f"{pre}: falta el No. de identificación (SKU)")
+        if exportacion == "02" and c.get("mercancia") and not str(c.get("fraccion") or "").strip(): err.append(f"{pre}: falta la fracción arancelaria (mercancía de exportación)")
+    return err
 
 @app.route("/api/cfdi/estado", methods=["GET"])
 def api_cfdi_estado():
@@ -24988,23 +25111,32 @@ def api_cfdi_emitir():
     o = next((x for x in ordenes if x.get("oid") == oid), None) if oid else None
     if oid and not o: return jsonify({"error": "Orden de cobro no encontrada"}), 404
     if o and o.get("estatus") != "Por facturar": return jsonify({"error": f"La orden está {o.get('estatus')}"}), 400
+    produccion = _cfdi_entorno()["produccion"]
     cli = _cfdi_cliente(b.get("cliente"))
-    if not cli: return jsonify({"error": "Da de alta los datos fiscales del cliente (Facturación electrónica ▸ Clientes fiscales)"}), 400
-    conceptos = [c for c in (b.get("conceptos") or []) if float(c.get("valor_unitario") or 0) > 0]
-    if not conceptos: return jsonify({"error": "Agrega al menos un concepto con importe"}), 400
-    if any(not (c.get("clave_prod") or cfg["concepto_default"]["clave_prod"]) for c in conceptos): return jsonify({"error": "Falta la clave de producto o servicio del SAT en algún concepto"}), 400
+    cli_orden = _cfdi_cliente((o or {}).get("cliente")) if o else None
+    if o and not cli_orden:                                   # rev161: el cliente de la orden no tiene datos fiscales
+        if produccion or not cli:
+            return jsonify({"error": f"El cliente «{o.get('cliente')}» no tiene datos fiscales registrados. Regístralos en Facturación electrónica ▸ Clientes fiscales.",
+                            "sin_datos_fiscales": o.get("cliente")}), 400
+    if not cli: return jsonify({"error": "Da de alta los datos fiscales del cliente (Facturación electrónica ▸ Clientes fiscales)", "sin_datos_fiscales": b.get("cliente")}), 400
+    aviso_receptor = None
+    if o and cli["clave"].strip().upper() != str(o.get("cliente") or "").strip().upper():   # rev161: el receptor debe ser el cliente de la orden
+        if produccion: return jsonify({"error": f"El receptor ({cli['clave']}) no corresponde al cliente de la orden ({o.get('cliente')})."}), 400
+        aviso_receptor = f"Receptor {cli['clave']} distinto al cliente de la orden ({o.get('cliente')}) — permitido solo en pruebas"
+    conceptos = [dict(c) for c in (b.get("conceptos") or [])]
+    if not conceptos: return jsonify({"error": "Agrega al menos un concepto"}), 400
+    _cfdi_asignar_sku(conceptos, (o or {}).get("job") or b.get("job"))
     moneda = str(b.get("moneda") or "USD").upper()
     try: tc = float(b.get("tipo_cambio") or 0) if moneda != "MXN" else 1.0
     except (TypeError, ValueError): tc = 0
-    if moneda != "MXN" and tc <= 0:
+    if moneda != "MXN" and tc <= 0:                           # rev161: tipo de cambio aplicable (FIX registrado)
         fx = fx_rate_for_date(datetime.date.today().isoformat(), fx_load_all()); tc = float(fx or 0)
-    if moneda != "MXN" and tc <= 0: return jsonify({"error": "Indica el tipo de cambio"}), 400
     metodo = "PPD" if str(b.get("metodo") or "").upper() == "PPD" else "PUE"
-    forma = "99" if metodo == "PPD" else (str(b.get("forma") or "03"))
+    forma = "99" if metodo == "PPD" else str(b.get("forma") or "")
     exportacion = "02" if str(b.get("exportacion") or "01") == "02" else "01"
-    if exportacion == "02" and not cli.get("extranjero"): return jsonify({"error": "La exportación definitiva (02) requiere un cliente extranjero"}), 400
     zip_ = cfg.get("expedition_zip") or _datos_fiscales().get("cp") or ""
-    if not re.match(r"^\d{5}$", str(zip_)): return jsonify({"error": "Configura el código postal del lugar de expedición (Datos fiscales o Configuración)"}), 400
+    errores = _cfdi_validar_ingreso(cli, conceptos, moneda, tc, metodo, forma, exportacion, zip_, cfg)
+    if errores: return jsonify({"error": "Revisa antes de timbrar: " + " · ".join(errores), "errores": errores}), 400
     try:
         complemento = None
         if exportacion == "02" and any(c.get("mercancia") for c in conceptos):
@@ -25015,14 +25147,15 @@ def api_cfdi_emitir():
                           type_code="I", expedition_zip_code=zip_, export_code=exportacion, payment_conditions=(str(b.get("condiciones") or "")[:100] or None),
                           issuer=_cfdi_emisor(), recipient=_cfdi_receptor(cli, b.get("uso_cfdi")), items=_cfdi_items(conceptos, cfg), complement=complemento,
                           metadata={"erp": "Persico Suite", "orden_cobro": oid or None, "job": (o or {}).get("job")})
-        inv, uuid_, xml_bytes = _cfdi_crear(invoice, f"oc-{oid}-{int(time.time()) // 600}" if oid else None)
+        inv, uuid_, xml_bytes = _cfdi_crear(invoice, f"oc-{oid}-{int(time.time()) // 600}" if oid else None, f"Ingreso {oid or ''}".strip())
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 400
     ahora = datetime.datetime.now().isoformat(timespec="seconds")
     rec = {"cid": f"CFDI-{uuid_[:8]}", "tipo": "I", "uuid": uuid_, "fiscalapi_id": inv.id, "serie": inv.series or cfg["serie_ingreso"], "folio": inv.number or "",
            "fecha": ahora, "cliente": cli["clave"], "rfc_receptor": cli["rfc"], "moneda": moneda, "tipo_cambio": tc, "metodo": metodo, "forma": forma,
            "exportacion": exportacion, "comercio_exterior": bool(complemento), "subtotal": float(inv.subtotal or 0), "total": float(inv.total or 0),
-           "orden_cobro": oid or None, "job": (o or {}).get("job"), "estatus": "Vigente", "por": session.get("user", ""), "relacionados": []}
+           "orden_cobro": oid or None, "job": (o or {}).get("job"), "estatus": "Vigente", "por": session.get("user", ""), "relacionados": [],
+           "skus": [c["sku"] for c in conceptos], "aviso_receptor": aviso_receptor}
     # alta automática en Cuentas por Cobrar (con el XML timbrado)
     cpc_id = None
     try:
@@ -25061,6 +25194,23 @@ def api_cfdi_emitir():
 def _cfdi_buscar(cid):
     return next((x for x in (_cfdi_get("emitidos", []) or []) if x.get("cid") == cid), None)
 
+@app.route("/api/cfdi/tipo-cambio", methods=["GET"])
+def api_cfdi_tc():
+    """rev161: tipo de cambio aplicable para timbrar (FIX registrado de la fecha, o el último día hábil anterior)."""
+    if not _cfdi_puede("view") and not can("view", "fin-ordenes-cobro"): return jsonify({"error": "Sin permiso"}), 403
+    f_ = request.args.get("fecha") or datetime.date.today().isoformat()
+    fx_all = fx_load_all(); rate = fx_rate_for_date(f_, fx_all)
+    usada = f_
+    if rate is not None:
+        d0 = datetime.date.fromisoformat(f_[:10]); usada = next((k for k in ((d0 - datetime.timedelta(days=o)).isoformat() for o in range(8)) if k in fx_all), f_)
+    return jsonify({"fecha": usada, "tipo_cambio": float(rate) if rate else None, "disponible": bool(rate)})
+
+@app.route("/api/cfdi/diagnostico", methods=["GET"])
+def api_cfdi_diagnostico():
+    """rev161: bitácora de solicitudes a FiscalAPI (JSON enviado y respuesta) sin credenciales ni certificados."""
+    if not (is_admin() or can("full", "fin-cpc")): return jsonify({"error": "Sin permiso"}), 403
+    return jsonify({"registros": list(reversed(_cfdi_get("log", []) or []))[:200]})
+
 @app.route("/api/cfdi/<cid>/rep", methods=["POST"])
 def api_cfdi_rep(cid):
     """Complemento de pago (P) de una factura PPD; registra el pago en Cuentas por Cobrar."""
@@ -25090,7 +25240,7 @@ def api_cfdi_rep(cid):
         inv_p = Invoice(version_code="4.0", series=cfg["serie_pago"] or None, date=datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), currency_code="XXX", type_code="P",
                         expedition_zip_code=cfg.get("expedition_zip") or _datos_fiscales().get("cp"), exchange_rate=1, export_code="01",
                         issuer=_cfdi_emisor(), recipient=_cfdi_receptor(cli, "CP01"),
-                        items=[InvoiceItem(item_code="84111506", quantity=1, unit_of_measurement_code="ACT", description="Pago", unit_price=0, tax_object_code="01")],
+                        items=[InvoiceItem(item_code="84111506", item_sku=(f.get("job") or "PAGO"), quantity=1, unit_of_measurement_code="ACT", description="Pago", unit_price=0, tax_object_code="01")],
                         complement=InvoiceComplement(payment=PaymentComplement(
                             payment_date=fecha, payment_form_code=str(b.get("forma") or "03"), currency_code=mon_pago, exchange_rate=_cfdi_d(tc_pago, 6), amount=_cfdi_d(monto, 2),
                             operation_number=(str(b.get("operacion") or "")[:100] or None),
@@ -25098,7 +25248,7 @@ def api_cfdi_rep(cid):
                                                        sub_total=None, previous_balance=_cfdi_d(saldo, 2), payment_amount=_cfdi_d(monto, 2), remaining_balance=_cfdi_d(saldo - monto, 2),
                                                        tax_object_code="02", equivalence=_cfdi_d(1 if mon_pago == f["moneda"] else (tc_pago if f["moneda"] == "MXN" else 1 / tc_pago), 6) if mon_pago != f["moneda"] else None,
                                                        paid_invoice_taxes=[PaidInvoiceTax(tax_code="002", tax_type_code="Tasa", tax_rate=_cfdi_d(tasa), tax_flag_code="T")])])))
-        inv, uuid_, _x = _cfdi_crear(inv_p, f"rep-{cid}-{parc}-{int(monto * 100)}")
+        inv, uuid_, _x = _cfdi_crear(inv_p, f"rep-{cid}-{parc}-{int(monto * 100)}", f"Complemento de pago {f.get('serie','')}{f.get('folio','')}")
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 400
     ahora = datetime.datetime.now().isoformat(timespec="seconds")
@@ -25134,8 +25284,9 @@ def api_cfdi_nota_credito(cid):
                         exchange_rate=_cfdi_d(f.get("tipo_cambio") or 1, 6) if f["moneda"] != "MXN" else 1, type_code="E",
                         expedition_zip_code=cfg.get("expedition_zip") or _datos_fiscales().get("cp"), export_code=f.get("exportacion") or "01",
                         issuer=_cfdi_emisor(), recipient=_cfdi_receptor(cli, "G02"), related_invoices=[RelatedInvoice(uuid=f["uuid"], relationship_type_code="01")],
-                        items=_cfdi_items([{"descripcion": motivo, "cantidad": 1, "valor_unitario": importe, "clave_prod": "84111506", "clave_unidad": "ACT", "objeto_imp": "02", "iva_tasa": tasa}], cfg))
-        inv, uuid_, _x = _cfdi_crear(inv_e, f"nc-{cid}-{int(importe * 100)}-{int(time.time()) // 600}")
+                        items=_cfdi_items([{"descripcion": motivo, "cantidad": 1, "valor_unitario": importe, "clave_prod": "84111506", "clave_unidad": "ACT", "objeto_imp": "02", "iva_tasa": tasa,
+                                            "sku": (f.get("job") or "NC")}], cfg))
+        inv, uuid_, _x = _cfdi_crear(inv_e, f"nc-{cid}-{int(importe * 100)}-{int(time.time()) // 600}", f"Nota de crédito {f.get('serie','')}{f.get('folio','')}")
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 400
     ahora = datetime.datetime.now().isoformat(timespec="seconds"); total = float(inv.total or round(importe * (1 + tasa), 2))
@@ -25166,7 +25317,11 @@ def api_cfdi_cancelar(cid):
     sust = str(b.get("uuid_sustituto") or "").strip().upper()
     if motivo == "01" and not re.match(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$", sust): return jsonify({"error": "El motivo 01 requiere el UUID del CFDI que la sustituye"}), 400
     try:
-        r = _cfdi_cliente_api().invoices.cancel(CancelInvoiceRequest(id=f["fiscalapi_id"], cancellation_reason_code=motivo, replacement_uuid=sust or None))
+        creq = CancelInvoiceRequest(id=f["fiscalapi_id"], cancellation_reason_code=motivo, replacement_uuid=sust or None)
+        r = _cfdi_cliente_api().invoices.cancel(creq)
+        _cfdi_log(f"Cancelación {f.get('serie','')}{f.get('folio','')}", creq.model_dump(mode="json", by_alias=True, exclude_none=True),
+                  {"succeeded": r.succeeded, "httpStatusCode": r.http_status_code, "message": r.message, "details": r.details, "traceIdentifier": r.trace_identifier,
+                   "data": (r.data.invoice_uuids if r.data else None)}, r.succeeded)
         if not r.succeeded: raise RuntimeError(_cfdi_respuesta_error(r))
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
