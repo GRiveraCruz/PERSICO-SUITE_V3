@@ -6138,9 +6138,14 @@ def po_save(year, records):
                 # un "borra todo + reinserta todo" sobre el mismo año de PO y se pisen.
                 _orm.acquire_year_lock(s, "purchase_orders", year)
                 s.query(_orm.PurchaseOrder).filter(_orm.PurchaseOrder.year == year).delete()
+                vistos = {}
                 for r in records:
                     clave = str(r.get("clave") or "")
-                    s.add(_orm.PurchaseOrder(data=r, content_hash=_orm.canonical_hash(r), year=year,
+                    # rev172: content_hash es ÚNICO; dos renglones idénticos (misma OC, Job, parte, cantidad y precio)
+                    # hacían fallar TODO el guardado. Los repetidos llevan un discriminador solo en la huella.
+                    h = _orm.canonical_hash(r); n = vistos.get(h, 0); vistos[h] = n + 1
+                    if n: h = _orm.canonical_hash({"_rep": n, "_r": r})
+                    s.add(_orm.PurchaseOrder(data=r, content_hash=h, year=year,
                                               po_number=clave, job=r.get("entregar_a")))
                 s.commit()
             finally:
@@ -16419,37 +16424,13 @@ def api_create_gpo():
             records = gpo_load()
             records.append(rec)
             gpo_save(records)
-            # Registrar en IPOs por item
-            year = datetime.datetime.now().year
-            ipo_records = po_load(year)
-            existing_claves = [int(r.get("clave",0)) for r in ipo_records
-                               if str(r.get("clave","")).isdigit()]
-            next_clave = max(existing_claves)+1 if existing_claves else 1
-            for i, it in enumerate(po_items):
-                neto, desc_fin, pct_ef = _ipo_neto_item(it, rec)         # rev135: costo neto (con descuentos)
-                ipo_records.append({
-                    "clave":                po_number,
-                    "fecha_doc":            now[:10],
-                    "entregar_a":           it["job"],
-                    "nombre":               rec["supplier_name"],
-                    "subtotal":             neto,
-                    "moneda":               moneda,          # ← CRITICAL: store currency
-                    "tipo_cambio":          fx_rate if moneda=="MXN" else 1.0,
-                    "subtotal_mxn":         neto if moneda=="MXN" else round(neto * (fx_hoy or 1.0), 2),
-                    "estatus":              "Emitida",
-                    "descuento_financiero": desc_fin,
-                    "pct_descuento":        pct_ef,
-                    "fecha_recepcion":      "",
-                    "gpo_number":           po_number,
-                    "gpo_pdf":              i==0,
-                    "cpo":                  cpo,
-                    "po_sae":               po_sae,                       # rev107
-                    "part_number":          it["part_number"],
-                    "description":          it["description"],
-                    "quantity":             it["quantity"],
-                    "unit_price":           it["unit_price"],
-                })
-            po_save(year, ipo_records)
+            try:                                                  # rev172: OC y Purchase Orders se guardan juntos
+                _gpo_registrar_ipo(rec, po_items, now, fx_hoy)
+            except Exception as e_ipo:
+                records = [x for x in gpo_load() if x.get("po_number") != po_number]
+                gpo_save(records)
+                print(f"[GPO] {po_number}: no se pudo registrar en Purchase Orders ({e_ipo}); la OC se deshizo")
+                return jsonify({"error": f"No se pudo emitir la orden: falló el registro en Purchase Orders ({e_ipo}). No se guardó nada; inténtalo de nuevo."}), 500
             # Actualizar último precio en catálogo
             for it in po_items:
                 ct = it.get("cat_type","")
@@ -25755,6 +25736,74 @@ def api_leer_csf():
     d = _csf_parse(texto)
     faltan = [n for k, n in (("rfc", "RFC"), ("razon_social_sat", "razón social"), ("cp", "código postal"), ("regimen_fiscal", "régimen fiscal")) if not d.get(k)]
     return jsonify({"ok": True, "datos": d, "faltan": faltan})
+
+# ══ rev172: registro de una OC en Purchase Orders (un renglón por partida, con número de línea) ══
+def _gpo_registrar_ipo(rec, po_items, now=None, fx_hoy=None):
+    now = now or datetime.datetime.now().isoformat()
+    po_number = rec["po_number"]; moneda = rec.get("moneda") or "USD"; fx_rate = rec.get("fx_rate")
+    if fx_hoy is None:
+        try: fx_hoy = float(fx_rate_for_date(now[:10], fx_load_all()) or 0) or 1.0
+        except Exception: fx_hoy = 1.0
+    year = int(str(rec.get("created_at") or now)[:4]) if str(rec.get("created_at") or now)[:4].isdigit() else datetime.datetime.now().year
+    ipo_records = po_load(year)
+    for i, it in enumerate(po_items):
+        neto, desc_fin, pct_ef = _ipo_neto_item(it, rec)
+        ipo_records.append({
+            "clave": po_number, "linea": i + 1, "fecha_doc": str(rec.get("created_at") or now)[:10], "entregar_a": it.get("job"),
+            "nombre": rec.get("supplier_name") or "", "subtotal": neto, "moneda": moneda,
+            "tipo_cambio": fx_rate if moneda == "MXN" else 1.0,
+            "subtotal_mxn": neto if moneda == "MXN" else round(neto * (fx_hoy or 1.0), 2),
+            "estatus": "Emitida", "descuento_financiero": desc_fin, "pct_descuento": pct_ef, "fecha_recepcion": "",
+            "gpo_number": po_number, "gpo_pdf": i == 0, "cpo": rec.get("cpo"), "po_sae": rec.get("po_sae"),
+            "part_number": it.get("part_number"), "description": it.get("description"),
+            "quantity": it.get("quantity"), "unit_price": it.get("unit_price")})
+    po_save(year, ipo_records)
+    return year
+
+def _gpo_sin_ipo():
+    """OC generadas en la Suite sin ningún renglón en Purchase Orders (afectadas por el error de renglones idénticos)."""
+    claves = set()
+    for y in (po_available_years() or []):
+        for r in po_load(y): claves.add(str(r.get("clave") or r.get("gpo_number") or "").upper())
+    return [g for g in gpo_load() if str(g.get("po_number") or "").upper() not in claves and g.get("status") != "Cancelada"]
+
+def _gpo_reparar_ipo():
+    reparadas = []
+    with lock:
+        for g in _gpo_sin_ipo():
+            try:
+                y = _gpo_registrar_ipo(g, g.get("items") or [], g.get("created_at"))
+                # el estatus de Purchase Orders sigue al de la OC (Parcial / Entregada)
+                if g.get("status") in ("Parcial", "Entregada"):
+                    rs = po_load(y)
+                    for r in rs:
+                        if str(r.get("clave")).upper() == g["po_number"].upper(): r["estatus"] = g["status"]
+                    po_save(y, rs)
+                reparadas.append({"po": g["po_number"], "renglones": len(g.get("items") or []), "proveedor": g.get("supplier_name"), "estatus": g.get("status")})
+            except Exception as e:
+                reparadas.append({"po": g.get("po_number"), "error": str(e)})
+    if reparadas: print(f"[GPO] Reparadas en Purchase Orders: {[x.get('po') for x in reparadas]}")
+    return reparadas
+
+@app.route("/api/gpo/sin-purchase-orders", methods=["GET"])
+def api_gpo_sin_ipo():
+    if not is_admin(): return jsonify({"error": "Solo el administrador"}), 403
+    return jsonify({"ordenes": [{"po": g["po_number"], "proveedor": g.get("supplier_name"), "fecha": str(g.get("created_at") or "")[:10],
+                                 "renglones": len(g.get("items") or []), "estatus": g.get("status")} for g in _gpo_sin_ipo()]})
+
+@app.route("/api/gpo/reparar-purchase-orders", methods=["POST"])
+def api_gpo_reparar_ipo():
+    if not is_admin(): return jsonify({"error": "Solo el administrador"}), 403
+    return jsonify({"reparadas": _gpo_reparar_ipo()})
+
+def _gpo_reparar_al_iniciar():
+    try:
+        import time as _t; _t.sleep(20)
+        with app.app_context(): _gpo_reparar_ipo()
+    except Exception as e: print(f"[GPO] reparación al iniciar: {e}")
+try:
+    _thr_cache.Thread(target=_gpo_reparar_al_iniciar, daemon=True).start()
+except Exception: pass
 
 if __name__ == "__main__":
     print("=" * 60)
