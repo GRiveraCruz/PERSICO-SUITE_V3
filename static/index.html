@@ -1178,11 +1178,12 @@ tbody tr.q-aw{background:rgba(111,207,151,.09)!important}
               <div style="font-size:10px;color:var(--muted);margin-top:2px">Columnas en <span style="color:var(--amber)">ámbar</span> = entrada · Columnas en gris = cálculo automático · Elige la actividad de la lista o escribe una nueva</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center">
-              <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden" title="Vista tipo Microsoft Project: oculta la tabla de configuración y deja el Gantt con columnas de duración, inicio y fin. Clic en una actividad del Gantt para editarla.">
-                <button id="pc-vista-tabla" onclick="pcVistaTiming('tabla')" class="pc-zoom-btn" style="padding:5px 10px;font-size:10px;border:none;cursor:pointer">▦ Tabla + Gantt</button>
-                <button id="pc-vista-project" onclick="pcVistaTiming('project')" class="pc-zoom-btn" style="padding:5px 10px;font-size:10px;border:none;cursor:pointer">▤ Vista Project</button></div>
+              <div style="display:flex;flex-shrink:0;border:1px solid var(--border2);border-radius:6px;overflow:hidden" title="Vista tipo Microsoft Project: oculta la tabla de configuración y deja el Gantt con columnas de duración, inicio y fin. Clic en una actividad del Gantt para editarla.">
+                <button id="pc-vista-tabla" onclick="pcVistaTiming('tabla')" class="pc-zoom-btn" style="white-space:nowrap;padding:5px 10px;font-size:10px;border:none;cursor:pointer">▦ Tabla + Gantt</button>
+                <button id="pc-vista-lado" onclick="pcVistaTiming('lado')" class="pc-zoom-btn" style="white-space:nowrap;padding:5px 10px;font-size:10px;border:none;cursor:pointer" title="Tabla de configuración a la izquierda y Gantt a la derecha, renglón por renglón">▥ Tabla | Gantt</button>
+                <button id="pc-vista-project" onclick="pcVistaTiming('project')" class="pc-zoom-btn" style="white-space:nowrap;padding:5px 10px;font-size:10px;border:none;cursor:pointer">▤ Vista Project</button></div>
               <button onclick="pcAddGroupRow()" class="btn-sec" style="font-size:11px;padding:5px 12px">+ Grupo</button>
-              <button onclick="pcAddTimingRow();pcUpdateTimingCalcs()" class="btn-sec" style="font-size:11px;padding:5px 12px">+ Actividad</button>
+              <button onclick="pcNuevaActividad()" class="btn-sec" style="font-size:11px;padding:5px 12px" title="Agrega una actividad y abre su configuración">+ Actividad</button>
             </div>
           </div>
           <div id="pc-timing-cfg-bar" onclick="pcVistaTiming(document.getElementById('pc-timing-scroll').style.display==='none'?'tabla':'project')" style="cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:rgba(0,0,0,.025);font-size:11px;font-weight:700;color:var(--muted2);user-select:none">

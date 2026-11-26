@@ -13404,7 +13404,7 @@ function pcAddTimingRow(data={}) {
   const inpS = 'background:var(--inp);border:1px solid rgba(255,193,7,.3);border-radius:4px;color:var(--amber);padding:5px 7px;font-size:11px';
   tr.innerHTML = `
     <td class="pc-stk pc-stk1" style="padding-left:${data.grupo?'18px':'6px'};white-space:nowrap"><span class="pc-drag" draggable="true" title="Arrastrar para mover (también entre grupos)">⠿</span><span class="pc-mov" style="display:inline-flex;flex-direction:column;vertical-align:middle;margin-right:3px"><button type="button" class="pc-mov-btn" onclick="pcMoverTiming(this,-1)" title="Subir" aria-label="Subir">▲</button><button type="button" class="pc-mov-btn" onclick="pcMoverTiming(this,1)" title="Bajar" aria-label="Bajar">▼</button></span><input data-field="actividad" list="pc-act-list" value="${esc(data.actividad||data.name||'')}"
-      oninput="pcUpdateTimingCalcs();this.title=this.value" title="${esc(data.actividad||data.name||'')}" style="${inpS};width:calc(100% - 20px);vertical-align:middle"></td>
+      oninput="pcUpdateTimingCalcs();this.title=this.value" title="${esc(data.actividad||data.name||'')}" style="${inpS};width:calc(100% - 38px);vertical-align:middle"><button type="button" onclick="pcAbrirPanelAct(this.closest('tr'))" title="Configurar actividad" style="border:none;background:none;cursor:pointer;font-size:12px;padding:0 0 0 3px;vertical-align:middle">✏</button></td>
     <td class="pc-stk pc-stk2"><input data-field="grupo" list="pc-timing-groups-list" value="${esc(data.grupo||'')}" placeholder="— sin grupo —"
       oninput="pcOnGroupFieldChange(this);pcUpdateTimingCalcs()" style="${inpS};width:100%;color:var(--muted2)"></td>
     <td><select data-field="modo" onchange="pcTimingModoUI(this.closest('tr'));pcUpdateTimingCalcs()" style="${inpS};width:100%;color:var(--text)" title="Cómo se calculan las fechas de la actividad">
@@ -13915,7 +13915,7 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
     const fReal = _pcFecha(fRealStr);
     activityEntries.push({act, start, end, fin, hito: rr.hito, dias: rr.diasCalc!=null ? rr.diasCalc : dias, cumpl, mile, fReal, grupo: grupo||null,
       prev: (rr.modo==='inicio_previa'||rr.modo==='entre') ? (prev||'') : '', next: (rr.modo==='fin_posterior'||rr.modo==='entre') ? (_pcF(tr,'actividad_posterior')||'') : '',
-      fIni: rr.modo==='manual' ? 'manual' : '', modo: rr.modo, desfase: rr.desf, conflicto: rr.conflicto});
+      fIni: rr.modo==='manual' ? 'manual' : '', modo: rr.modo, desfase: rr.desf, conflicto: rr.conflicto, _tr: tr});
   });
 
   if(!activityEntries.length){ wrap.style.display='none'; pcLastGanttSVG=null; return; }
@@ -13944,10 +13944,33 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
   });
   activityEntries.filter(e=>!e.grupo).forEach(e => drawEntries.push(Object.assign({kind:'activity', indent:false}, e)));
 
-  if(!drawEntries.length){ wrap.style.display='none'; pcLastGanttSVG=null; return; }
+  // rev177: vista «Tabla | Gantt» — un renglón del Gantt por cada renglón visible de la tabla, a la misma altura
+  const _alineado = _pcVistaTiming === 'lado';
+  let _tops = [], _hs = [], _tbodyH = 0, _theadH = 26;
+  if(_alineado){
+    const tbx = document.getElementById('pc-timing-body'), thx = tbx && tbx.parentElement.querySelector('thead');
+    _theadH = thx ? thx.offsetHeight : 26;
+    const visibles = [...tbx.rows].filter(tr=>tr.offsetParent !== null);
+    const base = visibles.length ? visibles[0].offsetTop : 0;
+    const porTr = new Map(activityEntries.map(e=>[e._tr, e]));
+    drawEntries.length = 0;
+    visibles.forEach(tr=>{
+      _tops.push(tr.offsetTop - base); _hs.push(tr.offsetHeight);
+      if(tr.dataset.tipo==='grupo'){
+        const gname = _pcF(tr,'actividad'), range = groupRanges[normKey(gname)];
+        drawEntries.push(range ? {kind:'group', act:gname, count:(byGroup[normKey(gname)]||[]).length, collapsed:_pcCollapsedGroups.has(gname),
+          start: range.min, end: (()=>{ const x = new Date(range.max); x.setDate(x.getDate()+1); return x; })()} : {kind:'empty'});
+      } else {
+        const e = porTr.get(tr);
+        drawEntries.push(e ? Object.assign({kind:'activity', indent:false}, e) : {kind:'empty'});
+      }
+    });
+    _tbodyH = visibles.length ? (visibles[visibles.length-1].offsetTop - base + visibles[visibles.length-1].offsetHeight) : 0;
+  }
+  if(!drawEntries.filter(e=>e.kind!=='empty').length){ wrap.style.display='none'; pcLastGanttSVG=null; return; }
 
   const today   = new Date(); today.setHours(0,0,0,0);
-  const allDates = drawEntries.flatMap(e => e.fReal ? [e.start, e.end, e.fReal] : [e.start, e.end]);
+  const allDates = drawEntries.filter(e=>e.kind!=='empty').flatMap(e => e.fReal ? [e.start, e.end, e.fReal] : [e.start, e.end]);
   const minD    = new Date(Math.min(...allDates));
   const maxD    = new Date(Math.max(...allDates));
   const totalMs = Math.max(1, maxD - minD);
@@ -13965,7 +13988,9 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
   }, 0);
   const _vistaProject = _pcVistaTiming === 'project';                   // rev176: columnas Duración / Inicio / Fin a la izquierda
   const GRID = _vistaProject ? 214 : 0;
-  const ROW = 22, PAD = 4, LABEL = Math.round(Math.min(520, Math.max(190, _pcLblW))) + GRID, DATES = _vistaProject ? 0 : 78, HEAD = 26, INDENT = 14;
+  const ROW = 22, PAD = 4, LABEL = _alineado ? 6 : Math.round(Math.min(520, Math.max(190, _pcLblW))) + GRID, DATES = (_vistaProject || _alineado) ? 0 : 78,
+        HEAD = _alineado ? Math.max(26, _theadH) : 26, INDENT = 14;
+  const YOF = i => _alineado ? HEAD + _tops[i] + Math.max(0, (_hs[i] - ROW) / 2) : HEAD + PAD + i*(ROW+2);
 
   const pct = d => ((d - minD) / totalMs * W).toFixed(1);
   const todayX = parseFloat(pct(today));
@@ -13986,7 +14011,7 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
   const labelEvery = _pcGanttZoom === 'dias' ? Math.max(1, Math.ceil(28/pxPerStepDay)) : 1;
 
   let headerSvg = '';
-  const bodyBottom = HEAD + PAD + drawEntries.length*(ROW+2);
+  const bodyBottom = _alineado ? HEAD + _tbodyH : HEAD + PAD + drawEntries.length*(ROW+2);
 
   // ── Sombreado de fines de semana (sáb/dom) — se pinta primero, debajo de todo. ──
   let weekendSvg = '';
@@ -14015,7 +14040,8 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
   let svgRows = drawEntries.map((e,i) => {
     const x = parseFloat(pct(e.start));
     const w = Math.max(4, parseFloat(pct(e.end)) - x);
-    const y = HEAD + PAD + i*(ROW+2);
+    if(e.kind === 'empty') return '';
+    const y = YOF(i);
 
     if(e.kind === 'group'){
       // Barra agregada como línea sólida delgada — misma convención que la
@@ -14028,7 +14054,7 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
       <rect x="${LABEL+x}" y="${y+ROW/2-2}" width="${w}" height="4" rx="2" fill="#2b2b2b"/>
       <rect x="${LABEL+x}" y="${y+4}" width="2" height="${ROW-8}" fill="#2b2b2b"/>
       <rect x="${LABEL+x+w-2}" y="${y+4}" width="2" height="${ROW-8}" fill="#2b2b2b"/>
-      <text x="${LABEL-GRID-8}" y="${y+ROW-8}" font-size="10.5" fill="#222" text-anchor="end" font-family="Arial" font-weight="800">${toggleIcon} ${esc(label)} (${e.count})<title>${esc(e.act)}</title></text>`;
+      <text x="${LABEL-GRID-8}" y="${y+ROW-8}" ${_alineado?'display="none"':''} font-size="10.5" fill="#222" text-anchor="end" font-family="Arial" font-weight="800">${toggleIcon} ${esc(label)} (${e.count})<title>${esc(e.act)}</title></text>`;
     }
 
     const indentPx = e.indent ? INDENT : 0;
@@ -14056,11 +14082,11 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
     // rev99: duración 0 = hito → rombo en su fecha
     const barra = e.hito
       ? `<rect x="${LABEL+x-6}" y="${y+ROW/2-6}" width="12" height="12" fill="${e.cumpl ? '#1f8a4c' : '#6d28d9'}" stroke="#fff" stroke-width="1.5" transform="rotate(45 ${LABEL+x} ${y+ROW/2})"><title>Hito: ${esc(e.act)} · ${_pcFmtD(e.start)}</title></rect>`
-      : `<rect x="${LABEL+indentPx+x}" y="${y+3}" width="${Math.max(2,w-indentPx)}" height="${ROW-6}" rx="3" fill="${color}" opacity=".85"/>
+      : `<rect x="${LABEL+indentPx+x}" y="${y+3}" width="${Math.max(2,w-indentPx)}" height="${ROW-6}" rx="3" fill="${color}" opacity=".85"><title>${esc(e.act)} · ${_pcFmtD(e.start)} → ${_pcFmtD(e.fin||e.end)}</title></rect>
     <text x="${LABEL+indentPx+x+4}" y="${y+ROW-8}" font-size="9" fill="white" font-family="Arial">${e.dias>0?e.dias+'d':''}</text>`;
     return `
     ${barra}
-    <text x="${LABEL-GRID-8}" y="${y+ROW-8}" font-size="10" fill="#555" text-anchor="end" font-family="Arial">${esc(label)}${mileIcon}<title>${esc(e.act)}</title></text>
+    <text x="${LABEL-GRID-8}" y="${y+ROW-8}" ${_alineado?'display="none"':''} font-size="10" fill="#555" text-anchor="end" font-family="Arial">${esc(label)}${mileIcon}<title>${esc(e.act)}</title></text>
     <text x="${LABEL+W+8}" y="${y+ROW-8}" font-size="8.5" fill="#444" font-family="'DM Mono',monospace">${rangoTxt}</text>
     ${extra}`;
   }).join('');
@@ -14085,7 +14111,7 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
     drawEntries.forEach((e,i)=>{
       if(e.kind!=='activity' || !e.prev) return;
       const p = vis[nk(e.prev)]; if(!p) return;
-      const yP = HEAD + PAD + p.i*(ROW+2) + ROW/2, yS = HEAD + PAD + i*(ROW+2) + ROW/2;
+      const yP = YOF(p.i) + ROW/2, yS = YOF(i) + ROW/2;
       const xP = LABEL + parseFloat(pct(p.e.hito ? p.e.start : p.e.end)), xS = LABEL + parseFloat(pct(e.start)) + (e.indent?INDENT:0);
       const crit = critica.has(nk(e.act)) && critica.has(nk(p.e.act)) && !e.fIni;
       const xm = Math.max(xP + 6, Math.min(xS - 6, xP + 6));
@@ -14098,7 +14124,7 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
     drawEntries.forEach((e,i)=>{
       if(e.kind!=='activity' || !e.next) return;
       const q = vis[nk(e.next)]; if(!q) return;
-      const yA = HEAD + PAD + i*(ROW+2) + ROW/2, yB = HEAD + PAD + q.i*(ROW+2) + ROW/2;
+      const yA = YOF(i) + ROW/2, yB = YOF(q.i) + ROW/2;
       const xA = LABEL + parseFloat(pct(e.hito ? e.start : e.end)), xB = LABEL + parseFloat(pct(q.e.start)) + (q.e.indent?INDENT:0);
       const dd = xB - 6 > xA + 4 ? `M${xA},${yA} H${xA+6} V${yB} H${xB-2}` : `M${xA},${yA} h6 V${(yA+yB)/2} H${xB-10} V${yB} H${xB-2}`;
       deps += `<path d="${dd}" fill="none" stroke="#2563eb" stroke-width="1.2" stroke-opacity=".7" stroke-dasharray="2,2" marker-end="url(#pcArr)"><title>${esc(e.act)} termina antes de ${esc(e.next)} (calculada en retrospectiva)</title></path>`;
@@ -14106,7 +14132,7 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
     // contorno rojo en las barras de la ruta crítica
     drawEntries.forEach((e,i)=>{
       if(e.kind!=='activity' || !critica.has(nk(e.act)) || e.hito) return;
-      const x = parseFloat(pct(e.start)), w = Math.max(4, parseFloat(pct(e.end)) - x), y = HEAD + PAD + i*(ROW+2), ip = e.indent ? INDENT : 0;
+      const x = parseFloat(pct(e.start)), w = Math.max(4, parseFloat(pct(e.end)) - x), y = YOF(i), ip = e.indent ? INDENT : 0;
       deps += `<rect x="${LABEL+ip+x-1}" y="${y+2}" width="${Math.max(2,w-ip)+2}" height="${ROW-4}" rx="4" fill="none" stroke="#c8102e" stroke-width="1.6"><title>Ruta crítica: ${esc(e.act)}</title></rect>`;
     });
     if(_pcGanttRutaCritica !== false) svgRows += deps;
@@ -14137,6 +14163,8 @@ function pcRenderGantt(rows, endDateMap, groupRanges) {
       <svg width="${svgW-LABEL}" height="${svgH}" viewBox="${LABEL} 0 ${svgW-LABEL} ${svgH}" xmlns="http://www.w3.org/2000/svg" style="background:rgba(0,0,0,.03);display:block">${inner}</svg>
     </div>`;
   try{ pcGanttDecorar(); }catch(e){ console.warn('vista project', e); }
+  try{ pcGanttConectarClics(); }catch(e){}
+  if(_alineado){ try{ pcAlinearGantt(); }catch(e){} }
 
   // Se guarda para poder generar el PDF con el mismo diagrama, sin recalcular
   pcLastGanttSVG = svgMarkup.replace(/rgba\(0,0,0,\.03\)/,'#f7f7f7');
@@ -21936,7 +21964,13 @@ function pcVistaTiming(v){
   const sc = document.getElementById('pc-timing-scroll'), ico = document.getElementById('pc-timing-cfg-ico');
   if(sc) sc.style.display = v==='project' ? 'none' : '';
   if(ico) ico.textContent = v==='project' ? '▸' : '▾';
-  ['tabla','project'].forEach(x=>{ const b = document.getElementById('pc-vista-'+x); if(b){ b.style.background = x===v ? 'var(--red)' : 'transparent'; b.style.color = x===v ? '#fff' : ''; } });
+  // rev177: «Tabla | Gantt» lado a lado
+  const sp = (typeof pcSplitAsegurar === 'function') ? pcSplitAsegurar() : null, gw = document.getElementById('pc-gantt-wrap');
+  if(sp){
+    if(v === 'lado'){ sp.style.cssText = 'display:flex;gap:10px;align-items:flex-start'; sc.style.cssText = 'overflow-x:auto;flex:0 0 58%;min-width:0'; if(gw){ gw.style.marginTop = '0'; gw.style.flex = '1 1 42%'; gw.style.minWidth = '0'; } }
+    else { sp.style.cssText = ''; sc.style.cssText = 'overflow-x:auto' + (v==='project' ? ';display:none' : ''); if(gw){ gw.style.marginTop = '20px'; gw.style.flex = ''; gw.style.minWidth = ''; } const g = document.getElementById('pc-gantt'); if(g) g.style.marginTop = '0'; }
+  }
+  ['tabla','lado','project'].forEach(x=>{ const b = document.getElementById('pc-vista-'+x); if(b){ b.style.background = x===v ? 'var(--red)' : 'transparent'; b.style.color = x===v ? '#fff' : ''; } });
   if(v!=='project') pcCerrarPanelAct();
   try{ pcUpdateTimingCalcs(); }catch(e){}
 }
@@ -22021,3 +22055,77 @@ function pcPanelSet(k, el){
       box.innerHTML = `📅 <b>${fmt(r.fCond)}</b> → <b>${fmt(r.fObj)}</b>${r.fCond?` · ${r.diasCalc!=null?r.diasCalc:(parseInt(_pcF(tr,'dias_estimados'))||0)} d hábiles`:''}${r.conflicto?`<div style="color:var(--red)">⚠ ${esc(r.conflicto)}</div>`:''}${!r.fCond&&r.falta?`<div style="color:var(--amber)">${esc(r.falta)}</div>`:''}`; } }
 }
 function pcPanelDesfase(d){ const i = document.querySelector('#pc-act-panel [data-pf="desfase"]'); if(!i) return; i.value = (parseInt(i.value)||0) + d; pcPanelSet('desfase', i); }
+
+// ════════════════════════════════════════════════════════
+//  rev177 — Timing: vista «Tabla | Gantt» alineada y modal de actividad
+// ════════════════════════════════════════════════════════
+function pcSplitAsegurar(){
+  let sp = document.getElementById('pc-timing-split');
+  const sc = document.getElementById('pc-timing-scroll'), gw = document.getElementById('pc-gantt-wrap');
+  if(!sc || !gw) return null;
+  if(!sp){ sp = document.createElement('div'); sp.id = 'pc-timing-split'; sc.parentElement.insertBefore(sp, sc); sp.appendChild(sc); sp.appendChild(gw); }
+  return sp;
+}
+function pcAlinearGantt(){
+  const tb = document.getElementById('pc-timing-body'), th = tb && tb.parentElement.querySelector('thead');
+  const g = document.getElementById('pc-gantt'), sc = document.getElementById('pc-timing-scroll');
+  if(!th || !g || !sc) return;
+  g.style.marginTop = '0px'; sc.style.marginTop = '0px';
+  const sv = g.querySelector('svg'); if(!sv) return;
+  const d = th.getBoundingClientRect().top - sv.getBoundingClientRect().top;
+  if(d > 0) g.style.marginTop = d + 'px'; else sc.style.marginTop = (-d) + 'px';
+}
+// Clic en el nombre o en la barra de una actividad del Gantt → modal de configuración (todas las vistas)
+function pcGanttConectarClics(){
+  const g = document.getElementById('pc-gantt'); if(!g) return;
+  const rows = [...document.getElementById('pc-timing-body').rows];
+  const byName = {}; rows.forEach(tr=>{ if(tr.dataset.tipo!=='grupo') byName[(_pcF(tr,'actividad')||'').trim().toUpperCase()] = tr; });
+  g.querySelectorAll('text, rect').forEach(el=>{
+    const ti = el.querySelector('title'); if(!ti) return;
+    const nombre = (ti.textContent||'').replace(/^Hito:\s*/,'').replace(/^Ruta crítica:\s*/,'').split('·')[0].trim().toUpperCase();
+    const tr = byName[nombre]; if(!tr || el.dataset.clic) return;
+    el.dataset.clic = '1'; el.style.cursor = 'pointer'; el.addEventListener('click', ()=>pcAbrirPanelAct(tr));
+  });
+  // también las barras sin título: por posición vertical en la vista alineada
+}
+// El panel de la actividad se muestra como MODAL centrado
+function pcModalActAsegurar(){
+  let ov = document.getElementById('pc-act-ov');
+  const p = document.getElementById('pc-act-panel');
+  if(!ov && p){
+    ov = document.createElement('div'); ov.id = 'pc-act-ov';
+    ov.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:149';
+    ov.addEventListener('click', e=>{ if(e.target === ov) pcCerrarPanelAct(); });
+    document.body.appendChild(ov);
+    p.style.cssText = 'display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:440px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);overflow:auto;z-index:150;background:var(--card,#fff);border:1px solid var(--border);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.3);padding:16px';
+  }
+  return ov;
+}
+const _pcAbrirPanelAct_orig = pcAbrirPanelAct;
+pcAbrirPanelAct = function(tr){
+  const ov = pcModalActAsegurar(); _pcAbrirPanelAct_orig(tr);
+  if(ov) ov.style.display = '';
+  const p = document.getElementById('pc-act-panel');
+  if(p && !p.querySelector('.pc-act-pie')){
+    const ro = !pcTabPuede('timing','create');
+    p.insertAdjacentHTML('beforeend', `<div class="pc-act-pie" style="display:flex;gap:8px;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      ${ro?'':'<button class="btn-reload" style="color:var(--red)" onclick="pcEliminarActModal()">Eliminar actividad</button>'}
+      <button class="btn btn-p" style="margin-left:auto;padding:6px 18px" onclick="pcCerrarPanelAct()">Listo</button></div>`);
+  }
+  setTimeout(()=>{ const n = p && p.querySelector('[data-pf="actividad"]'); if(n && !n.value) n.focus(); }, 50);
+};
+const _pcCerrarPanelAct_orig = pcCerrarPanelAct;
+pcCerrarPanelAct = function(){ _pcCerrarPanelAct_orig(); const ov = document.getElementById('pc-act-ov'); if(ov) ov.style.display = 'none'; };
+function pcEliminarActModal(){
+  if(!_pcPanelTr || !confirm('¿Eliminar esta actividad del Timing?')) return;
+  const tr = _pcPanelTr; pcCerrarPanelAct(); tr.remove(); pcUpdateTimingCalcs();
+}
+// «+ Actividad»: agrega la fila (encadenada a la última actividad) y abre el modal para configurarla
+function pcNuevaActividad(){
+  const rows = [...document.getElementById('pc-timing-body').rows].filter(r=>r.dataset.tipo!=='grupo');
+  const ult = rows.length ? _pcF(rows[rows.length-1],'actividad') : '';
+  pcAddTimingRow(ult ? {modo:'inicio_previa', actividad_previa: ult, dias_estimados: 5} : {modo:'manual', dias_estimados: 5});
+  const tb = document.getElementById('pc-timing-body'); const tr = tb.rows[tb.rows.length-1];
+  pcUpdateTimingCalcs(); pcAbrirPanelAct(tr);
+}
+window.addEventListener('resize', ()=>{ if(_pcVistaTiming==='lado'){ clearTimeout(window._pcAlT); window._pcAlT = setTimeout(()=>{ try{ pcUpdateTimingCalcs(); }catch(e){} }, 250); } });   // rev177
